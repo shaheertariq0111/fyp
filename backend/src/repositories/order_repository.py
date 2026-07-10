@@ -26,11 +26,17 @@ class OrderRepository:
         return from_dynamodb(items[0]) if items else None
 
     def list_active(self, user_id: str, terminal_statuses: set[str]) -> list[dict]:
-        response = self.table.query(
-            KeyConditionExpression=Key("PK").eq(user_id) & Key("SK").begins_with("ORDER#"),
-            FilterExpression=~Attr("status").is_in(list(terminal_statuses)),
-        )
-        return from_dynamodb(response.get("Items", []))
+        kwargs = {
+            "KeyConditionExpression": Key("PK").eq(user_id) & Key("SK").begins_with("ORDER#"),
+            "FilterExpression": ~Attr("status").is_in(list(terminal_statuses)),
+        }
+        items: list[dict] = []
+        while True:
+            response = self.table.query(**kwargs)
+            items.extend(response.get("Items", []))
+            if "LastEvaluatedKey" not in response:
+                return from_dynamodb(items)
+            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
     def save(self, order: dict, expected_version: int) -> None:
         updated = dict(order)

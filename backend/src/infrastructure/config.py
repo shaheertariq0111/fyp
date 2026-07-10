@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     menu_site_base_url: HttpUrl
     session_token_secret: str = Field(min_length=16)
     session_token_ttl_minutes: int = Field(default=60, gt=0)
+    strands_session_storage_dir: str | None = None
     restaurant_id: str = Field(min_length=1)
     branch_id: str = Field(min_length=1)
     log_level: str = "INFO"

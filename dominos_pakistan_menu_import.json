@@ -1,0 +1,4943 @@
+{
+  "schema_version": "1.0",
+  "currency": "PKR",
+  "source_file": "dominos_pakistan_menu.csv",
+  "notes": [
+    "Base item prices were taken from the CSV.",
+    "Crust, topping, combo upgrade, and drink-size deltas are verified prices.",
+    "Recommendation metadata and option/upsell relationships were generated for a restaurant ordering agent."
+  ],
+  "records": [
+    {
+      "entity_type": "category",
+      "category_id": "deals",
+      "name": "Deals",
+      "description": "Value bundles combining pizzas, drinks, chicken, or sides for groups.",
+      "sort_order": 10,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "premium-deals",
+      "name": "Premium Deals",
+      "description": "Premium pizza bundles featuring specialty crusts and drinks.",
+      "sort_order": 20,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "mybox-combos",
+      "name": "MyBox Combos",
+      "description": "Build-your-own individual meal boxes with pizza, sides, and optional drinks.",
+      "sort_order": 30,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "classic-flavors",
+      "name": "Classic Flavors",
+      "description": "Core pizza flavors with familiar sauces, cheese, chicken, and vegetable toppings.",
+      "sort_order": 40,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "favorite-flavors",
+      "name": "Favorite Flavors",
+      "description": "Popular specialty pizzas with signature sauces and bolder toppings.",
+      "sort_order": 50,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "premium-flavors",
+      "name": "Premium Flavors",
+      "description": "Premium pizza recipes with richer sauces and higher-tier toppings.",
+      "sort_order": 60,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "super-loaded-flavors",
+      "name": "Super Loaded Flavors",
+      "description": "Extra-loaded pizzas with more cheese and more protein.",
+      "sort_order": 70,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "meltz",
+      "name": "Meltz",
+      "description": "Folded crunchy-thin-crust meals filled with pizza-inspired toppings.",
+      "sort_order": 80,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "pizza-rolls",
+      "name": "Pizza Rolls",
+      "description": "Oven-baked pizza rolls filled with cheese, sauces, and savory toppings.",
+      "sort_order": 90,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "chicken-and-sides",
+      "name": "Chicken & Sides",
+      "description": "Chicken, potato sides, and desserts suitable as add-ons or standalone orders.",
+      "sort_order": 100,
+      "available": true
+    },
+    {
+      "entity_type": "category",
+      "category_id": "drinks-and-extras",
+      "name": "Drinks & Extras",
+      "description": "Beverages, dips, sauces, and condiments.",
+      "sort_order": 110,
+      "available": true
+    },
+    {
+      "entity_type": "option_group",
+      "option_group_id": "pizza-size",
+      "name": "Pizza Size",
+      "type": "single_select",
+      "question": "Which pizza size would you like?",
+      "required": true,
+      "options": [
+        {
+          "option_id": "small",
+          "name": "Small",
+          "value": "small",
+          "price_key": "small",
+          "available": true
+        },
+        {
+          "option_id": "medium",
+          "name": "Medium",
+          "value": "medium",
+          "price_key": "medium",
+          "available": true
+        },
+        {
+          "option_id": "large",
+          "name": "Large",
+          "value": "large",
+          "price_key": "large",
+          "available": true
+        }
+      ]
+    },
+    {
+      "entity_type": "option_group",
+      "option_group_id": "pizza-crust",
+      "name": "Pizza Crust",
+      "type": "single_select",
+      "question": "Choose a crust.",
+      "required": true,
+      "options": [
+        {
+          "option_id": "regular",
+          "name": "Regular Crust",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "thin",
+          "name": "Crunchy Thin Crust",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "stuffed",
+          "name": "Mozzarella Stuffed Crust",
+          "price_delta": 350,
+          "available": true
+        },
+        {
+          "option_id": "cheese-burst",
+          "name": "Cheese Burst Crust",
+          "price_delta": 500,
+          "available": true
+        }
+      ]
+    },
+    {
+      "entity_type": "option_group",
+      "option_group_id": "extra-toppings",
+      "name": "Extra Toppings",
+      "type": "multi_select",
+      "question": "Add any extra toppings?",
+      "required": false,
+      "max_selections": 5,
+      "options": [
+        {
+          "option_id": "extra-cheese",
+          "name": "Extra Cheese",
+          "price_delta": 180,
+          "available": true
+        },
+        {
+          "option_id": "extra-chicken",
+          "name": "Extra Chicken",
+          "price_delta": 250,
+          "available": true
+        },
+        {
+          "option_id": "mushrooms",
+          "name": "Mushrooms",
+          "price_delta": 120,
+          "available": true
+        },
+        {
+          "option_id": "black-olives",
+          "name": "Black Olives",
+          "price_delta": 120,
+          "available": true
+        },
+        {
+          "option_id": "jalapenos",
+          "name": "Jalapeños",
+          "price_delta": 100,
+          "available": true
+        }
+      ]
+    },
+    {
+      "entity_type": "option_group",
+      "option_group_id": "wing-sauce",
+      "name": "Wing Sauce",
+      "type": "single_select",
+      "question": "Choose a wing sauce.",
+      "required": true,
+      "options": [
+        {
+          "option_id": "mild",
+          "name": "Mild",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "bbq",
+          "name": "BBQ",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "hot",
+          "name": "Hot",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "peri-peri",
+          "name": "Peri Peri",
+          "price_delta": 0,
+          "available": true
+        }
+      ]
+    },
+    {
+      "entity_type": "option_group",
+      "option_group_id": "dip-choice",
+      "name": "Dip Choice",
+      "type": "single_select",
+      "question": "Choose a dip.",
+      "required": false,
+      "options": [
+        {
+          "option_id": "ranch",
+          "name": "Ranch Dip",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "peri-peri",
+          "name": "Peri Peri Dip",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "no-dip",
+          "name": "No Dip",
+          "price_delta": 0,
+          "available": true
+        }
+      ]
+    },
+    {
+      "entity_type": "option_group",
+      "option_group_id": "combo-pizza-flavor",
+      "name": "Combo Pizza Flavor",
+      "type": "single_select",
+      "question": "Choose a pizza flavor for the combo.",
+      "required": true,
+      "options": [
+        {
+          "option_id": "chicken-tikka",
+          "name": "Chicken Tikka",
+          "product_id": "chicken-tikka",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "chicken-fajita",
+          "name": "Chicken Fajita",
+          "product_id": "chicken-fajita",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "super-cheese",
+          "name": "Super Cheese",
+          "product_id": "super-cheese",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "peri-peri",
+          "name": "Peri Peri",
+          "product_id": "peri-peri",
+          "price_delta": 100,
+          "available": true
+        },
+        {
+          "option_id": "legend-dynamite",
+          "name": "Legend Dynamite",
+          "product_id": "legend-dynamite",
+          "price_delta": 100,
+          "available": true
+        },
+        {
+          "option_id": "legend-ranch",
+          "name": "Legend Ranch",
+          "product_id": "legend-ranch",
+          "price_delta": 100,
+          "available": true
+        },
+        {
+          "option_id": "alfredo-pizza",
+          "name": "Alfredo Pizza",
+          "product_id": "alfredo-pizza",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "only-veggie",
+          "name": "Only Veggie",
+          "product_id": "only-veggie",
+          "price_delta": 0,
+          "available": true
+        }
+      ]
+    },
+    {
+      "entity_type": "option_group",
+      "option_group_id": "combo-side-choice",
+      "name": "Combo Side",
+      "type": "single_select",
+      "question": "Choose a side.",
+      "required": true,
+      "options": [
+        {
+          "option_id": "potato-wedges",
+          "name": "Potato Wedges",
+          "product_id": "potato-wedges",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "4-pcs-chicken-kickers",
+          "name": "4 Pcs Chicken Kickers",
+          "product_id": "4-pcs-chicken-kickers",
+          "price_delta": 100,
+          "available": true
+        },
+        {
+          "option_id": "choco-bread",
+          "name": "Choco Bread",
+          "product_id": "choco-bread",
+          "price_delta": 0,
+          "available": true
+        }
+      ]
+    },
+    {
+      "entity_type": "option_group",
+      "option_group_id": "combo-drink-choice",
+      "name": "Combo Drink",
+      "type": "single_select",
+      "question": "Choose a drink.",
+      "required": true,
+      "options": [
+        {
+          "option_id": "pepsi",
+          "name": "Pepsi",
+          "product_id": "pepsi",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "diet-pepsi",
+          "name": "Diet Pepsi",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "seven-up",
+          "name": "7UP",
+          "price_delta": 0,
+          "available": true
+        }
+      ]
+    },
+    {
+      "entity_type": "option_group",
+      "option_group_id": "pepsi-size",
+      "name": "Drink Size",
+      "type": "single_select",
+      "question": "Choose a drink size.",
+      "required": true,
+      "options": [
+        {
+          "option_id": "345ml",
+          "name": "345 ml",
+          "price_delta": 0,
+          "available": true
+        },
+        {
+          "option_id": "500ml",
+          "name": "500 ml",
+          "price_delta": 80,
+          "available": true
+        },
+        {
+          "option_id": "1-5l",
+          "name": "1.5 L",
+          "price_delta": 250,
+          "available": true
+        }
+      ]
+    },
+    {
+      "entity_type": "upsell_group",
+      "upsell_group_id": "pizza-meal-addons",
+      "question": "Complete your pizza meal with a side or drink?",
+      "items": [
+        "pepsi",
+        "potato-wedges",
+        "6-pcs-chicken-wings",
+        "ranch-dip"
+      ],
+      "trigger_categories": [
+        "classic-flavors",
+        "favorite-flavors",
+        "premium-flavors",
+        "super-loaded-flavors"
+      ],
+      "max_suggestions": 3
+    },
+    {
+      "entity_type": "upsell_group",
+      "upsell_group_id": "dessert-addons",
+      "question": "Add a dessert?",
+      "items": [
+        "lava-cake-1-pc",
+        "choco-bread"
+      ],
+      "trigger_categories": [
+        "classic-flavors",
+        "favorite-flavors",
+        "premium-flavors",
+        "super-loaded-flavors"
+      ],
+      "max_suggestions": 2
+    },
+    {
+      "entity_type": "upsell_group",
+      "upsell_group_id": "quick-addons",
+      "question": "Add a quick extra to the order?",
+      "items": [
+        "pepsi",
+        "ranch-dip",
+        "peri-peri-dip",
+        "lava-cake-1-pc"
+      ],
+      "trigger_categories": [
+        "deals",
+        "premium-deals",
+        "mybox-combos",
+        "meltz",
+        "pizza-rolls"
+      ],
+      "max_suggestions": 3
+    },
+    {
+      "entity_type": "upsell_group",
+      "upsell_group_id": "drink-and-dip-addons",
+      "question": "Add a drink or dip?",
+      "items": [
+        "pepsi",
+        "ranch-dip",
+        "peri-peri-dip"
+      ],
+      "trigger_categories": [
+        "chicken-and-sides"
+      ],
+      "max_suggestions": 3
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "small-pizzas-special",
+      "name": "Small Pizzas Special",
+      "description": "2 Small Pizzas.",
+      "category": "deals",
+      "category_name": "Deals",
+      "source_category": "Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Deals",
+        "deals",
+        "combo",
+        "value"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "small pizzas special",
+        "deals",
+        "combo",
+        "value"
+      ],
+      "metadata": {
+        "recommendation_score": 81,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "groups",
+          "value meals"
+        ],
+        "serves": "2-3 people",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 900,
+      "starting_price": 900,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 2
+        },
+        "fixed_size": "small"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "epic-medium",
+      "name": "Epic Medium",
+      "description": "1 Medium Pizza and 2 Small Drinks.",
+      "category": "deals",
+      "category_name": "Deals",
+      "source_category": "Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Deals",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "epic medium",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 80,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "groups",
+          "value meals"
+        ],
+        "serves": "2 people",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 1500,
+      "starting_price": 1500,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-drink-choice": 2
+        },
+        "fixed_size": "medium"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "epic-large",
+      "name": "Epic Large",
+      "description": "1 Large Pizza and 1.5 Ltr Drink.",
+      "category": "deals",
+      "category_name": "Deals",
+      "source_category": "Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Deals",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "epic large",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 79,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "groups",
+          "value meals"
+        ],
+        "serves": "3-4 people",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 1950,
+      "starting_price": 1950,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "large"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "epic-double-medium",
+      "name": "Epic Double Medium",
+      "description": "2 Medium Classic Pizzas + FREE 1.5 LTR Drink.",
+      "category": "deals",
+      "category_name": "Deals",
+      "source_category": "Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Deals",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "epic double medium",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 82,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "groups",
+          "value meals"
+        ],
+        "serves": "4 people",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 2800,
+      "starting_price": 2800,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 2,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "medium"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "epic-double-large",
+      "name": "Epic Double Large",
+      "description": "2 Large Classic Pizzas + FREE 1.5 LTR Drink.",
+      "category": "deals",
+      "category_name": "Deals",
+      "source_category": "Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Deals",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "epic double large",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 81,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "groups",
+          "value meals"
+        ],
+        "serves": "5-6 people",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 3600,
+      "starting_price": 3600,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 2,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "large"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "gathering-for-four",
+      "name": "Gathering For Four",
+      "description": "2 Medium Classic Pizza's + 2 Sides + 1.5 LTR Drink.",
+      "category": "deals",
+      "category_name": "Deals",
+      "source_category": "Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-side-choice",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Deals",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "gathering for four",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 88,
+        "is_popular": true,
+        "best_for": [
+          "sharing",
+          "groups",
+          "value meals"
+        ],
+        "serves": "4 people",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 3700,
+      "starting_price": 3700,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 2,
+          "combo-side-choice": 2,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "medium"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "gathering-for-six",
+      "name": "Gathering For Six",
+      "description": "2 Large Classic Pizza's + 2 Sides + 1.5 LTR Drink.",
+      "category": "deals",
+      "category_name": "Deals",
+      "source_category": "Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-side-choice",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Deals",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "gathering for six",
+        "deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 79,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "groups",
+          "value meals"
+        ],
+        "serves": "5-6 people",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 5700,
+      "starting_price": 5700,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 2,
+          "combo-side-choice": 2,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "large"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "pizza-n-wings",
+      "name": "Pizza N Wings",
+      "description": "1 Medium Classic Pizza's + 6 pcs Wings + 2 Small Drinks.",
+      "category": "deals",
+      "category_name": "Deals",
+      "source_category": "Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice",
+        "wing-sauce"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Deals",
+        "deals",
+        "combo",
+        "value",
+        "chicken",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "pizza n wings",
+        "deals",
+        "combo",
+        "value",
+        "chicken",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 90,
+        "is_popular": true,
+        "best_for": [
+          "sharing",
+          "groups",
+          "value meals"
+        ],
+        "serves": "2-3 people",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 1950,
+      "starting_price": 1950,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-drink-choice": 2,
+          "wing-sauce": 1
+        },
+        "fixed_size": "medium"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "mozzarella-stuffed-crust",
+      "name": "Mozzarella Stuffed Crust",
+      "description": "1 Mozzarella Stuffed Crust Pizza with 1.5 Ltr drink.",
+      "category": "premium-deals",
+      "category_name": "Premium Deals",
+      "source_category": "Premium Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Premium Deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "mozzarella stuffed crust",
+        "premium deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 77,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "premium meals",
+          "weekend orders"
+        ],
+        "serves": "3-4 people",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 2200,
+      "starting_price": 2200,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "large"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "creamy-kebab-stuffed-crust",
+      "name": "Creamy Kebab Stuffed Crust",
+      "description": "1 Creamy Kebab Stuffed Crust Pizza with 1.5 Ltr drink.",
+      "category": "premium-deals",
+      "category_name": "Premium Deals",
+      "source_category": "Premium Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Premium Deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "creamy kebab stuffed crust",
+        "premium deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 76,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "premium meals",
+          "weekend orders"
+        ],
+        "serves": "3-4 people",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 2200,
+      "starting_price": 2200,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "large"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "super-loaded-large",
+      "name": "Super Loaded Large",
+      "description": "1 Super Loaded Large Pizza + 1.5 Ltr Drink.",
+      "category": "premium-deals",
+      "category_name": "Premium Deals",
+      "source_category": "Premium Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Premium Deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "super loaded large",
+        "premium deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 75,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "premium meals",
+          "weekend orders"
+        ],
+        "serves": "3-4 people",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 2200,
+      "starting_price": 2200,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "large"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "cheese-burst-large",
+      "name": "Cheese Burst Large",
+      "description": "1 Large Cheese Burst Pizza with Large Drink.",
+      "category": "premium-deals",
+      "category_name": "Premium Deals",
+      "source_category": "Premium Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Premium Deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "cheese burst large",
+        "premium deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 78,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "premium meals",
+          "weekend orders"
+        ],
+        "serves": "3-4 people",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 2650,
+      "starting_price": 2650,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "large"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "double-melt-deal-large",
+      "name": "Double Melt Deal Large",
+      "description": "1 Large Double Melt Pizza with Large Drink.",
+      "category": "premium-deals",
+      "category_name": "Premium Deals",
+      "source_category": "Premium Deals",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Premium Deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "double melt deal large",
+        "premium deals",
+        "premium-deals",
+        "combo",
+        "value",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 77,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "premium meals",
+          "weekend orders"
+        ],
+        "serves": "3-4 people",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 3350,
+      "starting_price": 3350,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "large"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "mybox-pizza-1-side",
+      "name": "MyBox Pizza + 1 Side",
+      "description": "Create your own Combo by selecting from a variety of Pizzas, Sides, Desserts, and Chicken.",
+      "category": "mybox-combos",
+      "category_name": "MyBox Combos",
+      "source_category": "MyBox Combos",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-side-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "MyBox Combos",
+        "mybox-combos",
+        "combo",
+        "value",
+        "chicken"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "mybox pizza + 1 side",
+        "mybox combos",
+        "mybox-combos",
+        "combo",
+        "value",
+        "chicken"
+      ],
+      "metadata": {
+        "recommendation_score": 74,
+        "is_popular": false,
+        "best_for": [
+          "solo meal",
+          "lunch",
+          "custom meal"
+        ],
+        "serves": "1 person",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 850,
+      "starting_price": 850,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-side-choice": 1
+        },
+        "fixed_size": "personal"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "mybox-pizza-1-side-drink",
+      "name": "MyBox Pizza + 1 Side + Drink",
+      "description": "Create your own Combo by selecting from a variety of Pizzas, Sides, Desserts, Chicken & Drink.",
+      "category": "mybox-combos",
+      "category_name": "MyBox Combos",
+      "source_category": "MyBox Combos",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-side-choice",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "MyBox Combos",
+        "mybox-combos",
+        "combo",
+        "value",
+        "chicken",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "mybox pizza + 1 side + drink",
+        "mybox combos",
+        "mybox-combos",
+        "combo",
+        "value",
+        "chicken",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 73,
+        "is_popular": false,
+        "best_for": [
+          "solo meal",
+          "lunch",
+          "custom meal"
+        ],
+        "serves": "1 person",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 950,
+      "starting_price": 950,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-side-choice": 1,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "personal"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "mybox-pizza-2-sides",
+      "name": "MyBox Pizza + 2 Sides",
+      "description": "Create your own Combo by selecting from a variety of Pizzas, Sides, Desserts, Chicken.",
+      "category": "mybox-combos",
+      "category_name": "MyBox Combos",
+      "source_category": "MyBox Combos",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-side-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "MyBox Combos",
+        "mybox-combos",
+        "combo",
+        "value",
+        "chicken"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "mybox pizza + 2 sides",
+        "mybox combos",
+        "mybox-combos",
+        "combo",
+        "value",
+        "chicken"
+      ],
+      "metadata": {
+        "recommendation_score": 76,
+        "is_popular": false,
+        "best_for": [
+          "solo meal",
+          "lunch",
+          "custom meal"
+        ],
+        "serves": "1 person",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 1200,
+      "starting_price": 1200,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-side-choice": 2
+        },
+        "fixed_size": "personal"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "mybox-pizza-2-sides-with-drink",
+      "name": "MyBox Pizza + 2 Sides with Drink",
+      "description": "Create your own Combo by selecting from a variety of Pizzas, Sides, Desserts, Chicken & Drink.",
+      "category": "mybox-combos",
+      "category_name": "MyBox Combos",
+      "source_category": "MyBox Combos",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "combo-pizza-flavor",
+        "combo-side-choice",
+        "combo-drink-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "MyBox Combos",
+        "mybox-combos",
+        "combo",
+        "value",
+        "chicken",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "mybox pizza + 2 sides with drink",
+        "mybox combos",
+        "mybox-combos",
+        "combo",
+        "value",
+        "chicken",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 75,
+        "is_popular": false,
+        "best_for": [
+          "solo meal",
+          "lunch",
+          "custom meal"
+        ],
+        "serves": "1 person",
+        "display_reason": "Good value for the stated serving size.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 1300,
+      "starting_price": 1300,
+      "price_model": "fixed",
+      "customization_rules": {
+        "selection_quantities": {
+          "combo-pizza-flavor": 1,
+          "combo-side-choice": 2,
+          "combo-drink-choice": 1
+        },
+        "fixed_size": "personal"
+      }
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "creamy-tikka",
+      "name": "Creamy Tikka",
+      "description": "Cheese mayo base, mozzarella cheese, chicken tikka chunks, onions and jalapenos.",
+      "category": "classic-flavors",
+      "category_name": "Classic Flavors",
+      "source_category": "Classic Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Classic Flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "creamy tikka",
+        "classic flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 78,
+        "is_popular": false,
+        "best_for": [
+          "family meal",
+          "first-time customers",
+          "everyday orders"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 650,
+      "base_prices": {
+        "small": 650,
+        "medium": 1300,
+        "large": 1800
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "alfredo-pizza",
+      "name": "Alfredo Pizza",
+      "description": "Alfredo sauce, oregano, cheddar cheese, marinated grilled chicken, mushrooms and mozzarella cheese.",
+      "category": "classic-flavors",
+      "category_name": "Classic Flavors",
+      "source_category": "Classic Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Classic Flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "alfredo pizza",
+        "classic flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 77,
+        "is_popular": false,
+        "best_for": [
+          "family meal",
+          "first-time customers",
+          "everyday orders"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 650,
+      "base_prices": {
+        "small": 650,
+        "medium": 1300,
+        "large": 1800
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "secret-sauce-boss",
+      "name": "Secret Sauce Boss",
+      "description": "Secret Sauce Base, Mozzarella Cheese, Tex Mex Chicken, Olives, Capsicum, Onions, and topped with our Secret Sauce.",
+      "category": "classic-flavors",
+      "category_name": "Classic Flavors",
+      "source_category": "Classic Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Classic Flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "secret sauce boss",
+        "classic flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 80,
+        "is_popular": false,
+        "best_for": [
+          "family meal",
+          "first-time customers",
+          "everyday orders"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 650,
+      "base_prices": {
+        "small": 650,
+        "medium": 1300,
+        "large": 1800
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "chicken-tikka",
+      "name": "Chicken Tikka",
+      "description": "Pizza sauce base, mozzarella cheese, chicken tikka chunks and onions.",
+      "category": "classic-flavors",
+      "category_name": "Classic Flavors",
+      "source_category": "Classic Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Classic Flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "chicken tikka",
+        "classic flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 87,
+        "is_popular": true,
+        "best_for": [
+          "family meal",
+          "first-time customers",
+          "everyday orders"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 650,
+      "base_prices": {
+        "small": 650,
+        "medium": 1300,
+        "large": 1800
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "only-veggie",
+      "name": "Only Veggie",
+      "description": "Pizza sauce base, mozzarella cheese, onions, green peppers, mushrooms and black olives.",
+      "category": "classic-flavors",
+      "category_name": "Classic Flavors",
+      "source_category": "Classic Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Classic Flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "vegetarian",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "only veggie",
+        "classic flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "vegetarian",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 78,
+        "is_popular": false,
+        "best_for": [
+          "family meal",
+          "first-time customers",
+          "everyday orders"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 650,
+      "base_prices": {
+        "small": 650,
+        "medium": 1300,
+        "large": 1800
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "super-cheese",
+      "name": "Super Cheese",
+      "description": "Pizza sauce base with cheese and cheese some more cheese.",
+      "category": "classic-flavors",
+      "category_name": "Classic Flavors",
+      "source_category": "Classic Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Classic Flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "vegetarian",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "super cheese",
+        "classic flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "vegetarian",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 85,
+        "is_popular": true,
+        "best_for": [
+          "family meal",
+          "first-time customers",
+          "everyday orders"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 650,
+      "base_prices": {
+        "small": 650,
+        "medium": 1300,
+        "large": 1800
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "chicken-fajita",
+      "name": "Chicken Fajita",
+      "description": "Pizza sauce base, mozzarella cheese, spicy chicken chunks, onions, and green peppers.",
+      "category": "classic-flavors",
+      "category_name": "Classic Flavors",
+      "source_category": "Classic Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Classic Flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "chicken fajita",
+        "classic flavors",
+        "classic-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 88,
+        "is_popular": true,
+        "best_for": [
+          "family meal",
+          "first-time customers",
+          "everyday orders"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 650,
+      "base_prices": {
+        "small": 650,
+        "medium": 1300,
+        "large": 1800
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "peri-peri",
+      "name": "Peri Peri",
+      "description": "Pizza sauce base, mozzarella cheese, spicy chicken chunks, onions and green peppers topped with peri peri sauce.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "peri peri",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 91,
+        "is_popular": true,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "legend-dynamite",
+      "name": "Legend Dynamite",
+      "description": "Cheddar cheese base, mozzarella cheese, grilled chicken, onions and oregano topped dynamite sauce.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "legend dynamite",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 90,
+        "is_popular": true,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "american-bbq-chicken",
+      "name": "American BBQ Chicken",
+      "description": "BBQ sauce base, mozzarella cheese, spicy chicken chunks and onions.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy",
+        "bbq"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "american bbq chicken",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy",
+        "bbq"
+      ],
+      "metadata": {
+        "recommendation_score": 81,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "legend-ranch",
+      "name": "Legend Ranch",
+      "description": "Cheddar cheese base, mozzarella cheese, grilled chicken, onions and oregano topped with ranch sauce.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "legend ranch",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 92,
+        "is_popular": true,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "chicken-seekh-kebab",
+      "name": "Chicken Seekh Kebab",
+      "description": "Pizza sauce base, mozzarella cheese, chicken seekh kebab, green chilies and onions topped with ranch sauce.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "chicken seekh kebab",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 83,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "creamy-peri-peri",
+      "name": "Creamy Peri Peri",
+      "description": "Cheese mayo base, mozzarella cheese, spicy chicken chunks, green peppers, onions and jalapenos topped with peri peri sauce.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "creamy peri peri",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 82,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "tex-mex",
+      "name": "Tex-Mex",
+      "description": "Pizza sauce base, mozzarella cheese, Tex-Mex chicken chunks, onions, green peppers, jalapenos, black olives and oregano.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "tex-mex",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 81,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "hawaiian-chicken",
+      "name": "Hawaiian Chicken",
+      "description": "Pizza sauce base, mozzarella cheese, chicken chunks and pineapples.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "hawaiian chicken",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 84,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "smoked-sausage",
+      "name": "Smoked Sausage",
+      "description": "Pizza sauce base, mozzarella cheese, smoked chicken sausages and mushrooms topped with BBQ seasoning.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy",
+        "bbq"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "smoked sausage",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy",
+        "bbq"
+      ],
+      "metadata": {
+        "recommendation_score": 83,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "crispy-chicken-cheese-burger",
+      "name": "Crispy Chicken Cheese Burger",
+      "description": "Cheddar sauce base, mozzarella cheese, crispy chicken chunks and pickled cucumbers topped with burger sauce and ranch sauce.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "crispy chicken cheese burger",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 82,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "pakistani-hot",
+      "name": "Pakistani Hot",
+      "description": "Pizza sauce base, mozzarella cheese, spicy chicken chunks, onions, green peppers and green chilies.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "pakistani hot",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 81,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "flaming-crispy-chicken-cheese-burger",
+      "name": "Flaming Crispy Chicken Cheese Burger",
+      "description": "Cheddar sauce base, mozzarella cheese, crispy chicken chunks, onions and pickled cucumbers topped with burger sauce and peri peri sauce.",
+      "category": "favorite-flavors",
+      "category_name": "Favorite Flavors",
+      "source_category": "Favorite Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Favorite Flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "flaming crispy chicken cheese burger",
+        "favorite flavors",
+        "favorite-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 84,
+        "is_popular": false,
+        "best_for": [
+          "sharing",
+          "popular choices",
+          "flavor exploration"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Reliable pizza recommendation based on flavor tier and versatility.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 750,
+      "base_prices": {
+        "small": 750,
+        "medium": 1500,
+        "large": 2100
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "pepperoni-hot",
+      "name": "Pepperoni Hot",
+      "description": "Pizza sauce base, mozzarella cheese, pepperoni and jalapenos and topped with sriracha hot sauce.",
+      "category": "premium-flavors",
+      "category_name": "Premium Flavors",
+      "source_category": "Premium Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Premium Flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "pepperoni hot",
+        "premium flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 80,
+        "is_popular": false,
+        "best_for": [
+          "premium choice",
+          "sharing",
+          "special occasions"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 850,
+      "base_prices": {
+        "small": 850,
+        "medium": 1700,
+        "large": 2400
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "mushroom-and-pepperoni",
+      "name": "Mushroom & Pepperoni",
+      "description": "Pizza sauce base, mozzarella cheese, fresh mushrooms and beef pepperoni.",
+      "category": "premium-flavors",
+      "category_name": "Premium Flavors",
+      "source_category": "Premium Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Premium Flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "mushroom & pepperoni",
+        "premium flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 79,
+        "is_popular": false,
+        "best_for": [
+          "premium choice",
+          "sharing",
+          "special occasions"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 850,
+      "base_prices": {
+        "small": 850,
+        "medium": 1700,
+        "large": 2400
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "pepperoni-passion",
+      "name": "Pepperoni Passion",
+      "description": "Pizza sauce base, mozzarella cheese and beef pepperoni.",
+      "category": "premium-flavors",
+      "category_name": "Premium Flavors",
+      "source_category": "Premium Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Premium Flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "pepperoni passion",
+        "premium flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 78,
+        "is_popular": false,
+        "best_for": [
+          "premium choice",
+          "sharing",
+          "special occasions"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 850,
+      "base_prices": {
+        "small": 850,
+        "medium": 1700,
+        "large": 2400
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "chicken-supreme",
+      "name": "Chicken Supreme",
+      "description": "Pizza sauce base, mozzarella cheese, chicken tikka chunks, Tex-Mex chicken chunks, chicken sausages, black olives, jalapenos, green chilies, onions and green peppers.",
+      "category": "premium-flavors",
+      "category_name": "Premium Flavors",
+      "source_category": "Premium Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Premium Flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "chicken supreme",
+        "premium flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 81,
+        "is_popular": false,
+        "best_for": [
+          "premium choice",
+          "sharing",
+          "special occasions"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 850,
+      "base_prices": {
+        "small": 850,
+        "medium": 1700,
+        "large": 2400
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "extravaganza",
+      "name": "Extravaganza",
+      "description": "Pizza sauce base, mozzarella cheese, beef chunks, beef pepperoni, onions, green peppers, mushrooms and black olives.",
+      "category": "premium-flavors",
+      "category_name": "Premium Flavors",
+      "source_category": "Premium Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Premium Flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "extravaganza",
+        "premium flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 80,
+        "is_popular": false,
+        "best_for": [
+          "premium choice",
+          "sharing",
+          "special occasions"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 850,
+      "base_prices": {
+        "small": 850,
+        "medium": 1700,
+        "large": 2400
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "italiano",
+      "name": "Italiano",
+      "description": "Pepperoni, mushrooms & beef.",
+      "category": "premium-flavors",
+      "category_name": "Premium Flavors",
+      "source_category": "Premium Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Premium Flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "italiano",
+        "premium flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef"
+      ],
+      "metadata": {
+        "recommendation_score": 79,
+        "is_popular": false,
+        "best_for": [
+          "premium choice",
+          "sharing",
+          "special occasions"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 850,
+      "base_prices": {
+        "small": 850,
+        "medium": 1700,
+        "large": 2400
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "beef-cheese-burger",
+      "name": "Beef Cheese Burger",
+      "description": "Cheddar sauce base, mozzarella cheese, beef chunks, pickled cucumbers, topped with burger sauce and ketchup.",
+      "category": "premium-flavors",
+      "category_name": "Premium Flavors",
+      "source_category": "Premium Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Premium Flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "beef cheese burger",
+        "premium flavors",
+        "premium-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "beef",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 78,
+        "is_popular": false,
+        "best_for": [
+          "premium choice",
+          "sharing",
+          "special occasions"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 850,
+      "base_prices": {
+        "small": 850,
+        "medium": 1700,
+        "large": 2400
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "super-loaded-seekh-kebab",
+      "name": "Super Loaded Seekh Kebab",
+      "description": "50% More Cheese and 50% More Chicken seekh kebab chunks, onions, and green chilies with pizza base sauce topped with ranch sauce.",
+      "category": "super-loaded-flavors",
+      "category_name": "Super Loaded Flavors",
+      "source_category": "Super Loaded Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Super Loaded Flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "super loaded seekh kebab",
+        "super loaded flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 75,
+        "is_popular": false,
+        "best_for": [
+          "large appetite",
+          "sharing",
+          "extra cheese"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 2050,
+      "base_prices": {
+        "small": 2050,
+        "medium": 4100,
+        "large": 5750
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "super-loaded-fajita",
+      "name": "Super Loaded Fajita",
+      "description": "50% More Cheese and 50% More Chicken with onions, green peppers, jalapeños, black olives, and oregano.",
+      "category": "super-loaded-flavors",
+      "category_name": "Super Loaded Flavors",
+      "source_category": "Super Loaded Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Super Loaded Flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "super loaded fajita",
+        "super loaded flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 74,
+        "is_popular": false,
+        "best_for": [
+          "large appetite",
+          "sharing",
+          "extra cheese"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 2050,
+      "base_prices": {
+        "small": 2050,
+        "medium": 4100,
+        "large": 5750
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "super-loaded-peri-peri",
+      "name": "Super Loaded Peri Peri",
+      "description": "50% More Cheese and 50% More Chicken with onions, and green peppers topped with Peri Peri Sauce.",
+      "category": "super-loaded-flavors",
+      "category_name": "Super Loaded Flavors",
+      "source_category": "Super Loaded Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Super Loaded Flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "super loaded peri peri",
+        "super loaded flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 73,
+        "is_popular": false,
+        "best_for": [
+          "large appetite",
+          "sharing",
+          "extra cheese"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 2050,
+      "base_prices": {
+        "small": 2050,
+        "medium": 4100,
+        "large": 5750
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "super-loaded-creamy-tikka",
+      "name": "Super Loaded Creamy Tikka",
+      "description": "50% More Cheese and 50% More Chicken with onions and jalapeños with cheesy mayo base sauce.",
+      "category": "super-loaded-flavors",
+      "category_name": "Super Loaded Flavors",
+      "source_category": "Super Loaded Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Super Loaded Flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "super loaded creamy tikka",
+        "super loaded flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 72,
+        "is_popular": false,
+        "best_for": [
+          "large appetite",
+          "sharing",
+          "extra cheese"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 2050,
+      "base_prices": {
+        "small": 2050,
+        "medium": 4100,
+        "large": 5750
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "super-loaded-tex-mex",
+      "name": "Super Loaded Tex Mex",
+      "description": "50% More Cheese and 50% More Chicken with onions, green peppers, jalapeños, black olives, and oregano.",
+      "category": "super-loaded-flavors",
+      "category_name": "Super Loaded Flavors",
+      "source_category": "Super Loaded Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Super Loaded Flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "super loaded tex mex",
+        "super loaded flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 75,
+        "is_popular": false,
+        "best_for": [
+          "large appetite",
+          "sharing",
+          "extra cheese"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 2050,
+      "base_prices": {
+        "small": 2050,
+        "medium": 4100,
+        "large": 5750
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "super-loaded-pepperoni-passion",
+      "name": "Super Loaded Pepperoni Passion",
+      "description": "50% More Cheese and 50% More Pepperoni with pizza sauce base.",
+      "category": "super-loaded-flavors",
+      "category_name": "Super Loaded Flavors",
+      "source_category": "Super Loaded Flavors",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pizza-size",
+        "pizza-crust",
+        "extra-toppings"
+      ],
+      "upsell_group_ids": [
+        "pizza-meal-addons",
+        "dessert-addons"
+      ],
+      "tags": [
+        "Super Loaded Flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "super loaded pepperoni passion",
+        "super loaded flavors",
+        "super-loaded-flavors",
+        "pizza",
+        "customizable",
+        "multiple sizes",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 74,
+        "is_popular": false,
+        "best_for": [
+          "large appetite",
+          "sharing",
+          "extra cheese"
+        ],
+        "serves": "1-4 people depending on size",
+        "display_reason": "Recommended for customers seeking a richer premium option.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "starting_price": 2050,
+      "base_prices": {
+        "small": 2050,
+        "medium": 4100,
+        "large": 5750
+      },
+      "price_model": "size_based"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "meltz-smokey-chicken-tikka",
+      "name": "Meltz Smokey Chicken Tikka",
+      "description": "Pizza sauce, mozzarella cheese, chicken tikka chunks, onions, and jalapenos folded & packed with our signature Crunchy Thin crust.",
+      "category": "meltz",
+      "category_name": "Meltz",
+      "source_category": "Meltz",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Meltz",
+        "meltz",
+        "handheld",
+        "snack",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "meltz smokey chicken tikka",
+        "meltz",
+        "handheld",
+        "snack",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 72,
+        "is_popular": false,
+        "best_for": [
+          "solo meal",
+          "snack",
+          "quick lunch"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 550,
+      "starting_price": 550,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "meltz-creamy-peri",
+      "name": "Meltz Creamy Peri",
+      "description": "Cheese mayo, mozzarella cheese, spicy chicken chunks, green peppers, jalapenos, black olives, and oregano folded & packed with our signature Crunchy Thin crust.",
+      "category": "meltz",
+      "category_name": "Meltz",
+      "source_category": "Meltz",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Meltz",
+        "meltz",
+        "handheld",
+        "snack",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "meltz creamy peri",
+        "meltz",
+        "handheld",
+        "snack",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 71,
+        "is_popular": false,
+        "best_for": [
+          "solo meal",
+          "snack",
+          "quick lunch"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 550,
+      "starting_price": 550,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "meltz-alfredo",
+      "name": "Meltz Alfredo",
+      "description": "Alfredo sauce and grilled chicken folded & packed with signature Crunchy Thin crust.",
+      "category": "meltz",
+      "category_name": "Meltz",
+      "source_category": "Meltz",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Meltz",
+        "meltz",
+        "handheld",
+        "snack",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "meltz alfredo",
+        "meltz",
+        "handheld",
+        "snack",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 82,
+        "is_popular": true,
+        "best_for": [
+          "solo meal",
+          "snack",
+          "quick lunch"
+        ],
+        "serves": "1 person",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 550,
+      "starting_price": 550,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "meltz-only-veggie",
+      "name": "Meltz Only Veggie",
+      "description": "Veggie mix folded & packed with signature Crunchy Thin crust.",
+      "category": "meltz",
+      "category_name": "Meltz",
+      "source_category": "Meltz",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Meltz",
+        "meltz",
+        "handheld",
+        "snack",
+        "vegetarian"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "meltz only veggie",
+        "meltz",
+        "handheld",
+        "snack",
+        "vegetarian"
+      ],
+      "metadata": {
+        "recommendation_score": 73,
+        "is_popular": false,
+        "best_for": [
+          "solo meal",
+          "snack",
+          "quick lunch"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 550,
+      "starting_price": 550,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "meltz-flaming-cheese-burger",
+      "name": "Meltz Flaming Cheese Burger",
+      "description": "Burger components folded & packed with signature Crunchy Thin crust.",
+      "category": "meltz",
+      "category_name": "Meltz",
+      "source_category": "Meltz",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Meltz",
+        "meltz",
+        "handheld",
+        "snack",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "meltz flaming cheese burger",
+        "meltz",
+        "handheld",
+        "snack",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 72,
+        "is_popular": false,
+        "best_for": [
+          "solo meal",
+          "snack",
+          "quick lunch"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 550,
+      "starting_price": 550,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "meltz-legend-ranch",
+      "name": "Meltz Legend Ranch",
+      "description": "Legend Ranch toppings folded & packed with signature Crunchy Thin crust.",
+      "category": "meltz",
+      "category_name": "Meltz",
+      "source_category": "Meltz",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Meltz",
+        "meltz",
+        "handheld",
+        "snack"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "meltz legend ranch",
+        "meltz",
+        "handheld",
+        "snack"
+      ],
+      "metadata": {
+        "recommendation_score": 71,
+        "is_popular": false,
+        "best_for": [
+          "solo meal",
+          "snack",
+          "quick lunch"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 550,
+      "starting_price": 550,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "chicken-supreme-pizza-roll-dip",
+      "name": "Chicken Supreme Pizza Roll + Dip",
+      "description": "Pizza sauce, mozzarella cheese, chicken tikka chunks, Tex Mex chicken chunks, chicken sausages, black olives, jalapenos, green chilies, onions, green peppers, and cheese mayo wrapped.",
+      "category": "pizza-rolls",
+      "category_name": "Pizza Rolls",
+      "source_category": "Pizza Rolls",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Pizza Rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "chicken supreme pizza roll + dip",
+        "pizza rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 72,
+        "is_popular": false,
+        "best_for": [
+          "snack",
+          "solo meal",
+          "sharing platter"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 600,
+      "starting_price": 600,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "flaming-chicken-cheese-pizza-roll",
+      "name": "Flaming Chicken Cheese Pizza Roll",
+      "description": "Cheddar Sauce, Peri peri sauce, mozzarella cheese, onions, pickled cucumbers, Kickers and Burger sauce wrapped.",
+      "category": "pizza-rolls",
+      "category_name": "Pizza Rolls",
+      "source_category": "Pizza Rolls",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Pizza Rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "flaming chicken cheese pizza roll",
+        "pizza rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "chicken",
+        "spicy",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 71,
+        "is_popular": false,
+        "best_for": [
+          "snack",
+          "solo meal",
+          "sharing platter"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 600,
+      "starting_price": 600,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "mushroom-and-pepperoni-pizza-roll",
+      "name": "Mushroom and Pepperoni Pizza Roll",
+      "description": "Pizza sauce, mozzarella cheese, pepperoni, and mushrooms wrapped in our oven baked always fresh dough.",
+      "category": "pizza-rolls",
+      "category_name": "Pizza Rolls",
+      "source_category": "Pizza Rolls",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Pizza Rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "mushroom and pepperoni pizza roll",
+        "pizza rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 70,
+        "is_popular": false,
+        "best_for": [
+          "snack",
+          "solo meal",
+          "sharing platter"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 600,
+      "starting_price": 600,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "smoked-sausage-pizza-roll-dip",
+      "name": "Smoked Sausage Pizza Roll + Dip",
+      "description": "Pizza sauce, mozzarella cheese, Chicken sausages, Mushrooms, and cheese mayo sauce wrapped.",
+      "category": "pizza-rolls",
+      "category_name": "Pizza Rolls",
+      "source_category": "Pizza Rolls",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Pizza Rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "chicken",
+        "cheesy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "smoked sausage pizza roll + dip",
+        "pizza rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "chicken",
+        "cheesy"
+      ],
+      "metadata": {
+        "recommendation_score": 69,
+        "is_popular": false,
+        "best_for": [
+          "snack",
+          "solo meal",
+          "sharing platter"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 600,
+      "starting_price": 600,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "american-bbq-chicken-pizza-roll-dip",
+      "name": "American BBQ Chicken Pizza Roll + Dip",
+      "description": "American BBQ sauce, mozzarella cheese, chicken tikka, onions, and cheese mayo sauce wrapped.",
+      "category": "pizza-rolls",
+      "category_name": "Pizza Rolls",
+      "source_category": "Pizza Rolls",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "quick-addons"
+      ],
+      "tags": [
+        "Pizza Rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "chicken",
+        "cheesy",
+        "bbq"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "american bbq chicken pizza roll + dip",
+        "pizza rolls",
+        "pizza-rolls",
+        "handheld",
+        "snack",
+        "chicken",
+        "cheesy",
+        "bbq"
+      ],
+      "metadata": {
+        "recommendation_score": 72,
+        "is_popular": false,
+        "best_for": [
+          "snack",
+          "solo meal",
+          "sharing platter"
+        ],
+        "serves": "1 person",
+        "display_reason": "Suitable as a quick individual meal or snack.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 600,
+      "starting_price": 600,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "chicken-and-chips",
+      "name": "Chicken and Chips",
+      "description": "5 strips of our oven-baked crispy chicken with fries combo.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "chicken and chips",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken"
+      ],
+      "metadata": {
+        "recommendation_score": 76,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1-2 people",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 950,
+      "starting_price": 950,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "4-pcs-chicken-wings",
+      "name": "4 Pcs Chicken Wings",
+      "description": "Oven baked spicy wings, tossed with sauce of your choice.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "wing-sauce"
+      ],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "4 pcs chicken wings",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy"
+      ],
+      "metadata": {
+        "recommendation_score": 75,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1 person",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 500,
+      "starting_price": 500,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "6-pcs-chicken-wings",
+      "name": "6 Pcs Chicken Wings",
+      "description": "Oven baked spicy wings available in Mild, BBQ, Hot and Peri Peri flavors.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "wing-sauce"
+      ],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy",
+        "bbq"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "6 pcs chicken wings",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy",
+        "bbq"
+      ],
+      "metadata": {
+        "recommendation_score": 82,
+        "is_popular": true,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1-2 people",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 700,
+      "starting_price": 700,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "12-pcs-chicken-wings",
+      "name": "12 Pcs Chicken Wings",
+      "description": "Oven baked spicy wings available in Mild, BBQ, Hot and Peri Peri flavors.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "wing-sauce"
+      ],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy",
+        "bbq"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "12 pcs chicken wings",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy",
+        "bbq"
+      ],
+      "metadata": {
+        "recommendation_score": 77,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "2-3 people",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 1300,
+      "starting_price": 1300,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "4-pcs-chicken-kickers",
+      "name": "4 Pcs Chicken Kickers",
+      "description": "100% chicken breast, lightly coated with spicy golden crumbing.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "4 pcs chicken kickers",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy"
+      ],
+      "metadata": {
+        "recommendation_score": 76,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1 person",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 450,
+      "starting_price": 450,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "6-pcs-chicken-kickers",
+      "name": "6 Pcs Chicken Kickers",
+      "description": "100% chicken breast, lightly coated with spicy golden crumbing.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "6 pcs chicken kickers",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy"
+      ],
+      "metadata": {
+        "recommendation_score": 75,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1-2 people",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 650,
+      "starting_price": 650,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "12-pcs-chicken-kickers",
+      "name": "12 Pcs Chicken Kickers",
+      "description": "100% chicken breast, lightly coated with spicy golden crumbing.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "12 pcs chicken kickers",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken",
+        "spicy"
+      ],
+      "metadata": {
+        "recommendation_score": 74,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "2-3 people",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "medium",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 1250,
+      "starting_price": 1250,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "4-pcs-chicken-strips",
+      "name": "4 Pcs Chicken Strips",
+      "description": "4 strips of our oven-baked crispy chicken with a dip of your choice.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "4 pcs chicken strips",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken"
+      ],
+      "metadata": {
+        "recommendation_score": 77,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1 person",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 650,
+      "starting_price": 650,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "6-pcs-chicken-strips",
+      "name": "6 Pcs Chicken Strips",
+      "description": "6 strips of our oven-baked crispy chicken with a dip of your choice.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "6 pcs chicken strips",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken"
+      ],
+      "metadata": {
+        "recommendation_score": 76,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1-2 people",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 850,
+      "starting_price": 850,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "8-pcs-chicken-strips",
+      "name": "8 Pcs Chicken Strips",
+      "description": "8 strips of our oven-baked crispy chicken with two dips of your choice.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "dip-choice"
+      ],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "chicken"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "8 pcs chicken strips",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "chicken"
+      ],
+      "metadata": {
+        "recommendation_score": 75,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "2-3 people",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 1250,
+      "starting_price": 1250,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "potato-wedges",
+      "name": "Potato Wedges",
+      "description": "Oven-baked, crispy potato chunks with our secret seasoning.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "vegetarian"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "potato wedges",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "vegetarian"
+      ],
+      "metadata": {
+        "recommendation_score": 82,
+        "is_popular": true,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1 person",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 500,
+      "starting_price": 500,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "choco-bread",
+      "name": "Choco Bread",
+      "description": "Freshly-baked bread covered with chocolate & sprinkled with icing sugar.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "dessert"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "choco bread",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "dessert"
+      ],
+      "metadata": {
+        "recommendation_score": 77,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1 person",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 450,
+      "starting_price": 450,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "lava-cake-1-pc",
+      "name": "Lava Cake - 1 Pc",
+      "description": "Milk chocolate cake with a molten center, dusted with icing sugar.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "dessert"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "lava cake - 1 pc",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "dessert"
+      ],
+      "metadata": {
+        "recommendation_score": 76,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1 person",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 450,
+      "starting_price": 450,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "lava-cake-2-pcs",
+      "name": "Lava Cake - 2 Pcs",
+      "description": "Milk chocolate cake with a molten center, dusted with icing sugar.",
+      "category": "chicken-and-sides",
+      "category_name": "Chicken & Sides",
+      "source_category": "Chicken & Sides",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [
+        "drink-and-dip-addons"
+      ],
+      "tags": [
+        "Chicken & Sides",
+        "chicken-and-sides",
+        "side",
+        "dessert"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "lava cake - 2 pcs",
+        "chicken & sides",
+        "chicken-and-sides",
+        "side",
+        "dessert"
+      ],
+      "metadata": {
+        "recommendation_score": 83,
+        "is_popular": true,
+        "best_for": [
+          "add-on",
+          "sharing",
+          "snack"
+        ],
+        "serves": "1-2 people",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 850,
+      "starting_price": 850,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "pepsi",
+      "name": "PEPSI",
+      "description": "Refreshing beverage.",
+      "category": "drinks-and-extras",
+      "category_name": "Drinks & Extras",
+      "source_category": "Drinks & Extras",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": true,
+      "customization_group_ids": [
+        "pepsi-size"
+      ],
+      "upsell_group_ids": [],
+      "tags": [
+        "Drinks & Extras",
+        "drinks-and-extras",
+        "extra",
+        "drink"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "pepsi",
+        "drinks & extras",
+        "drinks-and-extras",
+        "extra",
+        "drink"
+      ],
+      "metadata": {
+        "recommendation_score": 73,
+        "is_popular": true,
+        "best_for": [
+          "add-on",
+          "meal completion"
+        ],
+        "serves": "1 person",
+        "display_reason": "Popular choice with broad customer appeal.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 150,
+      "starting_price": 150,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "ranch-dip",
+      "name": "Ranch Dip",
+      "description": "Classic Ranch Sauce.",
+      "category": "drinks-and-extras",
+      "category_name": "Drinks & Extras",
+      "source_category": "Drinks & Extras",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [],
+      "tags": [
+        "Drinks & Extras",
+        "drinks-and-extras",
+        "extra"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "ranch dip",
+        "drinks & extras",
+        "drinks-and-extras",
+        "extra"
+      ],
+      "metadata": {
+        "recommendation_score": 68,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "meal completion"
+        ],
+        "serves": "1 person",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 100,
+      "starting_price": 100,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "peri-peri-dip",
+      "name": "Peri Peri Dip",
+      "description": "Peri Peri Sauce.",
+      "category": "drinks-and-extras",
+      "category_name": "Drinks & Extras",
+      "source_category": "Drinks & Extras",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [],
+      "tags": [
+        "Drinks & Extras",
+        "drinks-and-extras",
+        "extra",
+        "spicy"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "peri peri dip",
+        "drinks & extras",
+        "drinks-and-extras",
+        "extra",
+        "spicy"
+      ],
+      "metadata": {
+        "recommendation_score": 67,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "meal completion"
+        ],
+        "serves": "1 person",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "hot",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 100,
+      "starting_price": 100,
+      "price_model": "fixed"
+    },
+    {
+      "entity_type": "menu_item",
+      "product_id": "condiment-bags",
+      "name": "Condiment Bags",
+      "description": "Ketchup, chili garlic sauce, and chili flakes sachets served.",
+      "category": "drinks-and-extras",
+      "category_name": "Drinks & Extras",
+      "source_category": "Drinks & Extras",
+      "currency": "PKR",
+      "available": true,
+      "requires_customization": false,
+      "customization_group_ids": [],
+      "upsell_group_ids": [],
+      "tags": [
+        "Drinks & Extras",
+        "drinks-and-extras",
+        "extra"
+      ],
+      "image_url": null,
+      "search_terms": [
+        "condiment bags",
+        "drinks & extras",
+        "drinks-and-extras",
+        "extra"
+      ],
+      "metadata": {
+        "recommendation_score": 66,
+        "is_popular": false,
+        "best_for": [
+          "add-on",
+          "meal completion"
+        ],
+        "serves": "1 person",
+        "display_reason": "Useful add-on for completing an order.",
+        "spice_level": "mild",
+        "price_source": "dominos_pakistan_menu.csv",
+        "generated_recommendation_data": true
+      },
+      "price": 25,
+      "starting_price": 25,
+      "price_model": "fixed"
+    }
+  ]
+}

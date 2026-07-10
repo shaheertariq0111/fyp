@@ -17,14 +17,26 @@ class CartRepository:
         return from_dynamodb(response.get("Item"))
 
     def find_by_cart_id(self, cart_id: str) -> dict | None:
-        response = self.table.scan(FilterExpression=Attr("cart_id").eq(cart_id), Limit=1)
-        items = response.get("Items", [])
-        return from_dynamodb(items[0]) if items else None
+        kwargs = {"FilterExpression": Attr("cart_id").eq(cart_id)}
+        while True:
+            response = self.table.scan(**kwargs)
+            items = response.get("Items", [])
+            if items:
+                return from_dynamodb(items[0])
+            if "LastEvaluatedKey" not in response:
+                return None
+            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
     def find_by_cart_item_id(self, cart_item_id: str) -> dict | None:
-        response = self.table.scan(FilterExpression=Attr("cart_item_ids").contains(cart_item_id), Limit=1)
-        items = response.get("Items", [])
-        return from_dynamodb(items[0]) if items else None
+        kwargs = {"FilterExpression": Attr("cart_item_ids").contains(cart_item_id)}
+        while True:
+            response = self.table.scan(**kwargs)
+            items = response.get("Items", [])
+            if items:
+                return from_dynamodb(items[0])
+            if "LastEvaluatedKey" not in response:
+                return None
+            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
     def save(self, cart: dict, expected_version: int) -> None:
         updated = dict(cart)

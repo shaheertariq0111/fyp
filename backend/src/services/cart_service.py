@@ -158,8 +158,13 @@ class CartService:
             self._refresh_item(entry, menu_item)
             cart["items"].append(entry)
             cart["cart_item_ids"].append(entry["cart_item_id"])
+            if entry["missing_required_fields"]:
+                cart["active_cart_item_id"] = entry["cart_item_id"]
+                cart["status"] = "customizing_item"
             self._recalculate(cart)
             self._save(cart)
+            if entry["missing_required_fields"]:
+                return self._next_choice_response(cart)
             return ToolResponse.ok(data=self._cart_data(cart), user_message="The add-on was added.",
                                    next_action="choose_upsell")
         cart["status"] = "cart_ready"
@@ -263,7 +268,8 @@ class CartService:
                     item = self.menu.get_item(item_id)
                     if item and item.get("available"):
                         result[item_id] = {key: item.get(key) for key in
-                                           ("product_id", "name", "starting_price", "currency")}
+                                           ("product_id", "name", "starting_price", "currency",
+                                            "requires_customization", "customization_group_ids")}
         return result
 
     def _validate_and_reprice(self, cart):

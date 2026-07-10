@@ -1,0 +1,175 @@
+from types import SimpleNamespace
+
+from src.agent.context import get_request_context
+from src.agent import restaurant_agent
+from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT
+from src.agent.tools import MVP_TOOLS
+
+
+def test_system_prompt_requires_tool_grounding():
+    assert "Never invent menu items" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "Use search_menu" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "pass the term as search_menu query" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "Never use retrieve_restaurant_knowledge for live menu items" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
+    assert "handle_cart_upsell returns next_action=\"ask_customization_choice\"" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
+    assert "Do not reveal hidden reasoning" in RESTAURANT_AGENT_SYSTEM_PROMPT
+
+
+def test_build_bedrock_model_uses_runtime_settings(monkeypatch):
+    captured = {}
+
+    class FakeBedrockModel:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(restaurant_agent, "BedrockModel", FakeBedrockModel)
+    monkeypatch.setattr(
+        restaurant_agent,
+        "get_settings",
+        lambda: SimpleNamespace(
+            aws_region="us-east-1",
+            bedrock_model_id="configured-model",
+            bedrock_guardrail_id="guardrail",
+            bedrock_guardrail_version="1",
+        ),
+    )
+
+    restaurant_agent.build_bedrock_model()
+
+    assert captured == {
+        "region_name": "us-east-1",
+        "model_id": "configured-model",
+        "temperature": 0.2,
+        "max_tokens": 1200,
+        "guardrail_id": "guardrail",
+        "guardrail_version": "1",
+    }
+
+
+def test_build_restaurant_agent_registers_mvp_tools_and_prompt(monkeypatch):
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(restaurant_agent, "Agent", FakeAgent)
+
+    result = restaurant_agent.build_restaurant_agent(model="configured-model")
+
+    assert isinstance(result, FakeAgent)
+    assert captured["model"] == "configured-model"
+    assert captured["tools"] == MVP_TOOLS
+    assert captured["system_prompt"] == RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert captured["name"] == "restaurant-ordering-agent"
+    assert captured["session_manager"] is None
+    assert captured["callback_handler"] is None
+    assert captured["record_direct_tool_call"] is True
+
+
+def test_build_session_manager_uses_trusted_session_id_and_configured_storage(monkeypatch):
+    captured = {}
+
+    class FakeSessionManager:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(restaurant_agent, "FileSessionManager", FakeSessionManager)
+    monkeypatch.setattr(
+        restaurant_agent,
+        "get_settings",
+        lambda: SimpleNamespace(strands_session_storage_dir=".configured-sessions"),
+    )
+
+    restaurant_agent.build_session_manager("trusted-session")
+
+    assert captured == {
+        "session_id": "trusted-session",
+        "storage_dir": ".configured-sessions",
+    }
+
+
+def test_invoke_restaurant_agent_injects_trusted_context():
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            context = get_request_context()
+            return {
+                "message": message,
+                "kwargs": kwargs,
+                "user_id": context.user_id,
+                "session_id": context.agent_session_id,
+                "branch_id": context.branch_id,
+            }
+
+    result = restaurant_agent.invoke_restaurant_agent(
+        "hello",
+        user_id="trusted-user",
+        agent_session_id="trusted-session",
+        branch_id="trusted-branch",
+        agent=FakeAgent(),
+        invocation_state={"source": "test"},
+    )
+
+    assert result == {
+        "message": "hello",
+        "kwargs": {"invocation_state": {"source": "test"}},
+        "user_id": "trusted-user",
+        "session_id": "trusted-session",
+        "branch_id": "trusted-branch",
+    }
+
+
+def test_invoke_restaurant_agent_builds_session_scoped_agent(monkeypatch):
+    captured = {}
+
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            context = get_request_context()
+            captured["context"] = context
+            return message
+
+    def fake_build_session_manager(agent_session_id):
+        captured["session_id"] = agent_session_id
+        return "session-manager"
+
+    def fake_build_restaurant_agent(**kwargs):
+        captured["agent_kwargs"] = kwargs
+        return FakeAgent()
+
+    monkeypatch.setattr(restaurant_agent, "build_session_manager", fake_build_session_manager)
+    monkeypatch.setattr(restaurant_agent, "build_restaurant_agent", fake_build_restaurant_agent)
+
+    result = restaurant_agent.invoke_restaurant_agent(
+        "hello",
+        user_id="trusted-user",
+        agent_session_id="trusted-session",
+        branch_id="trusted-branch",
+    )
+
+    assert result == "hello"
+    assert captured["session_id"] == "trusted-session"
+    assert captured["agent_kwargs"] == {"session_manager": "session-manager"}
+    assert captured["context"].user_id == "trusted-user"
+
+
+def test_agent_result_text_extracts_and_sanitizes_message_text():
+    result = SimpleNamespace(
+        message={
+            "content": [
+                {"text": "<thinking>hidden</thinking>\n\nVisible answer."},
+                {"text": "\nNext line."},
+            ]
+        }
+    )
+
+    assert restaurant_agent.agent_result_text(result) == "Visible answer.\nNext line."
+
+
+def test_sanitize_agent_text_removes_thinking_blocks():
+    assert restaurant_agent.sanitize_agent_text(
+        "Before <thinking>hidden</thinking> After"
+    ) == "Before After"

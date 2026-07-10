@@ -22,7 +22,12 @@ def _result(call: Callable[[], ToolResponse]) -> dict:
 def search_menu(query: str | None = None, category: str | None = None,
                 tags: list[str] | None = None, max_price: int | None = None,
                 available_only: bool = True) -> dict:
-    """Search current menu data and record-provided metadata for grounded recommendations."""
+    """Search current menu data for browsing and recommendations.
+
+    Use query for descriptive user terms such as "pizza", "chicken", "spicy",
+    "deal", or an item name. Use category only when you know the exact menu
+    category id returned by menu data, such as "classic-flavors".
+    """
     return _result(lambda: get_services().menu.search_menu(
         query=query, category=category, tags=tags, max_price=max_price,
         available_only=available_only,

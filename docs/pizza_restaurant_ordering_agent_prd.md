@@ -1220,7 +1220,33 @@ Would you like to add a drink or dip?
 [Add Pepsi] [Add Ranch Dip] [No thanks]
 ```
 
-After upsell is accepted or skipped:
+If the selected upsell item has required customization, such as drink size or wing sauce, backend returns the next required question using the same `ask_customization_choice` response shape:
+
+```json
+{
+  "success": true,
+  "data": {
+    "cart_id": "CART#123",
+    "cart_item_id": "CARTITEM#789",
+    "label": "Pepsi",
+    "field_name": "drink_size",
+    "question": "Choose a drink size.",
+    "options": [
+      {
+        "option_id": "500ml",
+        "label": "500 ml",
+        "price_delta": 80
+      }
+    ]
+  },
+  "user_message": "Pepsi: Choose a drink size.",
+  "next_action": "ask_customization_choice"
+}
+```
+
+The agent must continue calling `save_customization_choice` until the backend marks the upsell item ready. After a configurable upsell is ready, the backend returns to the upsell decision flow so the user can add another upsell or skip.
+
+After upsell is fully customized and skipped, or skipped without adding:
 
 ```text
 cart_ready → pending_confirmation
@@ -1821,6 +1847,8 @@ CART_TRANSITIONS = {
     ("customizing_item", "complete_required_choices"): "item_ready",
     ("item_ready", "offer_upsell"): "awaiting_upsell_decision",
     ("awaiting_upsell_decision", "add_upsell"): "awaiting_upsell_decision",
+    ("awaiting_upsell_decision", "add_configurable_upsell"): "customizing_item",
+    ("customizing_item", "complete_configurable_upsell_choices"): "item_ready",
     ("awaiting_upsell_decision", "skip_upsell"): "cart_ready",
     ("cart_ready", "create_pending_order"): "pending_confirmation"
 }
@@ -2566,6 +2594,9 @@ def handle_cart_upsell(
     - skip
 
     Use after the main customizable item is ready.
+    If add_item selects an upsell that has required customization, this tool
+    returns next_action="ask_customization_choice"; the agent must then call
+    save_customization_choice for the returned cart_item_id and field_name.
     """
 ```
 
@@ -3137,7 +3168,8 @@ ORDERING RULES
 - If identical, customize once and store one cart item with quantity greater than 1.
 - If separate, customize one item at a time and clearly label each one, such as Pizza 1 of 2 and Pizza 2 of 2.
 - After the main item is ready, offer backend-returned upsell options.
-- After upsell is accepted or skipped, create a pending order from cart.
+- If an accepted upsell returns next_action="ask_customization_choice", save the returned customization choices before offering the next upsell decision.
+- After upsells are skipped and the backend marks the cart ready, create a pending order from cart.
 - When a pending order exists, ask the customer to confirm or cancel it.
 - Never say an order is confirmed unless update_order_flow returns success for confirm.
 - After order confirmation, ask delivery or takeaway.
@@ -3652,6 +3684,9 @@ Codex should implement tests for:
 ```text
 - agent offers upsell
 - user adds Pepsi
+- if Pepsi requires size selection, backend returns the Pepsi size question
+- user selects the backend-returned size option
+- configurable upsell price is recalculated server-side
 - user skips upsell
 - cart becomes ready
 ```
