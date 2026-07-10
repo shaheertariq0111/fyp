@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 5: Frontend (next phase; not started)
+Phase 5: Frontend (in progress)
 
 ## Completed
 
@@ -86,17 +86,32 @@ Phase 5: Frontend (next phase; not started)
 - [x] Agent rules require tool-grounded menu, customization, upsell, order, and status behavior
 - [x] Configurable upsell customization rules included in the agent prompt
 
+### Phase 10: API and frontend actions
+
+- [x] FastAPI app added
+- [x] `/health` route added
+- [x] `POST /api/chat` wired to the Strands restaurant agent
+- [x] Agent API responses sanitized with `agent_result_text`
+- [x] `POST /api/actions` dispatches supported button/action calls with trusted context
+- [x] `GET /api/menu` reads menu data through `MenuService`
+- [x] `GET /api/menu/items/{item_id}` reads item details and customization schema
+- [x] `GET /api/menu-session` resolves secure menu session tokens
+- [x] `POST /api/menu-orders` creates backend-validated pending orders from menu website submissions
+- [x] FastAPI route tests added
+- [x] Local API server verified on `http://127.0.0.1:8001`
+
 ## In Progress
 
-- None
+- Phase 5 frontend local verification: install Next/React dependencies, run type/build checks, and start the dev server.
 
 ## Blocked
 
 - Bedrock Knowledge Base calls require a user-supplied `KNOWLEDGE_BASE_ID` and indexed restaurant FAQ/policy content.
+- Frontend dependency installation was blocked by the current environment usage limit when running `npm install`.
 
 ## Next Task
 
-Implement API routes for chat/actions/menu if backend HTTP wiring is next, or start the Phase 5 frontend surfaces if UI work should lead. The agent runtime is now ready for API integration.
+Run `npm install` in `frontend/`, then run frontend type/build checks and start `npm run dev` on `http://localhost:3000`.
 
 ## Important Decisions
 
@@ -123,6 +138,7 @@ Implement API routes for chat/actions/menu if backend HTTP wiring is next, or st
 - Services own business rules; repositories own DynamoDB access; Strands tools only adapt inputs/outputs.
 - Cart/order writes use conditional creation and optimistic version checks.
 - Menu session tokens are generated securely and only salted hashes are persisted.
+- Menu website order submissions are converted into pending orders by backend services after server-side item, customization, availability, and price validation.
 
 ## Assumptions
 
@@ -193,6 +209,33 @@ Latest Phase 8 agent orchestration change modified:
 - `backend/tests/test_restaurant_agent.py`
 - `docs/implementation_status.md`
 
+Latest Phase 10 API wiring change modified:
+
+- `backend/pyproject.toml`
+- `backend/src/api/main.py`
+- `backend/src/api/schemas.py`
+- `backend/src/services/cart_service.py`
+- `backend/tests/test_api.py`
+- `docs/implementation_status.md`
+
+Latest Phase 5 frontend work modified:
+
+- `.gitignore`
+- `frontend/.env.local`
+- `frontend/package.json`
+- `frontend/next.config.js`
+- `frontend/next-env.d.ts`
+- `frontend/tsconfig.json`
+- `frontend/src/app/layout.tsx`
+- `frontend/src/app/page.tsx`
+- `frontend/src/app/styles.css`
+- `frontend/src/app/chat/page.tsx`
+- `frontend/src/app/menu/page.tsx`
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/session.ts`
+- `frontend/src/types.ts`
+- `docs/implementation_status.md`
+
 ## Tests
 
 - `backend/.venv/bin/pytest -q tests/test_import_menu.py tests/test_menu_service.py tests/test_tools.py`: **25 passed**
@@ -212,3 +255,11 @@ Latest Phase 8 agent orchestration change modified:
 - Phase 8 tests cover system-prompt grounding rules, Bedrock model configuration, registration of the 11 MVP tools, per-session Strands session-manager wiring, and trusted request-context injection.
 - Live Bedrock smoke test through `invoke_restaurant_agent`: configured model `us.amazon.nova-pro-v1:0` used `search_menu` against DynamoDB and returned a user-facing Legend Ranch recommendation with PKR 750/1500/2100 size prices.
 - Agent response extraction now uses `agent_result_text(...)` to remove provider-emitted `<thinking>` blocks before returning text to users.
+- `pip install -e .[dev]`: installed FastAPI/httpx test dependencies in the local Python 3.10 environment.
+- `pytest -q`: **55 passed** after API route wiring.
+- Live local API checks passed:
+  - `GET http://127.0.0.1:8001/health` returned `{"status":"ok"}`.
+  - `GET http://127.0.0.1:8001/api/menu?query=chicken` returned DynamoDB-backed menu results.
+  - `POST http://127.0.0.1:8001/api/chat` returned a Bedrock/DynamoDB-grounded Legend Ranch recommendation.
+- `pytest -q`: **55 passed** after CORS/frontend-start support changes.
+- Frontend checks were not run because `npm install` was blocked by the environment usage limit.

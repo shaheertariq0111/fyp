@@ -188,6 +188,66 @@ class CartService:
             self._save(cart)
         return response
 
+    def create_pending_from_menu_order(
+        self,
+        user_id: str,
+        session_id: str,
+        items: list[dict],
+    ) -> ToolResponse:
+        if not items:
+            return ToolResponse.error(error_code="CART_EMPTY", user_message="Please add an item first.")
+        now = self._now()
+        cart_id = self._id("CART")
+        cart = {
+            "PK": user_id, "SK": f"CART#{cart_id}", "cart_id": cart_id,
+            "user_id": user_id, "agent_session_id": session_id,
+            "restaurant_id": self.settings.restaurant_id, "branch_id": self.settings.branch_id,
+            "status": "cart_ready", "customization_mode": "website",
+            "requested_quantity": 1, "source_item_id": None,
+            "active_cart_item_id": None, "items": [], "cart_item_ids": [],
+            "subtotal": 0, "currency": None, "version": 1,
+            "created_at": now, "updated_at": now,
+        }
+        for index, source_item in enumerate(items, 1):
+            quantity = source_item.get("quantity", 1)
+            if quantity < 1:
+                return ToolResponse.error(error_code="INVALID_QUANTITY",
+                                          user_message="Quantity must be at least one.")
+            menu_item = self.menu.get_item(source_item.get("item_id"))
+            if not menu_item:
+                return ToolResponse.error(error_code="ITEM_NOT_FOUND",
+                                          user_message="I couldn't find that menu item.")
+            if not menu_item.get("available"):
+                return ToolResponse.error(error_code="ITEM_UNAVAILABLE",
+                                          user_message="That item is currently unavailable.")
+            if cart["currency"] is None:
+                cart["currency"] = menu_item["currency"]
+            elif cart["currency"] != menu_item["currency"]:
+                return ToolResponse.error(error_code="INVALID_CART",
+                                          user_message="Cart items must use the same currency.")
+            entry = self._new_item(menu_item, quantity, source_item.get("label") or f"Item {index}",
+                                   is_upsell=source_item.get("is_upsell", False))
+            entry["selected_options"] = dict(source_item.get("selected_options") or {})
+            invalid = self._validate_selected_options(entry, menu_item)
+            if invalid:
+                return invalid
+            self._refresh_item(entry, menu_item)
+            if entry["missing_required_fields"]:
+                return ToolResponse.error(error_code="CART_NOT_READY",
+                                          user_message="A required customization is incomplete.")
+            cart["items"].append(entry)
+            cart["cart_item_ids"].append(entry["cart_item_id"])
+        self._recalculate(cart)
+        validation = self._validate_and_reprice(cart)
+        if validation:
+            return validation
+        self.carts.create(cart)
+        response = self.order_service.create_pending_from_cart(cart)
+        if response.success:
+            cart["status"] = "pending_confirmation"
+            self._save(cart)
+        return response
+
     def _new_item(self, menu_item, quantity, label, is_upsell=False):
         item = {
             "cart_item_id": self._id("CARTITEM"), "label": label,
@@ -221,6 +281,20 @@ class CartService:
                 unit_price = menu_item.get("base_prices", {}).get(option["price_key"], unit_price)
             unit_price += option.get("price_delta", 0)
         item["current_price"] = unit_price * item["quantity"]
+
+    def _validate_selected_options(self, item, menu_item):
+        groups = {group["option_group_id"]: group for group in self._groups(menu_item)}
+        for field, selected in item["selected_options"].items():
+            group = groups.get(field)
+            if not group:
+                return ToolResponse.error(error_code="INVALID_CUSTOMIZATION",
+                                          user_message="That customization isn't valid for this item.")
+            option_ids = [option.get("option_id") for option in group.get("options", [])]
+            selected_ids = selected if isinstance(selected, list) else [selected]
+            if any(option_id not in option_ids for option_id in selected_ids):
+                return ToolResponse.error(error_code="INVALID_OPTION",
+                                          user_message="Please choose one of the available options.")
+        return None
 
     def _advance_active_item(self, cart):
         current = next(index for index, item in enumerate(cart["items"])
