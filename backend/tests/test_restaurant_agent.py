@@ -130,6 +130,16 @@ def test_build_session_manager_uses_trusted_session_id_and_configured_storage(mo
     }
 
 
+def test_build_session_manager_is_disabled_without_storage_dir(monkeypatch):
+    monkeypatch.setattr(
+        restaurant_agent,
+        "get_settings",
+        lambda: SimpleNamespace(strands_session_storage_dir=None),
+    )
+
+    assert restaurant_agent.build_session_manager("trusted-session") is None
+
+
 def test_invoke_restaurant_agent_injects_trusted_context():
     class FakeAgent:
         def __call__(self, message, **kwargs):

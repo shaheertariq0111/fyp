@@ -28,8 +28,10 @@ def build_bedrock_model() -> BedrockModel:
     return BedrockModel(region_name=settings.aws_region, **model_config)
 
 
-def build_session_manager(agent_session_id: str) -> FileSessionManager:
+def build_session_manager(agent_session_id: str) -> FileSessionManager | None:
     settings = get_settings()
+    if not settings.strands_session_storage_dir:
+        return None
     return FileSessionManager(
         session_id=agent_session_id,
         storage_dir=settings.strands_session_storage_dir,
