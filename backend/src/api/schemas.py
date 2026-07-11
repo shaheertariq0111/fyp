@@ -26,6 +26,33 @@ class ChatResponse(BaseModel):
     buttons: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ChatSubmitResponse(BaseModel):
+    request_id: str
+    status: str
+    session_id: str
+    user_id: str
+    customer_id: str | None = None
+    customer: dict[str, Any] | None = None
+
+
+class ChatRequestStatusResponse(BaseModel):
+    request_id: str
+    status: str
+    session_id: str | None = None
+    user_id: str | None = None
+    customer_id: str | None = None
+    customer: dict[str, Any] | None = None
+    response: str | None = None
+    text: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+    tool_calls: list["ToolCallResult"] = Field(default_factory=list)
+    write_succeeded: bool = False
+    state: dict[str, Any] = Field(default_factory=dict)
+    buttons: list[dict[str, Any]] = Field(default_factory=list)
+    error_code: str | None = None
+    message: str | None = None
+
+
 class ToolCallResult(BaseModel):
     tool_name: str
     success: bool

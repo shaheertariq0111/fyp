@@ -6,12 +6,14 @@ from src.infrastructure.config import get_settings
 from src.infrastructure.dynamodb import get_dynamodb_resource
 from src.repositories.audit_repository import AuditRepository
 from src.repositories.agent_session_repository import AgentSessionRepository
+from src.repositories.agent_request_repository import AgentRequestRepository
 from src.repositories.cart_repository import CartRepository
 from src.repositories.customer_repository import CustomerRepository
 from src.repositories.menu_repository import MenuRepository
 from src.repositories.order_repository import OrderRepository
 from src.repositories.session_repository import MenuSessionRepository
 from src.services.agent_session_service import AgentSessionService
+from src.services.agent_request_service import AgentRequestService
 from src.services.audit_service import AuditService
 from src.services.cart_service import CartService
 from src.services.customer_service import CustomerService
@@ -29,6 +31,7 @@ class ServiceContainer:
     orders: OrderService
     customers: CustomerService
     agent_sessions: AgentSessionService
+    agent_requests: AgentRequestService
     knowledge: KnowledgeService
     audit: AuditService
 
@@ -53,6 +56,10 @@ def get_services() -> ServiceContainer:
         agent_sessions=AgentSessionService(
             AgentSessionRepository(dynamodb, settings.agent_sessions_table_name),
             customer_service,
+            settings,
+        ),
+        agent_requests=AgentRequestService(
+            AgentRequestRepository(dynamodb, settings.agent_requests_table_name),
             settings,
         ),
         knowledge=KnowledgeService(

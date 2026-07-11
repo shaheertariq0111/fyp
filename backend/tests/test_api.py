@@ -3,10 +3,51 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from src.agent_client import AgentInvocationResult
 from src.api import main
-from src.infrastructure.config import Settings
 from src.models.tool_responses import ToolResponse
-from test_config import BASE
+from test_config import make_test_settings
+
+
+class MemoryAgentRequestService:
+    def __init__(self):
+        self.requests = {}
+        self.next_id = 1
+
+    def start_processing(self, **kwargs):
+        request_id = f"req-{self.next_id}"
+        self.next_id += 1
+        record = {
+            "request_id": request_id,
+            "status": "processing",
+            "actor_id": kwargs["actor_id"],
+            "session_id": kwargs["session_id"],
+            "message": kwargs["message"],
+            "channel": kwargs["channel"],
+            "request": kwargs["request_payload"],
+        }
+        self.requests[request_id] = record
+        return record
+
+    def complete(self, request_id, response):
+        self.requests[request_id] = {
+            **self.requests[request_id],
+            "status": "completed",
+            "response": response,
+        }
+        return self.requests[request_id]
+
+    def fail(self, request_id, *, error_code, message):
+        self.requests[request_id] = {
+            **self.requests[request_id],
+            "status": "failed",
+            "error_code": error_code,
+            "failure_message": message,
+        }
+        return self.requests[request_id]
+
+    def get(self, request_id):
+        return self.requests.get(request_id)
 
 
 class IdentityServices:
@@ -23,6 +64,7 @@ class IdentityServices:
             get_order_status=lambda user_id: ToolResponse.ok(data={"orders": []}, user_message="orders")
         )
         self.agent_sessions = SimpleNamespace(resolve=self.resolve)
+        self.agent_requests = MemoryAgentRequestService()
 
     def resolve(self, **kwargs):
         return {
@@ -46,9 +88,23 @@ def client():
     return TestClient(main.app)
 
 
+def stub_agent_client(monkeypatch, raw_result, text: str | None = None, captured: dict | None = None):
+    class FakeAgentRuntimeClient:
+        def invoke(self, request):
+            if captured is not None:
+                captured.update(request.__dict__)
+            return AgentInvocationResult(
+                text=text if text is not None else str(raw_result),
+                raw_result=raw_result,
+            )
+
+    monkeypatch.setattr(main, "get_agent_runtime_client", lambda: FakeAgentRuntimeClient())
+
+
 @pytest.fixture(autouse=True)
 def default_identity_services(monkeypatch):
-    monkeypatch.setattr(main, "get_services", lambda: IdentityServices())
+    services = IdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
 
 
 def test_health_route():
@@ -57,36 +113,46 @@ def test_health_route():
     assert response.json() == {"status": "ok"}
 
 
+def completed_chat_response(test_client, request_id):
+    status_response = test_client.get(f"/api/chat/{request_id}")
+    assert status_response.status_code == 200
+    return status_response.json()
+
+
 def test_chat_route_invokes_agent_and_sanitizes(monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "invoke_restaurant_agent",
-        lambda *args, **kwargs: SimpleNamespace(
-            message={"content": [{"text": "<thinking>hidden</thinking>Hello!"}]}
-        ),
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(message={"content": [{"text": "<thinking>hidden</thinking>Hello!"}]}),
+        text="Hello!",
     )
 
-    response = client().post(
+    test_client = client()
+    response = test_client.post(
         "/api/chat",
         json={"message": "hi", "session_id": "session", "user_id": "user"},
     )
 
     assert response.status_code == 200
-    assert response.json()["text"] == "Hello!"
-    assert response.json()["tool_calls"] == []
-    assert response.json()["write_succeeded"] is False
+    assert response.json()["status"] == "completed"
+    payload = completed_chat_response(test_client, response.json()["request_id"])
+    assert payload["response"] == "Hello!"
+    assert payload["text"] == "Hello!"
+    assert payload["tool_calls"] == []
+    assert payload["write_succeeded"] is False
 
 
 def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
     captured = {}
 
-    def invoke_restaurant_agent(message, **kwargs):
-        captured.update({"message": message, **kwargs})
-        return SimpleNamespace(message={"content": [{"text": "Agent handled it."}]})
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(message={"content": [{"text": "Agent handled it."}]}),
+        text="Agent handled it.",
+        captured=captured,
+    )
 
-    monkeypatch.setattr(main, "invoke_restaurant_agent", invoke_restaurant_agent)
-
-    response = client().post(
+    test_client = client()
+    response = test_client.post(
         "/api/chat",
         json={
             "message": "whats in my cart and can I place order",
@@ -97,7 +163,8 @@ def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["text"] == "Agent handled it."
+    assert response.json()["status"] == "completed"
+    assert completed_chat_response(test_client, response.json()["request_id"])["text"] == "Agent handled it."
     assert captured == {
         "message": "whats in my cart and can I place order",
         "user_id": "user",
@@ -111,22 +178,23 @@ def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
 
 
 def test_chat_false_success_without_write_tool_keeps_text_but_reports_no_write(monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "invoke_restaurant_agent",
-        lambda *args, **kwargs: SimpleNamespace(
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
             message={"content": [{"text": "I added Supreme Pizza to your order."}]},
             tool_calls=[],
         ),
+        text="I added Supreme Pizza to your order.",
     )
 
-    response = client().post(
+    test_client = client()
+    response = test_client.post(
         "/api/chat",
         json={"message": "add supreme", "session_id": "session", "user_id": "user"},
     )
 
     assert response.status_code == 200
-    payload = response.json()
+    payload = completed_chat_response(test_client, response.json()["request_id"])
     assert payload["write_succeeded"] is False
     assert payload["text"] == "I added Supreme Pizza to your order."
     assert payload["tool_calls"] == []
@@ -144,10 +212,9 @@ def test_chat_successful_write_tool_sets_metadata_and_state(monkeypatch):
             "cart_summary": {"items": [{"name": "Supreme Pizza", "quantity": 1}], "subtotal": 1000},
         },
     }
-    monkeypatch.setattr(
-        main,
-        "invoke_restaurant_agent",
-        lambda *args, **kwargs: SimpleNamespace(
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
             message={"content": [{"text": "I added Supreme Pizza to your order."}]},
             tool_calls=[{
                 "tool_name": "start_cart_item_customization",
@@ -157,6 +224,7 @@ def test_chat_successful_write_tool_sets_metadata_and_state(monkeypatch):
                 "error_code": None,
             }],
         ),
+        text="I added Supreme Pizza to your order.",
     )
     services = IdentityServices()
     services.carts = SimpleNamespace(
@@ -171,12 +239,13 @@ def test_chat_successful_write_tool_sets_metadata_and_state(monkeypatch):
     )
     monkeypatch.setattr(main, "get_services", lambda: services)
 
-    response = client().post(
+    test_client = client()
+    response = test_client.post(
         "/api/chat",
         json={"message": "add supreme", "session_id": "session", "user_id": "user"},
     )
 
-    payload = response.json()
+    payload = completed_chat_response(test_client, response.json()["request_id"])
     assert payload["text"] == "I added Supreme Pizza to your order."
     assert payload["write_succeeded"] is True
     assert payload["tool_calls"][0]["tool_name"] == "start_cart_item_customization"
@@ -191,10 +260,9 @@ def test_chat_failed_write_tool_reports_structured_error(monkeypatch):
         "error_code": "INVALID_OPTION",
         "user_message": "Please choose one of the available options.",
     }
-    monkeypatch.setattr(
-        main,
-        "invoke_restaurant_agent",
-        lambda *args, **kwargs: SimpleNamespace(
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
             message={"content": [{"text": "I updated your order."}]},
             tool_calls=[{
                 "tool_name": "save_customization_choice",
@@ -204,14 +272,16 @@ def test_chat_failed_write_tool_reports_structured_error(monkeypatch):
                 "error_code": "INVALID_OPTION",
             }],
         ),
+        text="I updated your order.",
     )
 
-    response = client().post(
+    test_client = client()
+    response = test_client.post(
         "/api/chat",
         json={"message": "wrong option", "session_id": "session", "user_id": "user"},
     )
 
-    payload = response.json()
+    payload = completed_chat_response(test_client, response.json()["request_id"])
     assert payload["write_succeeded"] is False
     assert payload["text"] == "I updated your order."
     assert payload["tool_calls"][0]["error_code"] == "INVALID_OPTION"
@@ -219,10 +289,9 @@ def test_chat_failed_write_tool_reports_structured_error(monkeypatch):
 
 
 def test_chat_informational_response_without_write_is_not_replaced(monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "invoke_restaurant_agent",
-        lambda *args, **kwargs: SimpleNamespace(
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
             message={"content": [{"text": "Here are some spicy options."}]},
             tool_calls=[{
                 "tool_name": "search_menu",
@@ -232,24 +301,25 @@ def test_chat_informational_response_without_write_is_not_replaced(monkeypatch):
                 "error_code": None,
             }],
         ),
+        text="Here are some spicy options.",
     )
 
-    response = client().post(
+    test_client = client()
+    response = test_client.post(
         "/api/chat",
         json={"message": "spicy", "session_id": "session", "user_id": "user"},
     )
 
-    payload = response.json()
+    payload = completed_chat_response(test_client, response.json()["request_id"])
     assert payload["write_succeeded"] is False
     assert payload["text"] == "Here are some spicy options."
 
 
 def test_chat_order_start_help_text_is_not_false_success(monkeypatch):
     text = "I can help you place an order. What would you like?"
-    monkeypatch.setattr(
-        main,
-        "invoke_restaurant_agent",
-        lambda *args, **kwargs: SimpleNamespace(
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
             message={"content": [{"text": text}]},
             tool_calls=[{
                 "tool_name": "get_order_status",
@@ -259,16 +329,49 @@ def test_chat_order_start_help_text_is_not_false_success(monkeypatch):
                 "error_code": None,
             }],
         ),
+        text=text,
     )
 
-    response = client().post(
+    test_client = client()
+    response = test_client.post(
         "/api/chat",
         json={"message": "i want to order", "session_id": "session", "user_id": "user"},
     )
 
-    payload = response.json()
+    payload = completed_chat_response(test_client, response.json()["request_id"])
     assert payload["write_succeeded"] is False
     assert payload["text"] == text
+
+
+def test_chat_failed_agent_invocation_returns_failed_status(monkeypatch):
+    class FailingAgentRuntimeClient:
+        def invoke(self, request):
+            raise RuntimeError("provider timeout with internal details")
+
+    monkeypatch.setattr(main, "get_agent_runtime_client", lambda: FailingAgentRuntimeClient())
+
+    test_client = client()
+    response = test_client.post(
+        "/api/chat",
+        json={"message": "hi", "session_id": "session", "user_id": "user"},
+    )
+    status_response = test_client.get(f"/api/chat/{response.json()['request_id']}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert status_response.status_code == 200
+    payload = status_response.json()
+    assert payload["status"] == "failed"
+    assert payload["error_code"] == "AGENT_INVOCATION_FAILED"
+    assert payload["message"] == "The request could not be completed."
+    assert "provider timeout" not in payload["message"]
+
+
+def test_chat_status_unknown_request_returns_structured_404():
+    response = client().get("/api/chat/req-missing")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error_code"] == "AGENT_REQUEST_NOT_FOUND"
 
 
 def test_menu_route_uses_menu_service(monkeypatch):
@@ -322,21 +425,19 @@ def test_action_route_injects_context_and_dispatches(monkeypatch):
 
 
 def test_chat_response_returns_canonical_customer_and_session(monkeypatch):
-    monkeypatch.setattr(main, "get_services", lambda: IdentityServices(
+    services = IdentityServices(
         session_id="web-new", customer_id="cust-new", rotated=True
-    ))
-    monkeypatch.setattr(
-        main,
-        "invoke_restaurant_agent",
-        lambda *args, **kwargs: SimpleNamespace(message={"content": [{"text": "hi"}]}),
     )
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    stub_agent_client(monkeypatch, SimpleNamespace(message={"content": [{"text": "hi"}]}), text="hi")
 
-    response = client().post(
+    test_client = client()
+    response = test_client.post(
         "/api/chat",
         json={"message": "hi", "session_id": "old", "customer_id": "cust-new"},
     )
 
-    payload = response.json()
+    payload = completed_chat_response(test_client, response.json()["request_id"])
     assert payload["session_id"] == "web-new"
     assert payload["customer_id"] == "cust-new"
     assert payload["state"]["session"]["rotated"] is True
@@ -371,8 +472,7 @@ def test_menu_orders_uses_backend_cart_service(monkeypatch):
 
 
 def admin_settings():
-    return Settings(
-        **BASE,
+    return make_test_settings(
         admin_username="admin",
         admin_password="secret",
         admin_session_secret="admin-secret-at-least-sixteen",

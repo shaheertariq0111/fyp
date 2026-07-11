@@ -1,25 +1,25 @@
-from src.infrastructure.config import Settings
 import pytest
 
 from src.scripts import create_dynamodb_tables
 from src.scripts.create_dynamodb_tables import table_definitions
 
-from test_config import BASE
+from test_config import make_test_settings
 
 
 def test_creates_customer_session_tables_and_lookup_indexes():
-    settings = Settings(**BASE)
+    settings = make_test_settings()
     definitions = table_definitions(settings)
-    assert len(definitions) == 7
+    assert len(definitions) == 8
     order = next(d for d in definitions if d["TableName"] == settings.orders_table_name)
     assert order["GlobalSecondaryIndexes"][0]["IndexName"] == "GSI1"
     customer = next(d for d in definitions if d["TableName"] == settings.customers_table_name)
     assert customer["GlobalSecondaryIndexes"][0]["IndexName"] == "GSI1"
     assert any(d["TableName"] == settings.agent_sessions_table_name for d in definitions)
+    assert any(d["TableName"] == settings.agent_requests_table_name for d in definitions)
 
 
 def test_aws_creation_requires_explicit_authorization(monkeypatch):
-    settings = Settings(**BASE, allow_aws_resource_creation=False)
+    settings = make_test_settings(allow_aws_resource_creation=False)
     monkeypatch.setattr(create_dynamodb_tables, "get_settings", lambda: settings)
     with pytest.raises(RuntimeError, match="ALLOW_AWS_RESOURCE_CREATION"):
         create_dynamodb_tables.create_tables()

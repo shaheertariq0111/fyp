@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     orders_table_name: str = Field(min_length=1)
     customers_table_name: str = Field(min_length=1)
     agent_sessions_table_name: str = Field(min_length=1)
+    agent_requests_table_name: str = Field(min_length=1)
     menu_sessions_table_name: str = Field(min_length=1)
     audit_table_name: str = Field(min_length=1)
 
@@ -32,6 +33,7 @@ class Settings(BaseSettings):
     session_token_secret: str = Field(min_length=16)
     session_token_ttl_minutes: int = Field(default=60, gt=0)
     agent_session_ttl_hours: int = Field(default=24, gt=0)
+    agent_request_ttl_hours: int = Field(default=24, gt=0)
     strands_session_storage_dir: str | None = None
     restaurant_id: str = Field(min_length=1)
     branch_id: str = Field(min_length=1)

@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { apiPost } from "@/lib/api";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ApiRequestError, apiGet, apiPost } from "@/lib/api";
 import { branchId } from "@/lib/config";
 import {
   getLocalCustomerId,
@@ -11,7 +11,10 @@ import {
   saveLocalCustomerId,
   saveLocalSessionId,
 } from "@/lib/session";
-import type { ChatApiResponse, ChatMessage, ToolResponse } from "@/types";
+import type { ChatMessage, ChatStatusResponse, ChatSubmitResponse, ToolResponse } from "@/types";
+
+const pollIntervalMs = 1500;
+const maxPollWaitMs = 90000;
 
 const initialMessages: ChatMessage[] = [
   {
@@ -93,6 +96,29 @@ function stateFromToolResponse(response: ToolResponse): Record<string, unknown> 
   return {};
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      window.clearTimeout(timeout);
+      signal.removeEventListener("abort", onAbort);
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    }
+    signal.addEventListener("abort", onAbort);
+  });
+}
+
 export default function ChatPage() {
   const [sessionId, setSessionId] = useState("");
   const [customerId, setCustomerId] = useState("");
@@ -100,16 +126,82 @@ export default function ChatPage() {
   const [state, setState] = useState<Record<string, unknown>>({});
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const activeControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(false);
+  const submittingRef = useRef(false);
 
   useEffect(() => {
+    mountedRef.current = true;
     setSessionId(getLocalSessionId());
     setCustomerId(getLocalCustomerId());
+    return () => {
+      mountedRef.current = false;
+      activeControllerRef.current?.abort();
+      activeControllerRef.current = null;
+      submittingRef.current = false;
+    };
   }, []);
 
   const canSend = useMemo(() => input.trim().length > 0 && !loading, [input, loading]);
 
+  function applyIdentity(response: ChatSubmitResponse | ChatStatusResponse) {
+    if (response.session_id && response.session_id !== sessionId) {
+      saveLocalSessionId(response.session_id);
+      setSessionId(response.session_id);
+    }
+    if (response.customer_id && response.customer_id !== customerId) {
+      saveLocalCustomerId(response.customer_id);
+      setCustomerId(response.customer_id);
+    }
+  }
+
+  async function pollChatRequest(requestId: string, signal: AbortSignal): Promise<ChatStatusResponse> {
+    const deadline = Date.now() + maxPollWaitMs;
+    while (Date.now() <= deadline) {
+      try {
+        const status = await apiGet<ChatStatusResponse>(`/api/chat/${requestId}`, { signal });
+        if (status.status === "completed" || status.status === "failed") {
+          return status;
+        }
+      } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
+        if (error instanceof ApiRequestError && error.status && error.status >= 400 && error.status < 500) {
+          return {
+            request_id: requestId,
+            status: "failed",
+            error_code: "CHAT_STATUS_UNAVAILABLE",
+            message: error.message,
+            data: {},
+            tool_calls: [],
+            write_succeeded: false,
+            state: {},
+            buttons: [],
+          };
+        }
+      }
+      await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())), signal);
+    }
+    return {
+      request_id: requestId,
+      status: "failed",
+      error_code: "CLIENT_POLL_TIMEOUT",
+      message: "The request is still processing. Please try again shortly.",
+      data: {},
+      tool_calls: [],
+      write_succeeded: false,
+      state: {},
+      buttons: [],
+    };
+  }
+
   async function sendMessage(text: string) {
-    if (!text.trim() || !sessionId || !customerId) return;
+    if (!text.trim() || !sessionId || !customerId || submittingRef.current) return;
+    submittingRef.current = true;
+    activeControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -119,28 +211,28 @@ export default function ChatPage() {
     setInput("");
     setLoading(true);
     try {
-      const response = await apiPost<ChatApiResponse>("/api/chat", {
+      const submission = await apiPost<ChatSubmitResponse>("/api/chat", {
         message: text.trim(),
         session_id: sessionId,
         user_id: customerId,
         customer_id: customerId,
         channel: "web",
         branch_id: branchId,
-      });
-      if (response.session_id && response.session_id !== sessionId) {
-        saveLocalSessionId(response.session_id);
-        setSessionId(response.session_id);
-      }
-      if (response.customer_id && response.customer_id !== customerId) {
-        saveLocalCustomerId(response.customer_id);
-        setCustomerId(response.customer_id);
+      }, { signal: controller.signal });
+      if (!mountedRef.current) return;
+      applyIdentity(submission);
+      const response = await pollChatRequest(submission.request_id, controller.signal);
+      if (!mountedRef.current) return;
+      applyIdentity(response);
+      if (response.status === "failed") {
+        throw new Error(response.message || "The request could not be completed.");
       }
       setMessages((current) => [
         ...current,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          text: response.text,
+          text: response.text || response.response || "",
           buttons: response.buttons,
           toolCalls: response.tool_calls,
           writeSucceeded: response.write_succeeded,
@@ -150,6 +242,7 @@ export default function ChatPage() {
         setState(response.state);
       }
     } catch (error) {
+      if (isAbortError(error)) return;
       setMessages((current) => [
         ...current,
         {
@@ -159,7 +252,13 @@ export default function ChatPage() {
         },
       ]);
     } finally {
-      setLoading(false);
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
+      submittingRef.current = false;
+      if (mountedRef.current) {
+        setLoading(false);
+      }
     }
   }
 
@@ -219,6 +318,10 @@ export default function ChatPage() {
   }
 
   function startNewOrder() {
+    activeControllerRef.current?.abort();
+    activeControllerRef.current = null;
+    submittingRef.current = false;
+    setLoading(false);
     const nextSessionId = resetLocalSessionId();
     setSessionId(nextSessionId);
     setMessages(initialMessages);

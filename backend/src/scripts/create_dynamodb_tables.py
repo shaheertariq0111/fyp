@@ -25,6 +25,7 @@ def table_definitions(settings):
             settings.menu_sessions_table_name,
             settings.carts_table_name,
             settings.agent_sessions_table_name,
+            settings.agent_requests_table_name,
             settings.audit_table_name,
         )
     ]
@@ -85,7 +86,7 @@ def create_tables() -> list[str]:
     client = dynamodb.meta.client
     tags = settings.parsed_dynamodb_tags()
     created = []
-    ttl_table_name = settings.agent_sessions_table_name
+    ttl_table_names = (settings.agent_sessions_table_name, settings.agent_requests_table_name)
     for definition in table_definitions(settings):
         name = definition["TableName"]
         try:
@@ -106,11 +107,12 @@ def create_tables() -> list[str]:
                 PointInTimeRecoverySpecification={"PointInTimeRecoveryEnabled": True},
             )
         created.append(name)
-    _ensure_agent_session_ttl(client, ttl_table_name)
+    for ttl_table_name in ttl_table_names:
+        _ensure_ttl(client, ttl_table_name)
     return created
 
 
-def _ensure_agent_session_ttl(client, table_name: str) -> None:
+def _ensure_ttl(client, table_name: str) -> None:
     try:
         ttl = client.describe_time_to_live(TableName=table_name)
     except ClientError as exc:
@@ -125,6 +127,9 @@ def _ensure_agent_session_ttl(client, table_name: str) -> None:
         TableName=table_name,
         TimeToLiveSpecification={"Enabled": True, "AttributeName": "expires_at"},
     )
+
+
+_ensure_agent_session_ttl = _ensure_ttl
 
 
 if __name__ == "__main__":

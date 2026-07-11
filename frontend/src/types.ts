@@ -23,10 +23,27 @@ export type ToolCallResult = {
   error_code?: string | null;
 };
 
-export type ChatApiResponse = {
-  text: string;
+export type ChatSubmitResponse = {
+  request_id: string;
+  status: "processing" | "completed" | "failed";
   session_id: string;
   user_id: string;
+  customer_id?: string | null;
+  customer?: {
+    customer_id?: string;
+    display_name?: string | null;
+    phone_e164?: string | null;
+    phone_verified?: boolean;
+  } | null;
+};
+
+export type ChatStatusResponse = {
+  request_id: string;
+  status: "processing" | "completed" | "failed";
+  text?: string | null;
+  response?: string | null;
+  session_id?: string | null;
+  user_id?: string | null;
   customer_id?: string | null;
   customer?: {
     customer_id?: string;
@@ -48,6 +65,8 @@ export type ChatApiResponse = {
   write_succeeded: boolean;
   state: Record<string, unknown>;
   buttons: ToolButton[];
+  error_code?: string | null;
+  message?: string | null;
 };
 
 export type ChatMessage = {

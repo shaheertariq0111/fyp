@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
 from src.agent.dependencies import get_services
-from src.agent.restaurant_agent import agent_result_text, invoke_restaurant_agent
+from src.agent_client import AgentInvocationRequest, get_agent_runtime_client
 from src.api.schemas import (
     ActionRequest,
     AdminAvailabilityRequest,
@@ -25,7 +25,9 @@ from src.api.schemas import (
     AdminStatusUpdateRequest,
     AdminUpsellGroupRequest,
     ChatRequest,
+    ChatRequestStatusResponse,
     ChatResponse,
+    ChatSubmitResponse,
     MenuOrderRequest,
     ToolCallResult,
 )
@@ -167,6 +169,70 @@ def _buttons_from_tool_calls(tool_calls: list[ToolCallResult]) -> list[dict[str,
         if buttons:
             return buttons
     return []
+
+
+def _chat_response_from_invocation(
+    context: AgentRequestContext,
+    identity_state: dict[str, Any],
+    invocation,
+) -> ChatResponse:
+    result = invocation.raw_result
+    tool_calls = _tool_calls_from_result(result)
+    write_succeeded = any(call.is_write and call.success for call in tool_calls)
+    state = _state_from_tool_calls(tool_calls)
+    state.update(identity_state)
+    if write_succeeded:
+        state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
+    buttons = _buttons_from_tool_calls(tool_calls)
+    return ChatResponse(
+        text=invocation.text,
+        session_id=context.agent_session_id,
+        user_id=context.user_id,
+        customer_id=context.customer_id,
+        customer=identity_state["customer"],
+        data=state,
+        tool_calls=tool_calls,
+        write_succeeded=write_succeeded,
+        state=state,
+        buttons=buttons,
+    )
+
+
+def _status_response_from_record(record: dict[str, Any]) -> ChatRequestStatusResponse:
+    status = record.get("status", "processing")
+    response_payload = record.get("response") or {}
+    if status == "completed" and isinstance(response_payload, dict):
+        text = response_payload.get("text")
+        return ChatRequestStatusResponse(
+            request_id=record["request_id"],
+            status=status,
+            session_id=response_payload.get("session_id"),
+            user_id=response_payload.get("user_id"),
+            customer_id=response_payload.get("customer_id"),
+            customer=response_payload.get("customer"),
+            response=text,
+            text=text,
+            data=response_payload.get("data") or {},
+            tool_calls=response_payload.get("tool_calls") or [],
+            write_succeeded=bool(response_payload.get("write_succeeded", False)),
+            state=response_payload.get("state") or {},
+            buttons=response_payload.get("buttons") or [],
+        )
+    if status == "failed":
+        return ChatRequestStatusResponse(
+            request_id=record["request_id"],
+            status=status,
+            session_id=record.get("session_id"),
+            user_id=record.get("actor_id"),
+            error_code=record.get("error_code") or "AGENT_INVOCATION_FAILED",
+            message=record.get("failure_message") or "The request could not be completed.",
+        )
+    return ChatRequestStatusResponse(
+        request_id=record["request_id"],
+        status=status,
+        session_id=record.get("session_id"),
+        user_id=record.get("actor_id"),
+    )
 
 
 def _customer_identity(request) -> str | None:
@@ -487,39 +553,70 @@ def admin_monitoring_failed_orders(
     return get_services().orders.admin_failed_orders(limit)
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+@app.post("/api/chat", response_model=ChatSubmitResponse)
+def chat(request: ChatRequest) -> ChatSubmitResponse:
     context, identity_state = _resolve_identity(request)
-    result = invoke_restaurant_agent(
-        request.message,
-        user_id=context.user_id,
-        agent_session_id=context.agent_session_id,
-        branch_id=request.branch_id,
-        customer_id=context.customer_id,
-        customer_name=context.customer_name,
-        customer_phone=context.customer_phone,
+    agent_requests = get_services().agent_requests
+    record = agent_requests.start_processing(
+        actor_id=context.user_id,
+        session_id=context.agent_session_id,
+        message=request.message,
         channel=context.channel,
+        request_payload=request.model_dump(),
     )
-    tool_calls = _tool_calls_from_result(result)
-    write_succeeded = any(call.is_write and call.success for call in tool_calls)
-    text = agent_result_text(result)
-    state = _state_from_tool_calls(tool_calls)
-    state.update(identity_state)
-    if write_succeeded:
-        state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
-    buttons = _buttons_from_tool_calls(tool_calls)
-    return ChatResponse(
-        text=text,
+    try:
+        invocation = get_agent_runtime_client().invoke(
+            AgentInvocationRequest(
+                message=request.message,
+                user_id=context.user_id,
+                agent_session_id=context.agent_session_id,
+                branch_id=request.branch_id,
+                customer_id=context.customer_id,
+                customer_name=context.customer_name,
+                customer_phone=context.customer_phone,
+                channel=context.channel,
+            )
+        )
+        response_payload = _chat_response_from_invocation(
+            context, identity_state, invocation
+        ).model_dump(exclude_none=True)
+        record = agent_requests.complete(record["request_id"], response_payload)
+    except Exception:
+        logger.exception(
+            "Agent request failed",
+            extra={
+                "request_id": record["request_id"],
+                "user_id": context.user_id,
+                "agent_session_id": context.agent_session_id,
+            },
+        )
+        record = agent_requests.fail(
+            record["request_id"],
+            error_code="AGENT_INVOCATION_FAILED",
+            message="The request could not be completed.",
+        )
+    return ChatSubmitResponse(
+        request_id=record["request_id"],
+        status=record["status"],
         session_id=context.agent_session_id,
         user_id=context.user_id,
         customer_id=context.customer_id,
         customer=identity_state["customer"],
-        data=state,
-        tool_calls=tool_calls,
-        write_succeeded=write_succeeded,
-        state=state,
-        buttons=buttons,
     )
+
+
+@app.get("/api/chat/{request_id}", response_model=ChatRequestStatusResponse)
+def chat_status(request_id: str) -> ChatRequestStatusResponse:
+    record = get_services().agent_requests.get(request_id)
+    if not record:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "AGENT_REQUEST_NOT_FOUND",
+                "user_message": "The chat request was not found.",
+            },
+        )
+    return _status_response_from_record(record)
 
 
 @app.post("/api/actions")
