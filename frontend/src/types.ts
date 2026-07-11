@@ -9,9 +9,29 @@ export type ToolResponse<T = Record<string, unknown>> = {
   data: T;
   user_message: string;
   next_action?: string;
+  agent?: Record<string, unknown>;
   buttons?: ToolButton[];
   error_code?: string;
   retryable?: boolean;
+};
+
+export type ToolCallResult = {
+  tool_name: string;
+  success: boolean;
+  is_write: boolean;
+  result?: ToolResponse | null;
+  error_code?: string | null;
+};
+
+export type ChatApiResponse = {
+  text: string;
+  session_id: string;
+  user_id: string;
+  data?: Record<string, unknown>;
+  tool_calls: ToolCallResult[];
+  write_succeeded: boolean;
+  state: Record<string, unknown>;
+  buttons: ToolButton[];
 };
 
 export type ChatMessage = {
@@ -19,6 +39,8 @@ export type ChatMessage = {
   role: "user" | "assistant";
   text: string;
   buttons?: ToolButton[];
+  toolCalls?: ToolCallResult[];
+  writeSucceeded?: boolean;
 };
 
 export type MenuItem = {

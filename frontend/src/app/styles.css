@@ -170,6 +170,17 @@ button {
   margin-top: 10px;
 }
 
+.status {
+  display: block;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.full {
+  width: 100%;
+  margin-bottom: 18px;
+}
+
 .side {
   border-left: 1px solid var(--line);
   background: #f0eadf;
@@ -187,6 +198,17 @@ button {
   color: var(--muted);
   font-size: 14px;
   line-height: 1.45;
+}
+
+.summary {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 18px;
+}
+
+.summary ul {
+  margin: 8px 0 12px;
+  padding-left: 18px;
 }
 
 .menu-layout {
