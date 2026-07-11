@@ -23,16 +23,23 @@ class Settings(BaseSettings):
     menu_table_name: str = Field(min_length=1)
     carts_table_name: str = Field(min_length=1)
     orders_table_name: str = Field(min_length=1)
+    customers_table_name: str = Field(min_length=1)
+    agent_sessions_table_name: str = Field(min_length=1)
     menu_sessions_table_name: str = Field(min_length=1)
     audit_table_name: str = Field(min_length=1)
 
     menu_site_base_url: HttpUrl
     session_token_secret: str = Field(min_length=16)
     session_token_ttl_minutes: int = Field(default=60, gt=0)
+    agent_session_ttl_hours: int = Field(default=24, gt=0)
     strands_session_storage_dir: str | None = None
     restaurant_id: str = Field(min_length=1)
     branch_id: str = Field(min_length=1)
     log_level: str = "INFO"
+    admin_username: str = ""
+    admin_password: str = ""
+    admin_session_secret: str = ""
+    admin_session_ttl_hours: int = Field(default=8, gt=0)
 
     @model_validator(mode="after")
     def validate_environment(self) -> "Settings":

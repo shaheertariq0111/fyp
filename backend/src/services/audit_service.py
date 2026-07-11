@@ -22,3 +22,13 @@ class AuditService:
             "details_redacted": redacted,
             "created_at": now,
         })
+
+    def admin_list_errors(self, limit: int = 50) -> dict:
+        events = [
+            event for event in self.repository.list_all()
+            if "error" in str(event.get("event_type", "")).casefold()
+            or "failed" in str(event.get("event_type", "")).casefold()
+            or str(event.get("details_redacted", {}).get("error_code", "")).strip()
+        ]
+        events.sort(key=lambda event: event.get("created_at", ""), reverse=True)
+        return {"events": events[:limit], "next_cursor": None}

@@ -4,7 +4,13 @@ import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiPost } from "@/lib/api";
 import { branchId } from "@/lib/config";
-import { getLocalSessionId, getLocalUserId, resetLocalSessionId } from "@/lib/session";
+import {
+  getLocalCustomerId,
+  getLocalSessionId,
+  resetLocalSessionId,
+  saveLocalCustomerId,
+  saveLocalSessionId,
+} from "@/lib/session";
 import type { ChatApiResponse, ChatMessage, ToolResponse } from "@/types";
 
 const initialMessages: ChatMessage[] = [
@@ -89,7 +95,7 @@ function stateFromToolResponse(response: ToolResponse): Record<string, unknown> 
 
 export default function ChatPage() {
   const [sessionId, setSessionId] = useState("");
-  const [userId, setUserId] = useState("");
+  const [customerId, setCustomerId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [state, setState] = useState<Record<string, unknown>>({});
   const [input, setInput] = useState("");
@@ -97,13 +103,13 @@ export default function ChatPage() {
 
   useEffect(() => {
     setSessionId(getLocalSessionId());
-    setUserId(getLocalUserId());
+    setCustomerId(getLocalCustomerId());
   }, []);
 
   const canSend = useMemo(() => input.trim().length > 0 && !loading, [input, loading]);
 
   async function sendMessage(text: string) {
-    if (!text.trim() || !sessionId || !userId) return;
+    if (!text.trim() || !sessionId || !customerId) return;
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -116,9 +122,19 @@ export default function ChatPage() {
       const response = await apiPost<ChatApiResponse>("/api/chat", {
         message: text.trim(),
         session_id: sessionId,
-        user_id: userId,
+        user_id: customerId,
+        customer_id: customerId,
+        channel: "web",
         branch_id: branchId,
       });
+      if (response.session_id && response.session_id !== sessionId) {
+        saveLocalSessionId(response.session_id);
+        setSessionId(response.session_id);
+      }
+      if (response.customer_id && response.customer_id !== customerId) {
+        saveLocalCustomerId(response.customer_id);
+        setCustomerId(response.customer_id);
+      }
       setMessages((current) => [
         ...current,
         {
@@ -154,9 +170,22 @@ export default function ChatPage() {
         action,
         metadata,
         session_id: sessionId,
-        user_id: userId,
+        user_id: customerId,
+        customer_id: customerId,
+        channel: "web",
         branch_id: branchId,
       });
+      const data = asRecord(response.data);
+      const session = asRecord(data?.session);
+      const customer = asRecord(data?.customer);
+      if (typeof session?.session_id === "string" && session.session_id !== sessionId) {
+        saveLocalSessionId(session.session_id);
+        setSessionId(session.session_id);
+      }
+      if (typeof customer?.customer_id === "string" && customer.customer_id !== customerId) {
+        saveLocalCustomerId(customer.customer_id);
+        setCustomerId(customer.customer_id);
+      }
       setMessages((current) => [
         ...current,
         {
@@ -263,6 +292,8 @@ export default function ChatPage() {
           </button>
           <p className="hint">
             Session: {sessionId || "loading"}
+            <br />
+            Customer: {customerId || "loading"}
             <br />
             The assistant uses backend tools for menu, cart, and order state.
           </p>

@@ -28,6 +28,6 @@ def test_verify_tables_loads_every_configured_table():
     dynamodb = Mock()
     dynamodb.Table.side_effect = make_table
     statuses = verify_dynamodb_tables(settings, dynamodb)
-    assert len(statuses) == 5
+    assert len(statuses) == 7
     assert set(statuses.values()) == {"ACTIVE"}
     assert all(table.load.called for table in tables.values())

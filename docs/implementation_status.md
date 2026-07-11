@@ -69,7 +69,7 @@ Phase 9: Menu website integration (in progress)
 
 ### Phase 7: Strands tools
 
-- [x] Exactly 11 MVP Strands tools implemented and registered
+- [x] MVP Strands tools implemented and registered, including customer profile tools
 - [x] Tools are thin wrappers over services
 - [x] Trusted user/session context injection added
 - [x] Safe structured fallback for backend failures added
@@ -80,7 +80,7 @@ Phase 9: Menu website integration (in progress)
 - [x] Restaurant agent system prompt added
 - [x] Strands `Agent` factory added
 - [x] Bedrock model wrapper configured from runtime settings
-- [x] Exactly 11 MVP tools registered with the runtime agent
+- [x] MVP tools registered with the runtime agent, including customer profile tools
 - [x] Trusted user/session/branch context injection added around each turn
 - [x] Strands file session manager configured per trusted `agent_session_id`
 - [x] Agent rules require tool-grounded menu, customization, upsell, order, and status behavior
@@ -116,6 +116,16 @@ Phase 9: Menu website integration (in progress)
 - [x] `/api/chat` re-reads active cart/orders after successful write tools so frontend state reflects persisted backend/DynamoDB state
 - [x] Frontend chat renders backend-verified write status and authoritative cart/order state instead of trusting assistant prose
 - [x] Frontend New order action rotates session ID and clears visible chat/cart state without changing normal reload persistence
+- [x] Customer profiles now include a reusable DynamoDB-backed delivery address book
+- [x] `save_customer_address` Strands tool added as a thin wrapper over `CustomerService`
+- [x] Delivery flow prompt now checks saved customer addresses before asking for a new address
+- [x] New delivery addresses are saved to the customer profile before being copied to the order delivery-address snapshot
+- [x] Order responses now expose the order-specific `delivery_address` snapshot for confirmation/status summaries
+- [x] DynamoDB provisioning script now creates customer/session tables and ensures TTL on agent sessions
+- [x] Development DynamoDB tables `shaheer-fyp-agent-sessions` and `shaheer-fyp-customers` were created
+- [x] Admin console MVP added under `/admin` with env-backed login, dashboard analytics, live orders, order details/status updates, menu management, customer search, and monitoring
+- [x] Admin menu management can add/edit items, toggle availability, and archive items instead of hard-deleting historical menu references
+- [x] Admin backend APIs added under `/api/admin/*` with signed HttpOnly cookie auth
 
 ## In Progress
 
@@ -156,6 +166,12 @@ Run the live Phase 9 browser/API flow with backend on `http://localhost:8001` an
 - Menu session tokens are generated securely and only salted hashes are persisted.
 - Menu website order submissions are converted into pending orders by backend services after server-side item, customization, availability, and price validation.
 - The chat checkout flow asks fulfillment details before final confirmation; final `confirm` from `pending_confirmation` submits the order. The legacy `ready_for_submission`/`submit` path was removed.
+- Customer delivery addresses live on the customer profile for reuse, while each order keeps its own plain `delivery_address` snapshot string.
+- Web-collected addresses are stored as unverified MVP address-book entries; no geocoding or delivery-zone validation is implemented yet.
+- The newest saved address becomes the default unless a tool caller explicitly passes `make_default=false`.
+- Agent sessions use DynamoDB TTL on `expires_at`; frontend localStorage keeps only cached IDs while backend session validity is authoritative.
+- Admin deletes are archive operations: archived menu items are unavailable and hidden from customer menu search, while old order snapshots remain readable.
+- Admin order status changes are deterministic service transitions and do not invoke the restaurant agent.
 
 ## Assumptions
 
@@ -222,6 +238,98 @@ Latest legacy order-path removal modified:
 - `backend/tests/test_order_service.py`
 - `docs/pizza_restaurant_ordering_agent_prd.md`
 - `docs/implementation_status.md`
+
+Latest frontend hydration warning fix modified:
+
+- `frontend/src/app/layout.tsx`
+- `docs/implementation_status.md`
+
+Latest menu search relevance fix modified:
+
+- `backend/src/services/menu_service.py`
+- `backend/tests/test_menu_service.py`
+- `docs/implementation_status.md`
+
+Latest cart-to-order handoff status fix modified:
+
+- `backend/src/services/cart_service.py`
+- `backend/tests/test_cart_service.py`
+- `docs/pizza_restaurant_ordering_agent_prd.md`
+- `docs/implementation_status.md`
+
+Latest legacy converted-cart routing fix modified:
+
+- `backend/src/services/cart_service.py`
+- `backend/src/agent/system_prompt.py`
+- `backend/tests/test_cart_service.py`
+- `backend/tests/test_restaurant_agent.py`
+- `docs/implementation_status.md`
+
+Latest customer identity and backend-owned session implementation modified:
+
+- `backend/src/repositories/customer_repository.py`
+- `backend/src/repositories/agent_session_repository.py`
+- `backend/src/services/customer_service.py`
+- `backend/src/services/agent_session_service.py`
+- `backend/src/api/main.py`
+- `backend/src/agent/tools.py`
+- `frontend/src/lib/session.ts`
+
+Latest customer address book and DynamoDB provisioning implementation modified:
+
+- `backend/src/services/customer_service.py`
+- `backend/src/agent/tools.py`
+- `backend/src/agent/system_prompt.py`
+- `backend/src/services/order_service.py`
+- `backend/src/scripts/create_dynamodb_tables.py`
+- `backend/tests/test_customer_session_service.py`
+- `backend/tests/test_tools.py`
+- `backend/tests/test_restaurant_agent.py`
+- `backend/tests/test_order_service.py`
+- `backend/tests/test_table_definitions.py`
+- `frontend/src/types.ts`
+- `docs/implementation_status.md`
+
+Latest validation:
+
+- `backend/.venv/bin/pytest -q backend/tests/test_customer_session_service.py backend/tests/test_tools.py backend/tests/test_restaurant_agent.py backend/tests/test_order_service.py backend/tests/test_table_definitions.py` → 27 passed
+- `backend/.venv/bin/pytest -q backend/tests` → 83 passed, 1 existing Starlette/httpx deprecation warning
+- `cd backend && .venv/bin/python -m src.scripts.create_dynamodb_tables` → created `shaheer-fyp-agent-sessions`, `shaheer-fyp-customers`
+- `cd frontend && npm run typecheck` → passed
+- `cd frontend && npm run lint` → failed because `next lint` is not valid in the current Next 16 CLI and is interpreted as a project directory
+- `cd frontend && npm run build` → passed with existing multiple-lockfile workspace-root warning
+
+Latest admin console MVP implementation modified:
+
+- `backend/src/api/main.py`
+- `backend/src/api/schemas.py`
+- `backend/src/infrastructure/config.py`
+- `backend/src/repositories/menu_repository.py`
+- `backend/src/repositories/order_repository.py`
+- `backend/src/repositories/customer_repository.py`
+- `backend/src/repositories/audit_repository.py`
+- `backend/src/services/menu_service.py`
+- `backend/src/services/order_service.py`
+- `backend/src/services/customer_service.py`
+- `backend/src/services/audit_service.py`
+- `backend/src/agent/tools.py`
+- `backend/tests/test_api.py`
+- `backend/tests/test_menu_service.py`
+- `backend/tests/test_order_service.py`
+- `backend/tests/test_config.py`
+- `backend/tests/fakes.py`
+- `frontend/src/lib/adminApi.ts`
+- `frontend/src/app/admin/*`
+- `frontend/src/app/styles.css`
+- `docs/implementation_status.md`
+
+Latest admin console validation:
+
+- `backend/.venv/bin/pytest -q backend/tests/test_api.py backend/tests/test_menu_service.py backend/tests/test_order_service.py backend/tests/test_config.py` → 35 passed, 1 existing Starlette/httpx deprecation warning
+- `backend/.venv/bin/pytest -q backend/tests` → 91 passed, 1 existing Starlette/httpx deprecation warning
+- `cd frontend && npm run typecheck` → passed
+- `cd frontend && npm run lint` → failed because `next lint` is not valid in the current Next 16 CLI and is interpreted as a project directory
+- `cd frontend && npm run build` → passed with existing multiple-lockfile workspace-root warning
 
 Latest Phase 8 agent orchestration change modified:
 
@@ -384,7 +492,7 @@ Latest Phase 5 frontend work modified:
 - Live AWS two-pizza separate customization test succeeded: separate pizza lines plus one directly addable upsell, delivery address collection, and final status `submitted_to_restaurant`.
 - Live AWS configurable upsell test succeeded: `PEPSI` was offered as a configurable upsell, `pepsi-size=500ml` was saved through `save_customization_choice`, the line repriced to PKR 230, and the test takeaway order reached `submitted_to_restaurant`.
 - `pytest -q`: **47 passed** after Phase 8 agent orchestration wiring.
-- Phase 8 tests cover system-prompt grounding rules, Bedrock model configuration, registration of the 11 MVP tools, per-session Strands session-manager wiring, and trusted request-context injection.
+- Phase 8 tests cover system-prompt grounding rules, Bedrock model configuration, registration of the MVP tools, per-session Strands session-manager wiring, and trusted request-context injection.
 - Live Bedrock smoke test through `invoke_restaurant_agent`: configured model `us.amazon.nova-pro-v1:0` used `search_menu` against DynamoDB and returned a user-facing Legend Ranch recommendation with PKR 750/1500/2100 size prices.
 - Agent response extraction now uses `agent_result_text(...)` to remove provider-emitted `<thinking>` blocks before returning text to users.
 - `pip install -e .[dev]`: installed FastAPI/httpx test dependencies in the local Python 3.10 environment.
@@ -439,3 +547,17 @@ Latest Phase 5 frontend work modified:
 - `npm run build`: **passed** with the existing multiple-lockfile workspace-root warning.
 - `backend/.venv/bin/pytest -q backend/tests/test_order_service.py backend/tests/test_restaurant_agent.py`: **12 passed**
 - `backend/.venv/bin/pytest -q backend/tests`: **71 passed**, 1 existing Starlette/httpx deprecation warning
+- `npm run typecheck`: **passed** after adding root hydration warning suppression for browser-extension HTML attributes
+- `backend/.venv/bin/pytest -q backend/tests/test_menu_service.py`: **7 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **73 passed**, 1 existing Starlette/httpx deprecation warning
+- `backend/.venv/bin/pytest -q backend/tests/test_menu_service.py`: **8 passed** after replacing hardcoded query stop words with data-driven menu-corpus token relevance
+- `backend/.venv/bin/pytest -q backend/tests`: **74 passed**, 1 existing Starlette/httpx deprecation warning
+- `backend/.venv/bin/pytest -q backend/tests/test_cart_service.py`: **9 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **74 passed**, 1 existing Starlette/httpx deprecation warning
+- `backend/.venv/bin/pytest -q backend/tests/test_cart_service.py backend/tests/test_restaurant_agent.py`: **18 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **75 passed**, 1 existing Starlette/httpx deprecation warning
+- `backend/.venv/bin/pytest -q backend/tests/test_customer_session_service.py backend/tests/test_api.py backend/tests/test_tools.py backend/tests/test_cart_service.py backend/tests/test_restaurant_agent.py backend/tests/test_config.py backend/tests/test_table_definitions.py backend/tests/test_dynamodb.py`: **46 passed**, 1 existing Starlette/httpx deprecation warning
+- `backend/.venv/bin/pytest -q backend/tests`: **80 passed**, 1 existing Starlette/httpx deprecation warning
+- `npm run typecheck`: **passed**
+- `npm run build`: **passed** with the existing multiple-lockfile workspace-root warning
+- `npm run lint`: **failed** because the configured `next lint` script is incompatible with the installed Next 16 CLI and treats `lint` as a project directory

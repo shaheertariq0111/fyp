@@ -20,6 +20,8 @@ def verify_dynamodb_tables(settings: Settings, dynamodb=None) -> dict[str, str]:
         settings.menu_sessions_table_name,
         settings.carts_table_name,
         settings.orders_table_name,
+        settings.customers_table_name,
+        settings.agent_sessions_table_name,
         settings.audit_table_name,
     ):
         table = resource.Table(table_name)

@@ -53,8 +53,11 @@ def test_two_separate_items_are_labeled_and_advanced():
 
 
 def test_upsell_then_pending_order_reprices_server_side():
-    service, _, orders = build_services()
-    started = service.start_item_customization("user", "session", "configurable")
+    service, carts, orders = build_services()
+    started = service.start_item_customization(
+        "user", "session", "configurable",
+        customer_id="customer-1", customer_name="Ava", customer_phone="+923001234567",
+    )
     ready = service.save_choice(started.data["cart_item_id"], "dynamic-choice", "choice-a")
     cart_id = ready.data["cart_id"]
     options = service.handle_upsell(cart_id, "get_options")
@@ -68,7 +71,13 @@ def test_upsell_then_pending_order_reprices_server_side():
     pending = service.create_pending_order(cart_id)
     assert pending.success
     assert pending.data["status"] == "awaiting_fulfillment_method"
-    assert next(iter(orders.data.values()))["total"] == 19
+    assert carts.find_by_cart_id(cart_id)["status"] == "converted_to_order"
+    assert service.get_active_cart("user", "session").data["cart"] is None
+    order = next(iter(orders.data.values()))
+    assert order["total"] == 19
+    assert order["customer_id"] == "customer-1"
+    assert order["customer_name"] == "Ava"
+    assert order["customer_phone"] == "+923001234567"
 
 
 def test_checkout_auto_skips_pending_upsell_decision():
@@ -82,8 +91,26 @@ def test_checkout_auto_skips_pending_upsell_decision():
     assert pending.success
     assert pending.data["status"] == "awaiting_fulfillment_method"
     saved = carts.find_by_cart_id(ready.data["cart_id"])
-    assert saved["status"] == "pending_confirmation"
+    assert saved["status"] == "converted_to_order"
     assert next(iter(orders.data.values()))["items"][0]["name"] == "Configured Item"
+
+
+def test_legacy_pending_confirmation_cart_is_not_returned_as_active_cart():
+    service, carts, orders = build_services()
+    started = service.start_item_customization("user", "session", "configurable")
+    ready = service.save_choice(started.data["cart_item_id"], "dynamic-choice", "choice-a")
+    pending = service.create_pending_order(ready.data["cart_id"])
+    assert pending.success
+    legacy_cart = carts.find_by_cart_id(ready.data["cart_id"])
+    legacy_cart["status"] = "pending_confirmation"
+    carts.data[legacy_cart["cart_id"]] = legacy_cart
+
+    response = service.get_active_cart("user", "session")
+
+    assert response.data["cart"] is None
+    assert response.data["orders"][0]["order_id"] == next(iter(orders.data))
+    assert response.agent["orders"][0]["status"] == "awaiting_fulfillment_method"
+    assert "Do not use a cart_id as an order_id" in response.agent["instruction"]
 
 
 def test_configurable_upsell_is_customized_before_pending_order():

@@ -18,6 +18,8 @@ WRITE_TOOLS = {
     "handle_cart_upsell",
     "create_pending_order_from_cart",
     "update_order_flow",
+    "update_customer_profile",
+    "save_customer_address",
 }
 
 
@@ -55,6 +57,22 @@ def _result(tool_name: str, call: Callable[[], ToolResponse], *, is_write: bool 
             exc,
             extra=extra,
         )
+        try:
+            services = get_services()
+            context = get_request_context()
+            services.audit.record(
+                context.agent_session_id,
+                context.user_id,
+                "tool_error",
+                {
+                    "tool_name": tool_name,
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                    "error_code": "BACKEND_UNAVAILABLE",
+                },
+            )
+        except Exception:
+            logger.exception("Failed to record tool error audit event", extra=extra)
         result = ToolResponse.error(
             error_code="BACKEND_UNAVAILABLE",
             user_message="I couldn't complete that request right now.",
@@ -93,7 +111,8 @@ def create_menu_session_link(item_id: str | None = None) -> dict:
     """Create a secure menu-site link tied to the current trusted agent session."""
     context = get_request_context()
     return _result("create_menu_session_link", lambda: get_services().menu_sessions.create_link(
-        context.user_id, context.agent_session_id, item_id
+        context.user_id, context.agent_session_id, item_id,
+        customer_id=context.customer_id or context.user_id
     ))
 
 
@@ -102,7 +121,10 @@ def start_cart_item_customization(item_id: str, quantity: int = 1) -> dict:
     """Start chat customization; multiple customizable units require a mode choice."""
     context = get_request_context()
     return _result("start_cart_item_customization", lambda: get_services().carts.start_item_customization(
-        context.user_id, context.agent_session_id, item_id, quantity
+        context.user_id, context.agent_session_id, item_id, quantity,
+        customer_id=context.customer_id,
+        customer_name=context.customer_name,
+        customer_phone=context.customer_phone,
     ), is_write=True)
 
 
@@ -164,6 +186,43 @@ def get_order_status(order_id: str | None = None) -> dict:
 
 
 @tool
+def get_customer_profile() -> dict:
+    """Read the trusted customer profile for this conversation."""
+    context = get_request_context()
+    return _result("get_customer_profile", lambda: get_services().customers.get_profile(
+        context.customer_id or context.user_id
+    ))
+
+
+@tool
+def update_customer_profile(display_name: str | None = None,
+                            phone_number: str | None = None) -> dict:
+    """Persist customer name and phone details collected in chat."""
+    context = get_request_context()
+    return _result("update_customer_profile", lambda: get_services().customers.update_profile(
+        context.customer_id or context.user_id,
+        display_name=display_name,
+        phone_number=phone_number,
+        channel=context.channel,
+        phone_verified=context.channel == "whatsapp",
+    ), is_write=True)
+
+
+@tool
+def save_customer_address(address_text: str, label: str | None = None,
+                          make_default: bool = True) -> dict:
+    """Persist a reusable customer delivery address collected in chat."""
+    context = get_request_context()
+    return _result("save_customer_address", lambda: get_services().customers.save_address(
+        context.customer_id or context.user_id,
+        address_text=address_text,
+        label=label,
+        make_default=make_default,
+        channel=context.channel,
+    ), is_write=True)
+
+
+@tool
 def retrieve_restaurant_knowledge(question: str, branch_id: str | None = None,
                                   language: str = "en") -> dict:
     """Retrieve approved restaurant policy and FAQ knowledge; never live menu/order data."""
@@ -186,5 +245,8 @@ MVP_TOOLS = [
     update_order_flow,
     get_active_cart,
     get_order_status,
+    get_customer_profile,
+    update_customer_profile,
+    save_customer_address,
     retrieve_restaurant_knowledge,
 ]

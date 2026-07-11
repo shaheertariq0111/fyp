@@ -17,7 +17,20 @@ ORDER_TRANSITIONS = {
     ("awaiting_delivery_address", "cancel"): "cancelled",
 }
 
-TERMINAL_STATUSES = {"delivered", "rejected", "cancelled", "failed"}
+TERMINAL_STATUSES = {"delivered", "completed", "rejected", "cancelled", "failed"}
+ADMIN_ORDER_TRANSITIONS = {
+    ("submitted_to_restaurant", "accept"): "accepted",
+    ("submitted_to_restaurant", "reject"): "rejected",
+    ("submitted_to_restaurant", "fail"): "failed",
+    ("accepted", "start_preparing"): "preparing",
+    ("accepted", "fail"): "failed",
+    ("preparing", "mark_ready"): "ready_for_pickup",
+    ("preparing", "dispatch"): "out_for_delivery",
+    ("preparing", "fail"): "failed",
+    ("ready_for_pickup", "complete"): "completed",
+    ("out_for_delivery", "deliver"): "delivered",
+    ("out_for_delivery", "fail"): "failed",
+}
 
 
 class OrderService:
@@ -42,6 +55,9 @@ class OrderService:
             "PK": cart["user_id"], "SK": f"ORDER#{order_id}",
             "GSI1PK": f"ORDER#{order_id}", "GSI1SK": "METADATA",
             "order_id": order_id, "user_id": cart["user_id"],
+            "customer_id": cart.get("customer_id") or cart["user_id"],
+            "customer_name": cart.get("customer_name"),
+            "customer_phone": cart.get("customer_phone"),
             "agent_session_id": cart["agent_session_id"],
             "restaurant_id": cart["restaurant_id"], "branch_id": cart["branch_id"],
             "source_cart_id": cart["cart_id"], "status": "awaiting_fulfillment_method",
@@ -144,6 +160,92 @@ class OrderService:
         return ToolResponse.ok(data=data, user_message="Here is the current order status.",
                                next_action="present_order_status", agent=agent)
 
+    def admin_list_orders(self, status: str | None = None, limit: int = 50) -> dict:
+        orders = [self._public(order) for order in self.orders.list_all()]
+        if status:
+            orders = [order for order in orders if order.get("status") == status]
+        orders.sort(key=lambda order: order.get("updated_at") or order.get("created_at") or "", reverse=True)
+        return {"orders": orders[:limit], "next_cursor": None}
+
+    def admin_get_order(self, order_id: str) -> dict:
+        order = self.orders.get_by_order_id(order_id)
+        if not order:
+            raise ValueError("ORDER_NOT_FOUND")
+        public = self._public(order)
+        public["status_history"] = deepcopy(order.get("status_history", []))
+        public["allowed_actions"] = self._admin_allowed_actions(order)
+        return {"order": public}
+
+    def admin_update_status(self, order_id: str, action: str, reason: str | None = None) -> dict:
+        order = self.orders.get_by_order_id(order_id)
+        if not order:
+            raise ValueError("ORDER_NOT_FOUND")
+        next_status = ADMIN_ORDER_TRANSITIONS.get((order.get("status"), action))
+        if not next_status:
+            raise ValueError("INVALID_ORDER_STATE")
+        if action == "mark_ready" and order.get("fulfillment_method") != "takeaway":
+            raise ValueError("INVALID_ORDER_STATE")
+        if action == "dispatch" and order.get("fulfillment_method") != "delivery":
+            raise ValueError("INVALID_ORDER_STATE")
+        now = self._now()
+        previous = order["status"]
+        order["status"] = next_status
+        order["updated_at"] = now
+        order.setdefault("status_history", []).append({
+            "from_status": previous,
+            "to_status": next_status,
+            "action": action,
+            "actor": "admin",
+            "reason": reason,
+            "created_at": now,
+        })
+        version = order["version"]
+        self.orders.save(order, version)
+        order["version"] = version + 1
+        public = self._public(order)
+        public["status_history"] = deepcopy(order.get("status_history", []))
+        public["allowed_actions"] = self._admin_allowed_actions(order)
+        return {"order": public}
+
+    def admin_analytics(self) -> dict:
+        orders = [self._public(order) for order in self.orders.list_all()]
+        by_status: dict[str, int] = {}
+        revenue = 0
+        today = self._now()[:10]
+        today_orders = 0
+        for order in orders:
+            status = order.get("status") or "unknown"
+            by_status[status] = by_status.get(status, 0) + 1
+            if status not in {"rejected", "cancelled", "failed"}:
+                revenue += order.get("total") or 0
+            if str(order.get("created_at", "")).startswith(today):
+                today_orders += 1
+        active_orders = [
+            order for order in orders
+            if order.get("status") not in {"delivered", "completed", "rejected", "cancelled", "failed"}
+        ]
+        failed_orders = [order for order in orders if order.get("status") == "failed"]
+        recent_orders = sorted(
+            orders,
+            key=lambda order: order.get("updated_at") or order.get("created_at") or "",
+            reverse=True,
+        )[:10]
+        return {
+            "today_orders": today_orders,
+            "active_orders": len(active_orders),
+            "revenue": revenue,
+            "failed_orders": len(failed_orders),
+            "by_status": by_status,
+            "recent_orders": recent_orders,
+        }
+
+    def admin_failed_orders(self, limit: int = 50) -> dict:
+        orders = [
+            order for order in self.admin_list_orders(limit=1000)["orders"]
+            if order.get("status") == "failed"
+        ]
+        return {"orders": orders[:limit], "next_cursor": None}
+
     def _validate_submission(self, order):
         method = order.get("fulfillment_method")
         if method not in {"delivery", "takeaway"}:
@@ -221,6 +323,7 @@ class OrderService:
                 "total": order.get("total"),
                 "currency": order.get("currency"),
                 "fulfillment_method": order.get("fulfillment_method"),
+                "delivery_address": order.get("delivery_address"),
             },
             "instruction": instruction or cls._instruction(order.get("status")),
         }
@@ -239,7 +342,21 @@ class OrderService:
         }.get(status, [])
 
     @staticmethod
+    def _admin_allowed_actions(order):
+        status = order.get("status")
+        actions = [
+            action for (current, action), _next in ADMIN_ORDER_TRANSITIONS.items()
+            if current == status
+        ]
+        if order.get("fulfillment_method") != "takeaway":
+            actions = [action for action in actions if action != "mark_ready"]
+        if order.get("fulfillment_method") != "delivery":
+            actions = [action for action in actions if action != "dispatch"]
+        return actions
+
+    @staticmethod
     def _public(order):
         return {key: deepcopy(order.get(key)) for key in
                 ("order_id", "status", "items", "subtotal", "delivery_fee", "total", "currency",
-                 "fulfillment_method", "version", "created_at", "updated_at")}
+                 "fulfillment_method", "delivery_address", "customer_id", "customer_name", "customer_phone",
+                 "source_cart_id", "version", "created_at", "updated_at")}

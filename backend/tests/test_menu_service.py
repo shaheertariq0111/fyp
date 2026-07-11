@@ -2,14 +2,16 @@ from src.services.menu_service import MenuService
 from fakes import MemoryMenuRepository
 
 
-def item(product_id, *, available=True, score=0, popular=False, tags=None,
-         best_for=None, starting_price=None, price=None, base_prices=None):
+def item(product_id, *, name=None, description="Configured menu description",
+         category="pizza", source_category="Configured source", available=True,
+         score=0, popular=False, tags=None, search_terms=None, best_for=None,
+         starting_price=None, price=None, base_prices=None):
     return {
         "product_id": product_id,
-        "name": product_id.replace("-", " ").title(),
-        "description": "Configured menu description",
-        "source_category": "Configured source",
-        "category": "pizza",
+        "name": name or product_id.replace("-", " ").title(),
+        "description": description,
+        "source_category": source_category,
+        "category": category,
         "currency": "CUR",
         "available": available,
         "starting_price": starting_price,
@@ -19,6 +21,7 @@ def item(product_id, *, available=True, score=0, popular=False, tags=None,
         "customization_group_ids": [],
         "upsell_group_ids": [],
         "tags": tags or [],
+        "search_terms": search_terms or [],
         "metadata": {
             "recommendation_score": score,
             "is_popular": popular,
@@ -66,12 +69,107 @@ def test_search_matches_tags_and_metadata_best_for():
     assert [entry["product_id"] for entry in tag_result.data["items"]] == ["tag-match"]
 
 
+def test_search_ranks_exact_food_terms_before_partial_chicken_matches():
+    result = service([
+        item("legend-ranch", name="Legend Ranch", description="Chicken pizza",
+             tags=["chicken"], score=95, starting_price=750),
+        item("pizza-n-wings", name="Pizza N Wings",
+             description="1 Medium Classic Pizza + 6 pcs Wings + 2 Small Drinks.",
+             tags=["combo", "chicken"], search_terms=["pizza n wings", "chicken"],
+             score=90, popular=True, starting_price=5700),
+        item("4-pcs-chicken-wings", name="4 Pcs Chicken Wings",
+             description="Oven baked spicy wings, tossed with sauce.",
+             tags=["chicken"], search_terms=["4 pcs chicken wings"],
+             score=75, starting_price=500),
+        item("6-pcs-chicken-wings", name="6 Pcs Chicken Wings",
+             description="Oven baked spicy wings.",
+             tags=["chicken"], search_terms=["6 pcs chicken wings"],
+             score=82, popular=True, starting_price=700),
+    ]).search_menu(query="chicken wings")
+
+    assert [entry["product_id"] for entry in result.data["items"]] == [
+        "6-pcs-chicken-wings",
+        "4-pcs-chicken-wings",
+        "pizza-n-wings",
+    ]
+
+
+def test_search_handles_compact_piece_count_and_wings_typo():
+    result = service([
+        item("pizza-n-wings", name="Pizza N Wings",
+             description="1 Medium Classic Pizza + 6 pcs Wings + 2 Small Drinks.",
+             tags=["combo", "chicken"], search_terms=["pizza n wings", "chicken"],
+             score=90, popular=True, starting_price=5700),
+        item("4-pcs-chicken-wings", name="4 Pcs Chicken Wings",
+             description="Oven baked spicy wings, tossed with sauce.",
+             tags=["chicken"], search_terms=["4 pcs chicken wings"],
+             score=75, starting_price=500),
+        item("6-pcs-chicken-wings", name="6 Pcs Chicken Wings",
+             description="Oven baked spicy wings.",
+             tags=["chicken"], search_terms=["6 pcs chicken wings"],
+             score=82, popular=True, starting_price=700),
+    ]).search_menu(query="4pcs chicken wigns")
+
+    assert [entry["product_id"] for entry in result.data["items"]] == ["4-pcs-chicken-wings"]
+
+
+def test_search_ignores_non_menu_words_without_hardcoded_stopwords():
+    result = service([
+        item("legend-ranch", name="Legend Ranch", description="Chicken pizza",
+             tags=["chicken"], score=95, starting_price=750),
+        item("4-pcs-chicken-wings", name="4 Pcs Chicken Wings",
+             description="Oven baked spicy wings, tossed with sauce.",
+             tags=["chicken"], search_terms=["4 pcs chicken wings"],
+             score=75, starting_price=500),
+    ]).search_menu(query="please can i order chicken wigns")
+
+    assert [entry["product_id"] for entry in result.data["items"]] == ["4-pcs-chicken-wings"]
+
+
 def test_unavailable_items_are_excluded_by_default():
     result = service([
         item("available", available=True),
         item("unavailable", available=False, score=100),
     ]).search_menu()
     assert [entry["product_id"] for entry in result.data["items"]] == ["available"]
+
+
+def test_archived_items_are_excluded_from_customer_menu_search():
+    archived = item("archived", available=True, score=100)
+    archived["archived"] = True
+    result = service([
+        item("available", available=True),
+        archived,
+    ]).search_menu()
+    assert [entry["product_id"] for entry in result.data["items"]] == ["available"]
+
+
+def test_admin_adds_and_archives_menu_item():
+    menu = service([])
+
+    created = menu.admin_save_menu_item({
+        "product_id": "new-item",
+        "name": "New Item",
+        "description": "Configured",
+        "category": "pizza",
+        "currency": "CUR",
+        "available": True,
+        "starting_price": 10,
+        "base_prices": {},
+        "requires_customization": False,
+        "customization_group_ids": [],
+        "upsell_group_ids": [],
+        "tags": ["pizza"],
+        "search_terms": [],
+        "image_url": None,
+        "metadata": {},
+    })
+    archived = menu.admin_archive_item("new-item")
+
+    assert created["item"]["SK"] == "ITEM#new-item"
+    assert archived["item"]["available"] is False
+    assert archived["item"]["archived"] is True
+    assert menu.search_menu().data["items"] == []
 
 
 def test_max_price_uses_starting_price_then_price_then_minimum_base_price():

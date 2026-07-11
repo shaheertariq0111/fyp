@@ -9,6 +9,10 @@ class AgentRequestContext:
     user_id: str
     agent_session_id: str
     branch_id: str | None = None
+    customer_id: str | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    channel: str = "web"
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 

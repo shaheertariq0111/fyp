@@ -8,7 +8,13 @@ import re
 from src.models.tool_responses import ToolResponse
 
 
-TERMINAL_CART_STATUSES = {"pending_confirmation", "cancelled", "expired"}
+ORDER_HANDOFF_CART_STATUS = "converted_to_order"
+TERMINAL_CART_STATUSES = {
+    ORDER_HANDOFF_CART_STATUS,
+    "pending_confirmation",  # Legacy cart handoff status from older checkout flow.
+    "cancelled",
+    "expired",
+}
 
 
 class CartService:
@@ -27,7 +33,9 @@ class CartService:
         return f"{prefix}-{uuid.uuid4()}"
 
     def start_item_customization(self, user_id: str, session_id: str, item_id: str,
-                                 quantity: int = 1) -> ToolResponse:
+                                 quantity: int = 1, customer_id: str | None = None,
+                                 customer_name: str | None = None,
+                                 customer_phone: str | None = None) -> ToolResponse:
         if quantity < 1:
             return ToolResponse.error(error_code="INVALID_QUANTITY",
                                       user_message="Quantity must be at least one.")
@@ -44,6 +52,8 @@ class CartService:
         cart = {
             "PK": user_id, "SK": f"CART#{cart_id}", "cart_id": cart_id,
             "user_id": user_id, "agent_session_id": session_id,
+            "customer_id": customer_id or user_id, "customer_name": customer_name,
+            "customer_phone": customer_phone,
             "restaurant_id": self.settings.restaurant_id, "branch_id": self.settings.branch_id,
             "status": "cart_created" if quantity > 1 and groups else "customizing_item",
             "customization_mode": None if quantity > 1 and groups else "single",
@@ -243,7 +253,7 @@ class CartService:
             return validation
         response = self.order_service.create_pending_from_cart(cart)
         if response.success:
-            cart["status"] = "pending_confirmation"
+            cart["status"] = ORDER_HANDOFF_CART_STATUS
             self._save(cart)
         return response
 
@@ -252,6 +262,9 @@ class CartService:
         user_id: str,
         session_id: str,
         items: list[dict],
+        customer_id: str | None = None,
+        customer_name: str | None = None,
+        customer_phone: str | None = None,
     ) -> ToolResponse:
         if not items:
             return ToolResponse.error(error_code="CART_EMPTY", user_message="Please add an item first.")
@@ -260,6 +273,8 @@ class CartService:
         cart = {
             "PK": user_id, "SK": f"CART#{cart_id}", "cart_id": cart_id,
             "user_id": user_id, "agent_session_id": session_id,
+            "customer_id": customer_id or user_id, "customer_name": customer_name,
+            "customer_phone": customer_phone,
             "restaurant_id": self.settings.restaurant_id, "branch_id": self.settings.branch_id,
             "status": "cart_ready", "customization_mode": "website",
             "requested_quantity": 1, "source_item_id": None,
@@ -303,23 +318,38 @@ class CartService:
         self.carts.create(cart)
         response = self.order_service.create_pending_from_cart(cart)
         if response.success:
-            cart["status"] = "pending_confirmation"
+            cart["status"] = ORDER_HANDOFF_CART_STATUS
             self._save(cart)
         return response
 
     def get_active_cart(self, user_id: str, session_id: str) -> ToolResponse:
         cart = self.carts.find_active_by_session(user_id, session_id, TERMINAL_CART_STATUSES)
         if not cart:
+            order_result = self.order_service.get_order_status(user_id)
+            active_orders = []
+            active_order_guidance = []
+            if order_result.success:
+                active_orders = order_result.data.get("orders", [])
+                active_order_guidance = (order_result.agent or {}).get("orders", [])
             return ToolResponse.ok(
-                data={"cart": None},
-                user_message="There isn't an active cart for this chat session.",
+                data={"cart": None, "orders": active_orders},
+                user_message=("There isn't an active cart for this chat session."
+                              if not active_orders else
+                              "There isn't an active cart, but there is an active order."),
                 next_action="present_cart_status",
                 agent={
                     "entity": "cart",
                     "cart": None,
+                    "orders": active_order_guidance,
                     "state": "no_active_cart",
-                    "valid_next_actions": ["search_menu", "create_menu_session_link"],
-                    "instruction": "Tell the customer no active chat cart was found and offer to search the menu or open the website.",
+                    "valid_next_actions": ["get_order_status", "update_order_flow",
+                                           "search_menu", "create_menu_session_link"],
+                    "instruction": (
+                        "Tell the customer no active chat cart was found. If orders are present, "
+                        "summarize the active order status using those order IDs and continue the "
+                        "order flow from the order state. Do not use a cart_id as an order_id. If "
+                        "there are no orders, offer to search the menu or open the website."
+                    ),
                 },
             )
         data = self._cart_data(cart)

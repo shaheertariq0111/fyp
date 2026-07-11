@@ -63,6 +63,10 @@ def invoke_restaurant_agent(
     user_id: str,
     agent_session_id: str,
     branch_id: str | None = None,
+    customer_id: str | None = None,
+    customer_name: str | None = None,
+    customer_phone: str | None = None,
+    channel: str = "web",
     agent: Agent | None = None,
     **kwargs: Any,
 ):
@@ -70,6 +74,10 @@ def invoke_restaurant_agent(
         user_id=user_id,
         agent_session_id=agent_session_id,
         branch_id=branch_id,
+        customer_id=customer_id or user_id,
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        channel=channel,
     )
     runtime_agent = agent or build_restaurant_agent(
         session_manager=build_session_manager(agent_session_id)

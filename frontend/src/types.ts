@@ -27,6 +27,22 @@ export type ChatApiResponse = {
   text: string;
   session_id: string;
   user_id: string;
+  customer_id?: string | null;
+  customer?: {
+    customer_id?: string;
+    display_name?: string | null;
+    phone_e164?: string | null;
+    phone_verified?: boolean;
+    addresses?: Array<{
+      address_id?: string;
+      label?: string;
+      address_text?: string;
+      created_at?: string;
+      last_used_at?: string;
+      is_default?: boolean;
+      verified?: boolean;
+    }>;
+  } | null;
   data?: Record<string, unknown>;
   tool_calls: ToolCallResult[];
   write_succeeded: boolean;

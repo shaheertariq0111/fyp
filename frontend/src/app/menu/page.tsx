@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api";
-import { getLocalSessionId, getLocalUserId } from "@/lib/session";
+import { getLocalCustomerId, getLocalSessionId } from "@/lib/session";
 import type { MenuItem, MenuOrderItem, OptionGroup, ToolResponse } from "@/types";
 
 type MenuResponse = ToolResponse<{ items: MenuItem[] }>;
@@ -112,7 +112,9 @@ export default function MenuPage() {
         items: cart,
         session_token: sessionToken,
         session_id: sessionToken ? undefined : getLocalSessionId(),
-        user_id: sessionToken ? undefined : getLocalUserId(),
+        user_id: sessionToken ? undefined : getLocalCustomerId(),
+        customer_id: sessionToken ? undefined : getLocalCustomerId(),
+        channel: "web",
       });
       setCart([]);
       setMessage(`Pending order ready: ${response.data.order_id}`);
