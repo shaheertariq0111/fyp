@@ -42,6 +42,18 @@ def test_recommendation_query_sorts_by_metadata_score():
     assert result.data["items"][0]["metadata"]["display_reason"] == "Reason for higher"
 
 
+def test_search_menu_limit_caps_returned_items_after_sorting():
+    result = service([
+        item(f"item-{index}", score=index, starting_price=10 + index)
+        for index in range(8)
+    ]).search_menu(limit=5)
+
+    assert len(result.data["items"]) == 5
+    assert [entry["product_id"] for entry in result.data["items"]] == [
+        "item-7", "item-6", "item-5", "item-4", "item-3",
+    ]
+
+
 def test_search_matches_tags_and_metadata_best_for():
     menu = service([
         item("tag-match", tags=["spicy"], best_for=["classic"]),

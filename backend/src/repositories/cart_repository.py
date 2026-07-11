@@ -38,6 +38,29 @@ class CartRepository:
                 return None
             kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
+    def find_active_by_session(
+        self,
+        user_id: str,
+        agent_session_id: str,
+        terminal_statuses: set[str],
+    ) -> dict | None:
+        kwargs = {
+            "FilterExpression": (
+                Attr("user_id").eq(user_id)
+                & Attr("agent_session_id").eq(agent_session_id)
+                & ~Attr("status").is_in(list(terminal_statuses))
+            )
+        }
+        matches: list[dict] = []
+        while True:
+            response = self.table.scan(**kwargs)
+            matches.extend(from_dynamodb(item) for item in response.get("Items", []))
+            if "LastEvaluatedKey" not in response:
+                if not matches:
+                    return None
+                return max(matches, key=lambda item: item.get("updated_at", ""))
+            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
     def save(self, cart: dict, expected_version: int) -> None:
         updated = dict(cart)
         updated["version"] = expected_version + 1

@@ -75,7 +75,12 @@ def invoke_restaurant_agent(
         session_manager=build_session_manager(agent_session_id)
     )
     with request_context(context):
-        return runtime_agent(message, **kwargs)
+        result = runtime_agent(message, **kwargs)
+        try:
+            setattr(result, "tool_calls", list(context.tool_calls))
+        except Exception:
+            pass
+        return result
 
 
 def agent_result_text(result: Any) -> str:

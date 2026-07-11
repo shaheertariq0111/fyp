@@ -15,6 +15,18 @@ class ChatResponse(BaseModel):
     session_id: str
     user_id: str
     data: dict[str, Any] = Field(default_factory=dict)
+    tool_calls: list["ToolCallResult"] = Field(default_factory=list)
+    write_succeeded: bool = False
+    state: dict[str, Any] = Field(default_factory=dict)
+    buttons: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ToolCallResult(BaseModel):
+    tool_name: str
+    success: bool
+    is_write: bool
+    result: dict[str, Any] | None = None
+    error_code: str | None = None
 
 
 class ActionRequest(BaseModel):
@@ -38,4 +50,3 @@ class MenuOrderRequest(BaseModel):
     session_token: str | None = None
     user_id: str | None = None
     session_id: str | None = None
-

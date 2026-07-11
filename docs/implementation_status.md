@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 5: Frontend (in progress)
+Phase 9: Menu website integration (in progress)
 
 ## Completed
 
@@ -85,6 +85,7 @@ Phase 5: Frontend (in progress)
 - [x] Strands file session manager configured per trusted `agent_session_id`
 - [x] Agent rules require tool-grounded menu, customization, upsell, order, and status behavior
 - [x] Configurable upsell customization rules included in the agent prompt
+- [x] Agent prompt explicitly forbids claiming cart/order writes, fulfillment changes, or submitted orders unless backend tools returned success
 
 ### Phase 10: API and frontend actions
 
@@ -99,19 +100,34 @@ Phase 5: Frontend (in progress)
 - [x] `POST /api/menu-orders` creates backend-validated pending orders from menu website submissions
 - [x] FastAPI route tests added
 - [x] Local API server verified on `http://127.0.0.1:8001`
+- [x] `POST /api/chat` remains a thin Strands agent endpoint with no API-level chat intent routing
+- [x] Agent prompt directs cart/order/status/order-start turns through backend tools instead of chat history
+- [x] Agent prompt tells broad order-start turns to check active backend orders before menu search
+- [x] Agent prompt now covers the full MVP chat flow: recommendations, website handoff, chat customization, multiple quantities, upsells, pending confirmation, fulfillment, submission, status, ambiguity, and recovery cases
+- [x] Tool responses now include an `agent` guidance object with current entity, status, required input, valid next actions, summaries, and instructions for the model
+- [x] Cart upsell responses now use `upsell_items` for add-on choices so cart `items` remains the actual cart contents
+- [x] Chat menu/recommendation tool calls are capped at five returned options while the website menu API can still load the full menu
+- [x] Checkout flow is fulfillment-first: collect delivery/takeaway details before one final confirmation that submits the order
+- [x] Checkout/proceed during the upsell step now skips add-ons and creates the backend order instead of forcing an explicit “skip add-ons” turn
+- [x] Accepted upsells are one-and-done: after one add-on is added and completed, the cart moves to checkout instead of offering another upsell
+- [x] `/api/chat` now returns current-turn `tool_calls`, `write_succeeded`, authoritative `state`, and action `buttons`
+- [x] `/api/chat` no longer rewrites assistant text with regex; transactional correctness comes from `tool_calls`, `write_succeeded`, and authoritative state
+- [x] Agent prompt forbids placeholder narration before required tool calls; broad order starts must call `get_order_status` before replying
+- [x] `/api/chat` re-reads active cart/orders after successful write tools so frontend state reflects persisted backend/DynamoDB state
+- [x] Frontend chat renders backend-verified write status and authoritative cart/order state instead of trusting assistant prose
+- [x] Frontend New order action rotates session ID and clears visible chat/cart state without changing normal reload persistence
 
 ## In Progress
 
-- Phase 5 frontend local verification: install Next/React dependencies, run type/build checks, and start the dev server.
+- Phase 9 live end-to-end verification: exercise cart creation, checkout/proceed during upsells, takeaway/delivery details, final confirmation, and menu website handoff against the seeded DynamoDB environment.
 
 ## Blocked
 
 - Bedrock Knowledge Base calls require a user-supplied `KNOWLEDGE_BASE_ID` and indexed restaurant FAQ/policy content.
-- Frontend dependency installation was blocked by the current environment usage limit when running `npm install`.
 
 ## Next Task
 
-Run `npm install` in `frontend/`, then run frontend type/build checks and start `npm run dev` on `http://localhost:3000`.
+Run the live Phase 9 browser/API flow with backend on `http://localhost:8001` and frontend on `http://localhost:3000`; then mark Phase 9 complete if cart/order status transitions and menu handoff succeed.
 
 ## Important Decisions
 
@@ -139,6 +155,7 @@ Run `npm install` in `frontend/`, then run frontend type/build checks and start 
 - Cart/order writes use conditional creation and optimistic version checks.
 - Menu session tokens are generated securely and only salted hashes are persisted.
 - Menu website order submissions are converted into pending orders by backend services after server-side item, customization, availability, and price validation.
+- The chat checkout flow asks fulfillment details before final confirmation; final `confirm` from `pending_confirmation` submits the order. The legacy `ready_for_submission`/`submit` path was removed.
 
 ## Assumptions
 
@@ -196,6 +213,14 @@ Latest configurable upsell MVP change modified:
 - `backend/src/services/cart_service.py`
 - `backend/tests/test_cart_service.py`
 - `docs/pizza_restaurant_ordering_agent_prd.md`
+
+Latest legacy order-path removal modified:
+
+- `backend/src/services/order_service.py`
+- `backend/src/agent/tools.py`
+- `backend/src/agent/system_prompt.py`
+- `backend/tests/test_order_service.py`
+- `docs/pizza_restaurant_ordering_agent_prd.md`
 - `docs/implementation_status.md`
 
 Latest Phase 8 agent orchestration change modified:
@@ -216,6 +241,113 @@ Latest Phase 10 API wiring change modified:
 - `backend/src/api/schemas.py`
 - `backend/src/services/cart_service.py`
 - `backend/tests/test_api.py`
+- `docs/implementation_status.md`
+
+Latest cart/order chat state hardening modified:
+
+- `backend/src/agent/system_prompt.py`
+- `backend/src/api/main.py`
+- `backend/src/repositories/cart_repository.py`
+- `backend/src/services/cart_service.py`
+- `backend/tests/fakes.py`
+- `backend/tests/test_api.py`
+- `backend/tests/test_cart_service.py`
+- `backend/tests/test_restaurant_agent.py`
+- `docs/implementation_status.md`
+
+Latest text-only cart flow correction modified:
+
+- `backend/src/api/main.py`
+- `backend/src/services/cart_service.py`
+- `backend/tests/test_api.py`
+- `backend/tests/test_cart_service.py`
+- `docs/implementation_status.md`
+
+Latest agent-owned chat routing correction modified:
+
+- `backend/src/agent/system_prompt.py`
+- `backend/src/api/main.py`
+- `backend/tests/test_api.py`
+- `backend/tests/test_restaurant_agent.py`
+- `docs/implementation_status.md`
+
+Latest agent system prompt hardening modified:
+
+- `backend/src/agent/system_prompt.py`
+- `backend/tests/test_restaurant_agent.py`
+- `docs/implementation_status.md`
+
+Latest comprehensive prompt flow hardening modified:
+
+- `backend/src/agent/system_prompt.py`
+- `backend/tests/test_restaurant_agent.py`
+- `docs/implementation_status.md`
+
+Latest tool response contract hardening modified:
+
+- `backend/src/models/tool_responses.py`
+- `backend/src/services/cart_service.py`
+- `backend/src/services/order_service.py`
+- `backend/src/agent/system_prompt.py`
+- `backend/tests/test_cart_service.py`
+- `backend/tests/test_order_service.py`
+- `backend/tests/test_restaurant_agent.py`
+- `docs/implementation_status.md`
+
+Latest transactional chat/frontend correctness fix modified:
+
+- `backend/src/agent/context.py`
+- `backend/src/agent/restaurant_agent.py`
+- `backend/src/agent/system_prompt.py`
+- `backend/src/agent/tools.py`
+- `backend/src/api/main.py`
+- `backend/src/api/schemas.py`
+- `backend/src/models/tool_responses.py`
+- `backend/src/services/cart_service.py`
+- `backend/src/services/order_service.py`
+- `backend/tests/test_api.py`
+- `backend/tests/test_cart_service.py`
+- `backend/tests/test_order_service.py`
+- `backend/tests/test_restaurant_agent.py`
+- `backend/tests/test_tools.py`
+- `frontend/src/app/chat/page.tsx`
+- `frontend/src/app/styles.css`
+- `frontend/src/lib/session.ts`
+- `frontend/src/types.ts`
+- `docs/implementation_status.md`
+
+Latest checkout choreography correction modified:
+
+- `backend/src/services/order_service.py`
+- `backend/src/services/cart_service.py`
+- `backend/src/agent/system_prompt.py`
+- `backend/tests/test_order_service.py`
+- `backend/tests/test_cart_service.py`
+- `backend/tests/test_restaurant_agent.py`
+- `docs/pizza_restaurant_ordering_agent_prd.md`
+- `docs/implementation_status.md`
+
+Latest prompt cleanup modified:
+
+- `backend/src/agent/system_prompt.py`
+- `backend/tests/test_restaurant_agent.py`
+- `backend/tests/test_order_service.py`
+- `docs/implementation_status.md`
+
+Latest order-start tool-call prompting fix modified:
+
+- `backend/src/agent/system_prompt.py`
+- `backend/tests/test_restaurant_agent.py`
+- `docs/implementation_status.md`
+
+Latest recommendation result cap modified:
+
+- `backend/src/services/menu_service.py`
+- `backend/src/agent/tools.py`
+- `backend/src/api/main.py`
+- `backend/src/agent/system_prompt.py`
+- `backend/tests/test_menu_service.py`
+- `backend/tests/test_tools.py`
 - `docs/implementation_status.md`
 
 Latest Phase 5 frontend work modified:
@@ -262,4 +394,48 @@ Latest Phase 5 frontend work modified:
   - `GET http://127.0.0.1:8001/api/menu?query=chicken` returned DynamoDB-backed menu results.
   - `POST http://127.0.0.1:8001/api/chat` returned a Bedrock/DynamoDB-grounded Legend Ranch recommendation.
 - `pytest -q`: **55 passed** after CORS/frontend-start support changes.
-- Frontend checks were not run because `npm install` was blocked by the environment usage limit.
+- Frontend dependencies, build/type checks, and local dev server were verified by user on `http://localhost:3000`.
+- `backend/.venv/bin/pytest -q backend/tests/test_api.py backend/tests/test_restaurant_agent.py backend/tests/test_cart_service.py backend/tests/test_order_service.py`: **26 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **61 passed**
+- Cart/order chat state tests cover cart status from backend state, place-order text creating pending orders only through `CartService`, incomplete carts refusing placement, confirm updating pending backend orders, and pickup requiring/updating backend fulfillment state.
+- `backend/.venv/bin/pytest -q backend/tests/test_api.py backend/tests/test_cart_service.py backend/tests/test_restaurant_agent.py backend/tests/test_order_service.py`: **31 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **66 passed**
+- Text-only chat tool-surface tests cover backend menu search for item terms, exact item text adding to the backend cart, active customization text saving the backend choice, and appending another item to an existing active cart.
+- `backend/.venv/bin/pytest -q backend/tests/test_restaurant_agent.py`: **8 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **66 passed** after system prompt hardening for tool-first routing, text-only chat behavior, active customization choices, fulfillment sequencing, and no pickup location/time collection in MVP.
+- `backend/.venv/bin/pytest -q backend/tests/test_api.py backend/tests/test_cart_service.py`: **24 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **69 passed**
+- Text-only cart flow tests cover blocking add-item requests during active customization, returning the current backend customization prompt/options, and preventing `ok` from triggering menu search.
+- `backend/.venv/bin/pytest -q backend/tests/test_api.py`: **20 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **72 passed**
+- Order-start routing tests cover `i want to order` opening menu choices without an active order, preserving active `awaiting_fulfillment_method` orders, and letting recommendation questions reach the agent.
+- `backend/.venv/bin/pytest -q backend/tests/test_api.py backend/tests/test_restaurant_agent.py`: **15 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **59 passed**
+- API chat guard logic was removed; route tests now verify chat is delegated to the Strands agent, while prompt tests cover broad order-start and active-order guidance.
+- `backend/.venv/bin/pytest -q backend/tests/test_restaurant_agent.py`: **8 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **59 passed**
+- Comprehensive prompt tests now cover tool-source grounding, text-only choices, broad order starts, recommendations, chat customization, upsells, pending confirmation, fulfillment/submission, cart status limitations, ambiguity, and safety.
+- `backend/.venv/bin/pytest -q backend/tests/test_cart_service.py backend/tests/test_order_service.py`: **11 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **61 passed**
+- Tool response contract tests cover top-level `agent` guidance for cart customization, upsells, pending orders, fulfillment, submission, active order status, and unambiguous `upsell_items` add-on payloads.
+- `backend/.venv/bin/pytest -q backend/tests/test_restaurant_agent.py backend/tests/test_cart_service.py backend/tests/test_order_service.py`: **19 passed**
+- `backend/.venv/bin/pytest -q backend/tests/test_api.py backend/tests/test_tools.py backend/tests/test_restaurant_agent.py backend/tests/test_cart_service.py backend/tests/test_order_service.py`: **34 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **66 passed**
+- Chat correctness tests cover write metadata/state, structured failed-write errors, informational responses, trusted active-cart lookup, and exception logging.
+- `backend/.venv/bin/pytest -q backend/tests/test_api.py backend/tests/test_tools.py backend/tests/test_cart_service.py backend/tests/test_order_service.py`: **26 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **66 passed**
+- Post-write chat state tests now verify `/api/chat` refreshes state from the backend service after a successful write instead of only returning the tool payload.
+- `backend/.venv/bin/pytest -q backend/tests/test_order_service.py backend/tests/test_cart_service.py backend/tests/test_restaurant_agent.py`: **20 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **67 passed**
+- Checkout choreography tests cover fulfillment-first order creation, takeaway/delivery reaching final confirmation, final confirm submitting the order, checkout auto-skipping a pending upsell decision, and one-and-done accepted upsells.
+- `backend/.venv/bin/pytest -q backend/tests/test_restaurant_agent.py backend/tests/test_order_service.py`: **11 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **67 passed**
+- `backend/.venv/bin/pytest -q backend/tests/test_restaurant_agent.py`: **8 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **68 passed**
+- `backend/.venv/bin/pytest -q backend/tests/test_menu_service.py backend/tests/test_tools.py backend/tests/test_restaurant_agent.py`: **18 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **70 passed**
+- `npm run typecheck`: **passed**
+- `npm run lint`: **failed** because the configured `next lint` script is incompatible with the installed Next 16 CLI and treats `lint` as a project directory.
+- `npm run build`: **passed** with the existing multiple-lockfile workspace-root warning.
+- `backend/.venv/bin/pytest -q backend/tests/test_order_service.py backend/tests/test_restaurant_agent.py`: **12 passed**
+- `backend/.venv/bin/pytest -q backend/tests`: **71 passed**, 1 existing Starlette/httpx deprecation warning

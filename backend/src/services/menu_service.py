@@ -9,7 +9,7 @@ class MenuService:
         self.repository = repository
 
     def search_menu(self, query=None, category=None, tags=None, max_price=None,
-                    available_only=True) -> ToolResponse:
+                    available_only=True, limit=None) -> ToolResponse:
         items = self.repository.search(available_only=available_only)
         normalized_query = query.casefold() if query else None
         required_tags = {tag.casefold() for tag in tags or []}
@@ -43,6 +43,8 @@ class MenuService:
                     continue
             matches.append(self._public_item(item))
         matches.sort(key=self._recommendation_sort_key)
+        if limit is not None:
+            matches = matches[:limit]
         return ToolResponse.ok(
             data={"items": matches},
             user_message=("I found current menu options." if matches

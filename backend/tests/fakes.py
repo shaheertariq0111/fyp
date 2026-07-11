@@ -35,6 +35,15 @@ class MemoryCartRepository:
         return next((deepcopy(cart) for cart in self.data.values()
                      if item_id in cart["cart_item_ids"]), None)
 
+    def find_active_by_session(self, user_id, agent_session_id, terminal_statuses):
+        matches = [
+            deepcopy(cart) for cart in self.data.values()
+            if cart["user_id"] == user_id
+            and cart["agent_session_id"] == agent_session_id
+            and cart["status"] not in terminal_statuses
+        ]
+        return max(matches, key=lambda cart: cart.get("updated_at", "")) if matches else None
+
     def save(self, cart, expected_version):
         assert self.data[cart["cart_id"]]["version"] == expected_version
         saved = deepcopy(cart)

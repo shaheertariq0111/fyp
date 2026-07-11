@@ -1,13 +1,15 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
-@dataclass(frozen=True)
+@dataclass
 class AgentRequestContext:
     user_id: str
     agent_session_id: str
     branch_id: str | None = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 _current_context: ContextVar[AgentRequestContext | None] = ContextVar("agent_request_context", default=None)
