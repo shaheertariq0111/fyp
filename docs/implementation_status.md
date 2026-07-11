@@ -126,6 +126,7 @@ Phase 9: Menu website integration (in progress)
 - [x] Admin console MVP added under `/admin` with env-backed login, dashboard analytics, live orders, order details/status updates, menu management, customer search, and monitoring
 - [x] Admin menu management can add/edit items, toggle availability, and archive items instead of hard-deleting historical menu references
 - [x] Admin backend APIs added under `/api/admin/*` with signed HttpOnly cookie auth
+- [x] Frontend downgraded from Next.js 16 to Next.js 15.5.20
 
 ## In Progress
 
@@ -329,6 +330,22 @@ Latest admin console validation:
 - `backend/.venv/bin/pytest -q backend/tests` → 91 passed, 1 existing Starlette/httpx deprecation warning
 - `cd frontend && npm run typecheck` → passed
 - `cd frontend && npm run lint` → failed because `next lint` is not valid in the current Next 16 CLI and is interpreted as a project directory
+- `cd frontend && npm run build` → passed with existing multiple-lockfile workspace-root warning
+
+Latest Next.js downgrade modified:
+
+- `frontend/package.json`
+- `frontend/package-lock.json`
+- `frontend/tsconfig.json`
+- `frontend/tsconfig.tsbuildinfo`
+- `docs/implementation_status.md`
+
+Latest Next.js downgrade validation:
+
+- `cd frontend && npm install next@^15` → resolved `next@15.5.20`; npm reported 2 moderate vulnerabilities
+- `cd frontend && npm ls next react react-dom --depth=0` → `next@15.5.20`, `react@19.2.7`, `react-dom@19.2.7`
+- `cd frontend && npm run typecheck` → passed
+- `cd frontend && npm run lint` → failed because Next 15 `next lint` is deprecated and prompts to initialize ESLint config interactively
 - `cd frontend && npm run build` → passed with existing multiple-lockfile workspace-root warning
 
 Latest Phase 8 agent orchestration change modified:
