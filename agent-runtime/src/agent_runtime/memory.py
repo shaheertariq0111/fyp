@@ -1,12 +1,14 @@
-from dataclasses import dataclass
+from __future__ import annotations
+
+from typing import Any
 
 
-@dataclass(frozen=True)
-class AgentCoreMemoryConfig:
-    memory_id: str
-    actor_id: str
-    session_id: str
+def agentcore_actor_id(*, customer_id: str | None, user_id: str) -> str:
+    return customer_id or user_id
 
-    @property
-    def enabled(self) -> bool:
-        return bool(self.memory_id)
+
+def require_agentcore_memory_id(settings: Any) -> str:
+    memory_id = getattr(settings, "agentcore_memory_id", "")
+    if not memory_id:
+        raise RuntimeError("AGENTCORE_MEMORY_ID is required for AgentCore Runtime conversation memory")
+    return memory_id

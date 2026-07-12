@@ -7,6 +7,7 @@ name = "pizza-ordering-agent-runtime"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
+  "bedrock-agentcore[strands-agents]",
   "boto3>=1.34,<2",
   "fastapi>=0.115,<1",
   "pydantic>=2.7,<3",

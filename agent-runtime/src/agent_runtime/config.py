@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class AgentCoreRuntimeSettings(BaseSettings):
     model_config = SettingsConfigDict(env_ignore_empty=True, extra="ignore")
 
+    environment: str = "production"
     agentcore_memory_id: str = ""
     log_level: str = "INFO"
     aws_region: str = Field(default="us-east-1", min_length=1)

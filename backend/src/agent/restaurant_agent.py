@@ -40,7 +40,7 @@ def build_session_manager(agent_session_id: str) -> FileSessionManager | None:
 
 def build_restaurant_agent(
     model: BedrockModel | str | None = None,
-    session_manager: FileSessionManager | None = None,
+    session_manager: Any | None = None,
 ) -> Agent:
     return Agent(
         model=model or build_bedrock_model(),
