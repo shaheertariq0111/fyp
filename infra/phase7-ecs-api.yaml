@@ -459,7 +459,7 @@ Resources:
               StringEquals:
                 aws:SourceAccount: !Ref AWS::AccountId
               ArnLike:
-                aws:SourceArn: !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:agent/*
+                aws:SourceArn: !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -499,7 +499,7 @@ Resources:
             Action:
               - bedrock:InvokeModel
               - bedrock:InvokeModelWithResponseStream
-            Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::inference-profile/us.amazon.nova-pro-v1:0
+            Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-pro-v1:0
           - Sid: InvokeNovaProFoundationModelsViaInferenceProfile
             Effect: Allow
             Action:
@@ -511,7 +511,7 @@ Resources:
               - !Sub arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0
             Condition:
               StringEquals:
-                bedrock:InferenceProfileArn: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::inference-profile/us.amazon.nova-pro-v1:0
+                bedrock:InferenceProfileArn: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-pro-v1:0
 
   AgentCoreExecutionMemoryPolicy:
     Type: AWS::IAM::Policy
@@ -611,13 +611,39 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: WriteAgentCoreLogs
+          - Sid: DescribeAgentCoreRuntimeLogStreamsAndCreateLogGroup
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:DescribeLogStreams
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*
+          - Sid: DescribeAgentCoreLogGroups
+            Effect: Allow
+            Action:
+              - logs:DescribeLogGroups
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+          - Sid: WriteAgentCoreRuntimeLogEvents
             Effect: Allow
             Action:
               - logs:CreateLogStream
-              - logs:DescribeLogStreams
               - logs:PutLogEvents
-            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/${ProjectName}/*:log-stream:*
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*
+          - Sid: WriteAgentCoreTraces
+            Effect: Allow
+            Action:
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+              - xray:GetSamplingRules
+              - xray:GetSamplingTargets
+            Resource: "*"
+          - Sid: PublishAgentCoreMetrics
+            Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+            Resource: "*"
+            Condition:
+              StringEquals:
+                cloudwatch:namespace: bedrock-agentcore
 
   AgentRequestsTable:
     Type: AWS::DynamoDB::Table
@@ -825,6 +851,8 @@ Resources:
       ConnectionId: !Ref BackendVpcLink
       IntegrationUri: !GetAtt BackendDiscoveryService.Arn
       PayloadFormatVersion: "1.0"
+      RequestParameters:
+        "overwrite:path": "$request.path"
       TimeoutInMillis: 30000
 
   BackendRouteDefault:

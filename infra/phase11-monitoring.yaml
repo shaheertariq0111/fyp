@@ -129,7 +129,7 @@ Resources:
       AlarmName: !Sub ${ProjectName}-api-gateway-5xx
       AlarmDescription: API Gateway returned 5XX responses.
       Namespace: AWS/ApiGateway
-      MetricName: 5XXError
+      MetricName: 5xx
       Dimensions:
         - Name: ApiId
           Value: !Ref HttpApiId
@@ -184,11 +184,11 @@ Resources:
       TreatMissingData: breaching
       AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
 
-  DynamoDbThrottleAlarm:
+  DynamoDbReadThrottleAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub ${ProjectName}-dynamodb-throttles
-      AlarmDescription: One or more application DynamoDB tables reported read or write throttling.
+      AlarmName: !Sub ${ProjectName}-dynamodb-read-throttles
+      AlarmDescription: One or more application DynamoDB tables reported read throttling.
       ComparisonOperator: GreaterThanThreshold
       Threshold: !Ref DynamoDbThrottleThreshold
       EvaluationPeriods: 1
@@ -205,34 +205,12 @@ Resources:
                   Value: !Ref AgentRequestsTableName
             Period: 60
             Stat: Sum
-        - Id: agentRequestsWrite
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: WriteThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref AgentRequestsTableName
-            Period: 60
-            Stat: Sum
         - Id: menuRead
           ReturnData: false
           MetricStat:
             Metric:
               Namespace: AWS/DynamoDB
               MetricName: ReadThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref MenuTableName
-            Period: 60
-            Stat: Sum
-        - Id: menuWrite
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: WriteThrottleEvents
               Dimensions:
                 - Name: TableName
                   Value: !Ref MenuTableName
@@ -249,34 +227,12 @@ Resources:
                   Value: !Ref CartsTableName
             Period: 60
             Stat: Sum
-        - Id: cartsWrite
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: WriteThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref CartsTableName
-            Period: 60
-            Stat: Sum
         - Id: ordersRead
           ReturnData: false
           MetricStat:
             Metric:
               Namespace: AWS/DynamoDB
               MetricName: ReadThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref OrdersTableName
-            Period: 60
-            Stat: Sum
-        - Id: ordersWrite
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: WriteThrottleEvents
               Dimensions:
                 - Name: TableName
                   Value: !Ref OrdersTableName
@@ -293,34 +249,12 @@ Resources:
                   Value: !Ref CustomersTableName
             Period: 60
             Stat: Sum
-        - Id: customersWrite
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: WriteThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref CustomersTableName
-            Period: 60
-            Stat: Sum
         - Id: agentSessionsRead
           ReturnData: false
           MetricStat:
             Metric:
               Namespace: AWS/DynamoDB
               MetricName: ReadThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref AgentSessionsTableName
-            Period: 60
-            Stat: Sum
-        - Id: agentSessionsWrite
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: WriteThrottleEvents
               Dimensions:
                 - Name: TableName
                   Value: !Ref AgentSessionsTableName
@@ -337,17 +271,6 @@ Resources:
                   Value: !Ref MenuSessionsTableName
             Period: 60
             Stat: Sum
-        - Id: menuSessionsWrite
-          ReturnData: false
-          MetricStat:
-            Metric:
-              Namespace: AWS/DynamoDB
-              MetricName: WriteThrottleEvents
-              Dimensions:
-                - Name: TableName
-                  Value: !Ref MenuSessionsTableName
-            Period: 60
-            Stat: Sum
         - Id: auditRead
           ReturnData: false
           MetricStat:
@@ -357,6 +280,99 @@ Resources:
               Dimensions:
                 - Name: TableName
                   Value: !Ref AuditTableName
+            Period: 60
+            Stat: Sum
+        - Id: readThrottles
+          Expression: SUM(METRICS())
+          Label: TotalDynamoDbReadThrottleEvents
+          ReturnData: true
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  DynamoDbWriteThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-dynamodb-write-throttles
+      AlarmDescription: One or more application DynamoDB tables reported write throttling.
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: !Ref DynamoDbThrottleThreshold
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: agentRequestsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentRequestsTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuTableName
+            Period: 60
+            Stat: Sum
+        - Id: cartsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CartsTableName
+            Period: 60
+            Stat: Sum
+        - Id: ordersWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref OrdersTableName
+            Period: 60
+            Stat: Sum
+        - Id: customersWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CustomersTableName
+            Period: 60
+            Stat: Sum
+        - Id: agentSessionsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentSessionsTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuSessionsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuSessionsTableName
             Period: 60
             Stat: Sum
         - Id: auditWrite
@@ -370,9 +386,9 @@ Resources:
                   Value: !Ref AuditTableName
             Period: 60
             Stat: Sum
-        - Id: throttles
+        - Id: writeThrottles
           Expression: SUM(METRICS())
-          Label: TotalDynamoDbThrottleEvents
+          Label: TotalDynamoDbWriteThrottleEvents
           ReturnData: true
       AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
 
