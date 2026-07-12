@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     bedrock_guardrail_version: str = ""
     knowledge_base_id: str = ""
     knowledge_base_max_results: int = Field(default=5, gt=0, le=100)
+    agentcore_runtime_arn: str = ""
 
     allow_aws_resource_creation: bool = False
     dynamodb_deletion_protection: bool = True
