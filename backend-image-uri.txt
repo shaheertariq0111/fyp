@@ -1,0 +1,1 @@
+352306494518.dkr.ecr.us-east-1.amazonaws.com/fyp-dev-backend:dev-5ae9067-202607121746-single
