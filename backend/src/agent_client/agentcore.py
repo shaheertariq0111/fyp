@@ -56,7 +56,7 @@ class AgentCoreRuntimeClient:
             result = self._read_response(response)
             if status_code >= 400:
                 raise RuntimeError(f"AgentCore Runtime returned HTTP {status_code}")
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "AgentCore runtime invocation failed",
                 extra={
@@ -66,6 +66,7 @@ class AgentCoreRuntimeClient:
                     "channel": request.channel,
                     "agentcore_invocation_status": "failed",
                     "error_code": "AGENT_INVOCATION_FAILED",
+                    "exception_message": str(exc),
                     "response_time_ms": round((time.perf_counter() - started) * 1000, 2),
                 },
             )
