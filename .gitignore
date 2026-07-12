@@ -4,6 +4,7 @@
 __pycache__/
 .pytest_cache/
 .strands_sessions/
+agent-runtime/env.agentcore.dev.json
 *.py[cod]
 *.egg-info/
 node_modules/

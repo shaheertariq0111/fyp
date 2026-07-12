@@ -5,10 +5,12 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
+import uuid
 from typing import Any, Callable
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.agent import tools
@@ -31,19 +33,59 @@ from src.api.schemas import (
     MenuOrderRequest,
     ToolCallResult,
 )
-from src.infrastructure.config import get_settings
+from src.infrastructure.config import get_settings, parse_frontend_cors_origins
+from src.infrastructure.config import CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS
+from src.infrastructure.logging import configure_logging
 
 
+configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 app = FastAPI(title="Pizza Restaurant Ordering Agent API")
 logger = logging.getLogger(__name__)
 ADMIN_COOKIE_NAME = "pizza_admin_session"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=parse_frontend_cors_origins(
+        os.getenv("FRONTEND_CORS_ORIGINS"),
+        os.getenv("ENVIRONMENT", "local"),
+    ),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=CORS_ALLOW_METHODS,
+    allow_headers=CORS_ALLOW_HEADERS,
+    expose_headers=CORS_EXPOSE_HEADERS,
 )
+
+
+@app.middleware("http")
+async def log_request(request: Request, call_next):
+    started = time.perf_counter()
+    status_code = 500
+    http_request_id = _http_request_id(request)
+    request.state.http_request_id = http_request_id
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Request-ID"] = http_request_id
+        return response
+    finally:
+        route = getattr(request.scope.get("route"), "path", None) or "unmatched"
+        logger.info(
+            "HTTP request completed",
+            extra={
+                "event": "http_request_completed",
+                "http_request_id": http_request_id,
+                "route": route,
+                "method": request.method,
+                "status_code": status_code,
+                "response_time_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+)
+
+
+def _http_request_id(request: Request) -> str:
+    header_value = (request.headers.get("x-request-id") or "").strip()
+    if header_value and len(header_value) <= 128 and all(char.isprintable() for char in header_value):
+        return header_value
+    return f"http-{uuid.uuid4()}"
 
 
 ACTION_HANDLERS: dict[str, Callable[..., dict]] = {
@@ -91,6 +133,15 @@ def _verify_admin_token(token: str | None) -> dict[str, Any]:
 
 def require_admin(pizza_admin_session: str | None = Cookie(default=None)) -> dict[str, Any]:
     return _verify_admin_token(pizza_admin_session)
+
+
+def _admin_cookie_options(settings) -> dict[str, Any]:
+    cross_site = settings.cross_site_admin_cookie()
+    return {
+        "httponly": True,
+        "secure": cross_site,
+        "samesite": "none" if cross_site else "lax",
+    }
 
 
 def _admin_http_error(exc: ValueError) -> HTTPException:
@@ -148,16 +199,18 @@ def _refresh_authoritative_state(user_id: str, session_id: str, state: dict[str,
         refreshed["cart"] = cart_result.get("data", {}).get("cart")
     except Exception:
         logger.exception("Failed to refresh active cart after chat write", extra={
-            "user_id": user_id,
+            "actor_id": user_id,
             "agent_session_id": session_id,
+            "dynamodb_operation": "get_active_cart",
         })
     try:
         order_result = services.orders.get_order_status(user_id).model_dump(exclude_none=True)
         refreshed["orders"] = order_result.get("data", {}).get("orders", [])
     except Exception:
         logger.exception("Failed to refresh active orders after chat write", extra={
-            "user_id": user_id,
+            "actor_id": user_id,
             "agent_session_id": session_id,
+            "dynamodb_operation": "get_order_status",
         })
     return refreshed
 
@@ -253,16 +306,18 @@ def _has_active_state(services, user_id: str, session_id: str | None) -> bool:
             return True
     except Exception:
         logger.exception("Failed to inspect active cart during session resolution", extra={
-            "user_id": user_id,
+            "actor_id": user_id,
             "agent_session_id": session_id,
+            "dynamodb_operation": "get_active_cart",
         })
     try:
         orders = services.orders.get_order_status(user_id).data.get("orders", [])
         return bool(orders)
     except Exception:
         logger.exception("Failed to inspect active orders during session resolution", extra={
-            "user_id": user_id,
+            "actor_id": user_id,
             "agent_session_id": session_id,
+            "dynamodb_operation": "get_order_status",
         })
     return False
 
@@ -332,16 +387,15 @@ def admin_login(request: AdminLoginRequest, response: Response) -> dict[str, Any
         ADMIN_COOKIE_NAME,
         token,
         max_age=settings.admin_session_ttl_hours * 3600,
-        httponly=True,
-        samesite="lax",
-        secure=settings.environment == "production",
+        **_admin_cookie_options(settings),
     )
     return {"admin": {"username": request.username}, "expires_at": expires_at}
 
 
 @app.post("/api/admin/logout")
 def admin_logout(response: Response) -> dict[str, bool]:
-    response.delete_cookie(ADMIN_COOKIE_NAME)
+    settings = get_settings()
+    response.delete_cookie(ADMIN_COOKIE_NAME, **_admin_cookie_options(settings))
     return {"success": True}
 
 
@@ -554,46 +608,104 @@ def admin_monitoring_failed_orders(
 
 
 @app.post("/api/chat", response_model=ChatSubmitResponse)
-def chat(request: ChatRequest) -> ChatSubmitResponse:
-    context, identity_state = _resolve_identity(request)
+def chat(payload: ChatRequest, http_request: Request, response: Response) -> ChatSubmitResponse:
+    http_request_id = getattr(http_request.state, "http_request_id", None)
+    context, identity_state = _resolve_identity(payload)
     agent_requests = get_services().agent_requests
     record = agent_requests.start_processing(
         actor_id=context.user_id,
         session_id=context.agent_session_id,
-        message=request.message,
+        message=payload.message,
         channel=context.channel,
-        request_payload=request.model_dump(),
+        request_payload=payload.model_dump(),
+    )
+    response.headers["X-Agent-Request-ID"] = record["request_id"]
+    logger.info(
+        "Agent request processing started",
+        extra={
+            "event": "agent_request_started",
+            "http_request_id": http_request_id,
+            "request_id": record["request_id"],
+            "actor_id": context.user_id,
+            "agent_session_id": context.agent_session_id,
+            "channel": context.channel,
+            "agent_request_status": record["status"],
+        },
     )
     try:
+        invoke_started = time.perf_counter()
         invocation = get_agent_runtime_client().invoke(
             AgentInvocationRequest(
-                message=request.message,
+                message=payload.message,
                 user_id=context.user_id,
                 agent_session_id=context.agent_session_id,
-                branch_id=request.branch_id,
+                branch_id=payload.branch_id,
                 customer_id=context.customer_id,
                 customer_name=context.customer_name,
                 customer_phone=context.customer_phone,
                 channel=context.channel,
             )
         )
+        logger.info(
+            "Agent runtime invocation completed",
+            extra={
+                "event": "agentcore_invocation_completed",
+                "http_request_id": http_request_id,
+                "request_id": record["request_id"],
+                "actor_id": context.user_id,
+                "agent_session_id": context.agent_session_id,
+                "channel": context.channel,
+                "agentcore_invocation_status": "completed",
+                "response_time_ms": round((time.perf_counter() - invoke_started) * 1000, 2),
+            },
+        )
         response_payload = _chat_response_from_invocation(
             context, identity_state, invocation
         ).model_dump(exclude_none=True)
         record = agent_requests.complete(record["request_id"], response_payload)
+        logger.info(
+            "Agent request processing completed",
+            extra={
+                "event": "agent_request_completed",
+                "http_request_id": http_request_id,
+                "request_id": record["request_id"],
+                "actor_id": context.user_id,
+                "agent_session_id": context.agent_session_id,
+                "channel": context.channel,
+                "agent_request_status": record["status"],
+            },
+        )
     except Exception:
         logger.exception(
             "Agent request failed",
             extra={
+                "event": "agentcore_invocation_failed",
+                "http_request_id": http_request_id,
                 "request_id": record["request_id"],
-                "user_id": context.user_id,
+                "actor_id": context.user_id,
                 "agent_session_id": context.agent_session_id,
+                "channel": context.channel,
+                "agentcore_invocation_status": "failed",
+                "error_code": "AGENT_INVOCATION_FAILED",
             },
         )
         record = agent_requests.fail(
             record["request_id"],
             error_code="AGENT_INVOCATION_FAILED",
             message="The request could not be completed.",
+        )
+        logger.info(
+            "Agent request status updated",
+            extra={
+                "event": "agent_request_failed",
+                "http_request_id": http_request_id,
+                "request_id": record["request_id"],
+                "actor_id": context.user_id,
+                "agent_session_id": context.agent_session_id,
+                "channel": context.channel,
+                "agent_request_status": record["status"],
+                "error_code": record.get("error_code"),
+            },
         )
     return ChatSubmitResponse(
         request_id=record["request_id"],
@@ -606,9 +718,21 @@ def chat(request: ChatRequest) -> ChatSubmitResponse:
 
 
 @app.get("/api/chat/{request_id}", response_model=ChatRequestStatusResponse)
-def chat_status(request_id: str) -> ChatRequestStatusResponse:
+def chat_status(request_id: str, http_request: Request, response: Response) -> ChatRequestStatusResponse:
+    http_request_id = getattr(http_request.state, "http_request_id", None)
+    response.headers["X-Agent-Request-ID"] = request_id
     record = get_services().agent_requests.get(request_id)
     if not record:
+        logger.info(
+            "Agent request status not found",
+            extra={
+                "event": "agent_request_not_found",
+                "http_request_id": http_request_id,
+                "request_id": request_id,
+                "agent_request_status": "not_found",
+                "error_code": "AGENT_REQUEST_NOT_FOUND",
+            },
+        )
         raise HTTPException(
             status_code=404,
             detail={
@@ -616,6 +740,18 @@ def chat_status(request_id: str) -> ChatRequestStatusResponse:
                 "user_message": "The chat request was not found.",
             },
         )
+    logger.info(
+        "Agent request status read",
+        extra={
+            "event": "agent_request_status_read",
+            "http_request_id": http_request_id,
+            "request_id": request_id,
+            "actor_id": record.get("actor_id"),
+            "agent_session_id": record.get("session_id"),
+            "agent_request_status": record.get("status"),
+            "error_code": record.get("error_code"),
+        },
+    )
     return _status_response_from_record(record)
 
 

@@ -1,6 +1,10 @@
+import os
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+
 from agent_runtime import handler
+from agent_runtime.server import app
 
 
 def test_handler_invokes_existing_restaurant_agent(monkeypatch):
@@ -24,7 +28,12 @@ def test_handler_invokes_existing_restaurant_agent(monkeypatch):
     monkeypatch.setattr(
         handler,
         "get_agentcore_runtime_settings",
-        lambda: SimpleNamespace(agentcore_memory_id="memory-1", log_level="INFO"),
+        lambda: SimpleNamespace(
+            agentcore_memory_id="memory-1",
+            log_level="INFO",
+            session_token_secret_arn="",
+            aws_region="us-east-1",
+        ),
     )
 
     response = handler.invoke({
@@ -55,3 +64,51 @@ def test_handler_invokes_existing_restaurant_agent(monkeypatch):
         "customer_phone": "+923001234567",
         "channel": "web",
     }
+
+
+def test_ensure_session_token_secret_loads_secret_arn(monkeypatch):
+    monkeypatch.delenv("SESSION_TOKEN_SECRET", raising=False)
+    monkeypatch.setattr(
+        handler,
+        "get_secret_value",
+        lambda secret_arn, region_name: f"{secret_arn}:{region_name}:secret",
+    )
+
+    handler.ensure_session_token_secret(
+        SimpleNamespace(
+            session_token_secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:session",
+            aws_region="us-east-1",
+        )
+    )
+
+    assert os.environ["SESSION_TOKEN_SECRET"] == (
+        "arn:aws:secretsmanager:us-east-1:123:secret:session:us-east-1:secret"
+    )
+
+
+def test_http_runtime_contract(monkeypatch):
+    monkeypatch.setattr(
+        "agent_runtime.server.invoke",
+        lambda payload: {
+            "text": f"handled {payload['message']}",
+            "tool_calls": [],
+            "memory": {},
+        },
+    )
+    client = TestClient(app)
+
+    ping_response = client.get("/ping")
+    invocation_response = client.post(
+        "/invocations",
+        json={
+            "message": "hello",
+            "user_id": "user-1",
+            "agent_session_id": "session-1",
+            "branch_id": "default",
+        },
+    )
+
+    assert ping_response.status_code == 200
+    assert ping_response.json() == {"status": "ok"}
+    assert invocation_response.status_code == 200
+    assert invocation_response.json()["text"] == "handled hello"

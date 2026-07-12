@@ -111,6 +111,45 @@ def test_health_route():
     response = client().get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert response.headers["x-request-id"].startswith("http-")
+
+
+def test_cors_exposes_request_id_headers():
+    response = client().get("/health", headers={"Origin": "http://localhost:3000"})
+
+    exposed_headers = response.headers["access-control-expose-headers"]
+    assert "X-Request-ID" in exposed_headers
+    assert "X-Agent-Request-ID" in exposed_headers
+
+
+def test_http_request_id_header_is_propagated_and_route_template_logged(caplog):
+    with caplog.at_level("INFO", logger="src.api.main"):
+        response = client().get("/api/chat/missing-request", headers={"X-Request-ID": "external-request-1"})
+
+    assert response.status_code == 404
+    assert response.headers["x-request-id"] == "external-request-1"
+    route_logs = [record for record in caplog.records if getattr(record, "event", None) == "http_request_completed"]
+    assert route_logs
+    assert route_logs[-1].http_request_id == "external-request-1"
+    assert route_logs[-1].route == "/api/chat/{request_id}"
+
+
+def test_chat_response_includes_http_and_agent_request_headers(monkeypatch):
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(message={"content": [{"text": "Hello!"}]}),
+        text="Hello!",
+    )
+
+    response = client().post(
+        "/api/chat",
+        json={"message": "hi", "session_id": "session", "user_id": "user"},
+        headers={"X-Request-ID": "http-chat-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] == "http-chat-1"
+    assert response.headers["x-agent-request-id"] == response.json()["request_id"]
 
 
 def completed_chat_response(test_client, request_id):
@@ -499,6 +538,30 @@ def test_admin_login_logout_and_auth_guard(monkeypatch):
     assert me.status_code == 200
     assert me.json()["admin"]["username"] == "admin"
     assert logout.status_code == 200
+
+
+def test_admin_cookie_is_cross_site_for_production(monkeypatch):
+    test_client = client()
+    monkeypatch.setattr(
+        main,
+        "get_settings",
+        lambda: make_test_settings(
+            environment="production",
+            bedrock_model_id="us.amazon.nova-pro-v1:0",
+            admin_username="admin",
+            admin_password="secret",
+            admin_session_secret="admin-secret-at-least-sixteen",
+            frontend_cors_origins="https://main.example.amplifyapp.com",
+        ),
+    )
+
+    response = test_client.post("/api/admin/login", json={"username": "admin", "password": "secret"})
+
+    assert response.status_code == 200
+    cookie = response.headers["set-cookie"].lower()
+    assert "httponly" in cookie
+    assert "secure" in cookie
+    assert "samesite=none" in cookie
 
 
 def test_admin_order_routes_use_admin_services(monkeypatch):

@@ -1,4 +1,10 @@
+import logging
+import time
+
 from src.models.tool_responses import ToolResponse
+
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeService:
@@ -18,12 +24,29 @@ class KnowledgeService:
         if branch_id:
             query = f"Branch: {branch_id}\nLanguage: {language}\nQuestion: {question}"
         try:
+            started = time.perf_counter()
             response = self.client.retrieve(
                 knowledgeBaseId=self.knowledge_base_id,
                 retrievalQuery={"text": query},
                 retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": self.max_results}},
             )
+            logger.info(
+                "Bedrock knowledge retrieval completed",
+                extra={
+                    "bedrock_response_time_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "status_code": 200,
+                },
+            )
         except Exception:
+            logger.exception(
+                "Bedrock knowledge retrieval failed",
+                extra={
+                    "error_code": "KNOWLEDGE_BASE_TIMEOUT",
+                    "bedrock_response_time_ms": round((time.perf_counter() - started) * 1000, 2)
+                    if "started" in locals()
+                    else None,
+                },
+            )
             return ToolResponse.error(error_code="KNOWLEDGE_BASE_TIMEOUT",
                                       user_message="I can't verify that information right now.", retryable=True)
         results = [{"text": result.get("content", {}).get("text", ""),

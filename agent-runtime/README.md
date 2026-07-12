@@ -17,7 +17,14 @@ agent_runtime.handler:invoke
 Build runtime artifacts from the repository root so the runtime package can install the shared backend package without duplicating menu, cart, order, customer, repository, or tool logic:
 
 ```powershell
-docker build --platform linux/amd64 -f agent-runtime/Dockerfile -t fyp-agent-runtime:phase6 .
+docker build --platform linux/arm64 -f agent-runtime/Dockerfile -t fyp-agent-runtime:phase6 .
+```
+
+The container serves AgentCore HTTP Runtime traffic on port `8080`:
+
+```text
+GET /ping
+POST /invocations
 ```
 
 The handler accepts the same trusted invocation fields used by the ECS backend agent client:
@@ -56,7 +63,7 @@ AGENT_REQUESTS_TABLE_NAME=<table>
 MENU_SESSIONS_TABLE_NAME=<table>
 AUDIT_TABLE_NAME=<table>
 MENU_SITE_BASE_URL=<frontend-menu-url>
-SESSION_TOKEN_SECRET=<from-secrets-manager>
+SESSION_TOKEN_SECRET_ARN=<session-token-secret-arn-if-menu-links-are-enabled>
 SESSION_TOKEN_TTL_MINUTES=60
 AGENT_SESSION_TTL_HOURS=24
 AGENT_REQUEST_TTL_HOURS=24
@@ -69,18 +76,24 @@ AGENTCORE_MEMORY_ID=<memory-id>
 
 `STRANDS_SESSION_STORAGE_DIR` must be empty or omitted in AgentCore so the runtime does not rely on local file-based Strands session storage.
 
+Do not put the `SESSION_TOKEN_SECRET` value in the AgentCore environment JSON. The current runtime still uses the existing menu-link tool path, so when that tool is enabled pass only `SESSION_TOKEN_SECRET_ARN` and allow the AgentCore execution role to read that single secret.
+
 ## Manual Deployment Command Placeholder
 
-Do not run this until the AgentCore execution role, memory, image/build artifact, and runtime settings are ready:
+Do not run this until the AgentCore execution role, memory, image/build artifact, and runtime settings are ready. Create an ignored `agent-runtime/env.agentcore.dev.json` from the example file and put real non-secret configuration plus secret ARNs there. Do not deploy `env.agentcore.example.json`.
+
+The Phase 8 infrastructure template creates an `AgentRuntimeRepositoryUri` output for the ECR repository that should hold this image.
 
 ```powershell
 # [CREATES OR UPDATES AWS RESOURCE] Deploys the Strands runtime to AgentCore.
 aws bedrock-agentcore-control create-agent-runtime `
   --region us-east-1 `
-  --agent-runtime-name fyp-dev-restaurant-ordering-agent `
-  --agent-runtime-artifact <artifact-reference> `
+  --agent-runtime-name fyp_dev_restaurant_ordering_agent `
+  --agent-runtime-artifact "{`"containerConfiguration`":{`"containerUri`":`"<agent-runtime-ecr-uri>:<tag>`"}}" `
   --role-arn <agentcore-execution-role-arn> `
-  --environment-variables file://agent-runtime/env.agentcore.example.json
+  --network-configuration "{`"networkMode`":`"PUBLIC`"}" `
+  --protocol-configuration serverProtocol=HTTP `
+  --environment-variables file://agent-runtime/env.agentcore.dev.json
 ```
 
-The exact artifact argument may differ depending on the AgentCore CLI/SDK version available in your AWS account. Keep this command as a deployment note until Phase 7/8 IAM and artifact packaging are finalized.
+If you choose the AgentCore `codeConfiguration`/S3 artifact path instead of ECR later, remove the AgentCore execution role's ECR image-pull policy before deployment.

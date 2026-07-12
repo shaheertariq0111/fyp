@@ -1,0 +1,106 @@
+[
+  {
+    "ParameterKey": "ProjectName",
+    "ParameterValue": "fyp-dev"
+  },
+  {
+    "ParameterKey": "VpcId",
+    "ParameterValue": "vpc-xxxxxxxxxxxxxxxxx"
+  },
+  {
+    "ParameterKey": "PublicSubnetIds",
+    "ParameterValue": "subnet-xxxxxxxxxxxxxxxxx,subnet-yyyyyyyyyyyyyyyyy"
+  },
+  {
+    "ParameterKey": "BackendImageUri",
+    "ParameterValue": "replace-with-backend-image-uri"
+  },
+  {
+    "ParameterKey": "DesiredCount",
+    "ParameterValue": "0"
+  },
+  {
+    "ParameterKey": "AgentCoreRuntimeArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "AgentCoreMemoryArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "AgentCoreSessionTokenSecretArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "CreateAgentRequestsTable",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "AgentRequestsTableName",
+    "ParameterValue": "fyp-dev-AgentRequests"
+  },
+  {
+    "ParameterKey": "MenuTableName",
+    "ParameterValue": "fyp-dev-Menu"
+  },
+  {
+    "ParameterKey": "CartsTableName",
+    "ParameterValue": "fyp-dev-Carts"
+  },
+  {
+    "ParameterKey": "OrdersTableName",
+    "ParameterValue": "fyp-dev-Orders"
+  },
+  {
+    "ParameterKey": "CustomersTableName",
+    "ParameterValue": "fyp-dev-Customers"
+  },
+  {
+    "ParameterKey": "AgentSessionsTableName",
+    "ParameterValue": "fyp-dev-AgentSessions"
+  },
+  {
+    "ParameterKey": "MenuSessionsTableName",
+    "ParameterValue": "fyp-dev-MenuSessions"
+  },
+  {
+    "ParameterKey": "AuditTableName",
+    "ParameterValue": "fyp-dev-Audit"
+  },
+  {
+    "ParameterKey": "MenuSiteBaseUrl",
+    "ParameterValue": "https://example.amplifyapp.com/menu"
+  },
+  {
+    "ParameterKey": "RestaurantId",
+    "ParameterValue": "shaheer-fyp-restaurant"
+  },
+  {
+    "ParameterKey": "BranchId",
+    "ParameterValue": "main"
+  },
+  {
+    "ParameterKey": "BedrockModelId",
+    "ParameterValue": "us.amazon.nova-pro-v1:0"
+  },
+  {
+    "ParameterKey": "FrontendCorsOrigins",
+    "ParameterValue": "https://replace-with-amplify-url.amplifyapp.com"
+  },
+  {
+    "ParameterKey": "SessionTokenSecretArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "AdminUsername",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "AdminPasswordSecretArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "AdminSessionSecretArn",
+    "ParameterValue": ""
+  }
+]

@@ -1,0 +1,434 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Phase 11 monitoring resources for API Gateway, ECS, DynamoDB, backend logs, and AgentCore runtime logs.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: fyp-dev
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9-]{1,31}$"
+    Description: Short prefix used for alarm and metric names.
+  HttpApiId:
+    Type: String
+    Description: API Gateway HTTP API ID.
+  ApiStageName:
+    Type: String
+    Default: "$default"
+    Description: API Gateway HTTP API stage name.
+  Api5xxThreshold:
+    Type: Number
+    Default: 0
+  ApiLatencyMetricName:
+    Type: String
+    Default: Latency
+    AllowedValues:
+      - Latency
+      - IntegrationLatency
+  ApiLatencyP95ThresholdMs:
+    Type: Number
+    Default: 5000
+  EcsClusterName:
+    Type: String
+    Description: ECS cluster name.
+  EcsServiceName:
+    Type: String
+    Description: ECS service name.
+  MinimumRunningTaskCount:
+    Type: Number
+    Default: 1
+  BackendLogGroupName:
+    Type: String
+    Default: /ecs/fyp-dev/backend
+  AgentCoreLogGroupName:
+    Type: String
+    Default: ""
+    Description: Optional AgentCore Runtime log group name. Leave empty until the runtime creates it.
+  AgentRequestFailureThreshold:
+    Type: Number
+    Default: 0
+  AgentCoreFailureThreshold:
+    Type: Number
+    Default: 0
+  DynamoDbThrottleThreshold:
+    Type: Number
+    Default: 0
+  AgentRequestsTableName:
+    Type: String
+    Default: fyp-dev-AgentRequests
+  MenuTableName:
+    Type: String
+    Default: fyp-dev-Menu
+  CartsTableName:
+    Type: String
+    Default: fyp-dev-Carts
+  OrdersTableName:
+    Type: String
+    Default: fyp-dev-Orders
+  CustomersTableName:
+    Type: String
+    Default: fyp-dev-Customers
+  AgentSessionsTableName:
+    Type: String
+    Default: fyp-dev-AgentSessions
+  MenuSessionsTableName:
+    Type: String
+    Default: fyp-dev-MenuSessions
+  AuditTableName:
+    Type: String
+    Default: fyp-dev-Audit
+  AlarmActions:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Optional SNS topic ARNs or alarm action ARNs.
+
+Conditions:
+  HasAgentCoreLogGroup: !Not [!Equals [!Ref AgentCoreLogGroupName, ""]]
+  HasAlarmActions: !Not [!Equals [!Join ["", !Ref AlarmActions], ""]]
+  HasEcsRunningTaskAlarm: !Not [!Equals [!Ref MinimumRunningTaskCount, 0]]
+
+Resources:
+  BackendAgentRequestFailedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroupName
+      FilterName: !Sub ${ProjectName}-agent-request-failed
+      FilterPattern: '{ $.event = "agent_request_failed" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/Backend
+          MetricName: AgentRequestFailed
+          MetricValue: "1"
+          DefaultValue: 0
+
+  BackendAgentCoreInvocationFailedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroupName
+      FilterName: !Sub ${ProjectName}-agentcore-invocation-failed
+      FilterPattern: '{ $.event = "agentcore_invocation_failed" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/Backend
+          MetricName: AgentCoreInvocationFailed
+          MetricValue: "1"
+          DefaultValue: 0
+
+  AgentCoreInvocationFailedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: HasAgentCoreLogGroup
+    Properties:
+      LogGroupName: !Ref AgentCoreLogGroupName
+      FilterName: !Sub ${ProjectName}-agentcore-runtime-invocation-failed
+      FilterPattern: '{ $.event = "agentcore_invocation_failed" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/AgentCore
+          MetricName: AgentCoreInvocationFailed
+          MetricValue: "1"
+          DefaultValue: 0
+
+  ApiGateway5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-api-gateway-5xx
+      AlarmDescription: API Gateway returned 5XX responses.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - Name: ApiId
+          Value: !Ref HttpApiId
+        - Name: Stage
+          Value: !Ref ApiStageName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref Api5xxThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  ApiGatewayLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-api-gateway-latency-high
+      AlarmDescription: API Gateway latency is above the configured p95 threshold.
+      Namespace: AWS/ApiGateway
+      MetricName: !Ref ApiLatencyMetricName
+      Dimensions:
+        - Name: ApiId
+          Value: !Ref HttpApiId
+        - Name: Stage
+          Value: !Ref ApiStageName
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: !Ref ApiLatencyP95ThresholdMs
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  EcsRunningTaskCountAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasEcsRunningTaskAlarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-ecs-running-task-count-low
+      AlarmDescription: ECS backend running task count is below the configured minimum. Requires ECS Container Insights.
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref EcsServiceName
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: !Ref MinimumRunningTaskCount
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  DynamoDbThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-dynamodb-throttles
+      AlarmDescription: One or more application DynamoDB tables reported read or write throttling.
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: !Ref DynamoDbThrottleThreshold
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: agentRequestsRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentRequestsTableName
+            Period: 60
+            Stat: Sum
+        - Id: agentRequestsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentRequestsTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuTableName
+            Period: 60
+            Stat: Sum
+        - Id: cartsRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CartsTableName
+            Period: 60
+            Stat: Sum
+        - Id: cartsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CartsTableName
+            Period: 60
+            Stat: Sum
+        - Id: ordersRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref OrdersTableName
+            Period: 60
+            Stat: Sum
+        - Id: ordersWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref OrdersTableName
+            Period: 60
+            Stat: Sum
+        - Id: customersRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CustomersTableName
+            Period: 60
+            Stat: Sum
+        - Id: customersWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CustomersTableName
+            Period: 60
+            Stat: Sum
+        - Id: agentSessionsRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentSessionsTableName
+            Period: 60
+            Stat: Sum
+        - Id: agentSessionsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentSessionsTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuSessionsRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuSessionsTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuSessionsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuSessionsTableName
+            Period: 60
+            Stat: Sum
+        - Id: auditRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AuditTableName
+            Period: 60
+            Stat: Sum
+        - Id: auditWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AuditTableName
+            Period: 60
+            Stat: Sum
+        - Id: throttles
+          Expression: SUM(METRICS())
+          Label: TotalDynamoDbThrottleEvents
+          ReturnData: true
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  AgentRequestFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-agent-request-failures
+      AlarmDescription: Backend logs reported failed agent requests.
+      Namespace: !Sub ${ProjectName}/Backend
+      MetricName: AgentRequestFailed
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref AgentRequestFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  BackendAgentCoreFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-backend-agentcore-invocation-failures
+      AlarmDescription: Backend logs reported failed AgentCore invocations.
+      Namespace: !Sub ${ProjectName}/Backend
+      MetricName: AgentCoreInvocationFailed
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref AgentCoreFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  AgentCoreRuntimeFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAgentCoreLogGroup
+    Properties:
+      AlarmName: !Sub ${ProjectName}-agentcore-runtime-invocation-failures
+      AlarmDescription: AgentCore runtime logs reported failed invocations.
+      Namespace: !Sub ${ProjectName}/AgentCore
+      MetricName: AgentCoreInvocationFailed
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref AgentCoreFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+Outputs:
+  MonitoringTemplate:
+    Description: Phase 11 monitoring template name.
+    Value: phase11-monitoring
+  BackendAgentRequestFailureMetric:
+    Value: !Sub ${ProjectName}/Backend AgentRequestFailed
+  BackendAgentCoreFailureMetric:
+    Value: !Sub ${ProjectName}/Backend AgentCoreInvocationFailed
+  AgentCoreLogGroupConfigured:
+    Value: !If [HasAgentCoreLogGroup, "true", "false"]

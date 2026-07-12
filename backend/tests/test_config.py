@@ -42,3 +42,60 @@ def test_admin_auth_settings_have_safe_defaults():
     assert settings.admin_password == ""
     assert settings.admin_session_secret == ""
     assert settings.admin_session_ttl_hours == 8
+
+
+def test_frontend_cors_origins_default_to_local_in_tests():
+    settings = make_test_settings()
+    assert settings.parsed_frontend_cors_origins() == [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+
+def test_frontend_cors_origins_parse_exact_deployed_origins():
+    settings = make_test_settings(
+        environment="production",
+        bedrock_model_id="us.amazon.nova-pro-v1:0",
+        frontend_cors_origins="https://main.example.amplifyapp.com, https://preview.example.amplifyapp.com/",
+    )
+
+    assert settings.parsed_frontend_cors_origins() == [
+        "https://main.example.amplifyapp.com",
+        "https://preview.example.amplifyapp.com",
+    ]
+
+
+def test_frontend_cors_origins_reject_wildcard():
+    try:
+        make_test_settings(frontend_cors_origins="*")
+    except ValueError as exc:
+        assert "FRONTEND_CORS_ORIGINS must not use wildcard" in str(exc)
+    else:
+        raise AssertionError("Wildcard CORS origin should fail validation")
+
+
+def test_frontend_cors_origins_reject_localhost_outside_local_test():
+    try:
+        make_test_settings(
+            environment="production",
+            bedrock_model_id="us.amazon.nova-pro-v1:0",
+            frontend_cors_origins="http://localhost:3000",
+        )
+    except ValueError as exc:
+        assert "exact deployed frontend origins" in str(exc)
+    else:
+        raise AssertionError("Production localhost CORS origin should fail validation")
+
+
+def test_admin_cookie_is_cross_site_in_staging_and_production():
+    assert make_test_settings(
+        environment="staging",
+        bedrock_model_id="us.amazon.nova-pro-v1:0",
+        frontend_cors_origins="https://app.amplifyapp.com",
+    ).cross_site_admin_cookie()
+    assert make_test_settings(
+        environment="production",
+        bedrock_model_id="us.amazon.nova-pro-v1:0",
+        frontend_cors_origins="https://app.amplifyapp.com",
+    ).cross_site_admin_cookie()
+    assert not make_test_settings().cross_site_admin_cookie()

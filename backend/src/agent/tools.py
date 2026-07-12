@@ -28,6 +28,19 @@ def _record_tool_call(tool_name: str, is_write: bool, result: dict) -> None:
         context = get_request_context()
     except RuntimeError:
         return
+    logger.info(
+        "Agent tool call completed",
+        extra={
+            "event": "agent_tool_completed",
+            "tool_name": tool_name,
+            "tool_success": bool(result.get("success", False)),
+            "is_write": is_write,
+            "actor_id": context.user_id,
+            "agent_session_id": context.agent_session_id,
+            "channel": context.channel,
+            "error_code": result.get("error_code"),
+        },
+    )
     context.tool_calls.append({
         "tool_name": tool_name,
         "success": bool(result.get("success", False)),
@@ -45,16 +58,20 @@ def _result(tool_name: str, call: Callable[[], ToolResponse], *, is_write: bool 
             context = get_request_context()
             extra = {
                 "tool_name": tool_name,
-                "user_id": context.user_id,
+                "actor_id": context.user_id,
                 "agent_session_id": context.agent_session_id,
+                "channel": context.channel,
+                "error_code": "BACKEND_UNAVAILABLE",
+                "exception_type": type(exc).__name__,
             }
         except RuntimeError:
-            extra = {"tool_name": tool_name}
+            extra = {
+                "tool_name": tool_name,
+                "error_code": "BACKEND_UNAVAILABLE",
+                "exception_type": type(exc).__name__,
+            }
         logger.exception(
-            "Strands tool execution failed: %s (%s): %s",
-            tool_name,
-            type(exc).__name__,
-            exc,
+            "Strands tool execution failed",
             extra=extra,
         )
         try:

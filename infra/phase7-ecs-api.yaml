@@ -1,0 +1,889 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Phase 7 infrastructure for the FYP FastAPI backend behind API Gateway, VPC Link, Cloud Map, and ECS Fargate.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: fyp-dev
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9-]{1,31}$"
+    Description: Short prefix used for development resources.
+  EnvironmentName:
+    Type: String
+    Default: production
+    AllowedValues:
+      - staging
+      - production
+    Description: Runtime environment value passed to the backend container.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC where ECS tasks and the API Gateway VPC Link will run.
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnet IDs for low-cost development ECS tasks and API Gateway VPC Link ENIs.
+  BackendImageUri:
+    Type: String
+    Default: ""
+    Description: Full backend image URI. Leave empty only when DesiredCount is 0 and the generated ECR latest tag will be used later.
+  DesiredCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 10
+    Description: Start at 0 until the backend image and runtime config are ready.
+  BackendCpu:
+    Type: String
+    Default: "512"
+    AllowedValues:
+      - "256"
+      - "512"
+      - "1024"
+      - "2048"
+      - "4096"
+  BackendMemory:
+    Type: String
+    Default: "1024"
+    AllowedValues:
+      - "512"
+      - "1024"
+      - "2048"
+      - "3072"
+      - "4096"
+      - "8192"
+  BackendContainerPort:
+    Type: Number
+    Default: 8000
+    AllowedValues:
+      - 8000
+    Description: FastAPI backend container port. This deployment expects port 8000.
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues:
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 180
+      - 365
+  CreateAgentRequestsTable:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Set true only if the AgentRequests table does not already exist.
+  AgentRequestsTableName:
+    Type: String
+    Default: fyp-dev-AgentRequests
+  MenuTableName:
+    Type: String
+    Default: fyp-dev-Menu
+  CartsTableName:
+    Type: String
+    Default: fyp-dev-Carts
+  OrdersTableName:
+    Type: String
+    Default: fyp-dev-Orders
+  CustomersTableName:
+    Type: String
+    Default: fyp-dev-Customers
+  AgentSessionsTableName:
+    Type: String
+    Default: fyp-dev-AgentSessions
+  MenuSessionsTableName:
+    Type: String
+    Default: fyp-dev-MenuSessions
+  AuditTableName:
+    Type: String
+    Default: fyp-dev-Audit
+  MenuSiteBaseUrl:
+    Type: String
+    Description: Public frontend menu URL used in generated menu-session links.
+  RestaurantId:
+    Type: String
+    Default: shaheer-fyp-restaurant
+  BranchId:
+    Type: String
+    Default: main
+  BedrockModelId:
+    Type: String
+    Description: Bedrock model ID used by backend config until AgentCore invocation is fully wired.
+  BedrockGuardrailId:
+    Type: String
+    Default: ""
+  BedrockGuardrailVersion:
+    Type: String
+    Default: ""
+  KnowledgeBaseId:
+    Type: String
+    Default: ""
+  AgentCoreRuntimeArn:
+    Type: String
+    Default: ""
+    Description: Leave empty until the AgentCore Runtime is created.
+  AgentCoreMemoryArn:
+    Type: String
+    Default: ""
+    Description: Leave empty until AgentCore Memory is created.
+  AgentCoreSessionTokenSecretArn:
+    Type: String
+    Default: ""
+    Description: Optional Secrets Manager ARN for SESSION_TOKEN_SECRET when AgentCore tools need menu-link token creation.
+  FrontendCorsOrigins:
+    Type: String
+    AllowedPattern: "^(?!\\*$)(?!.*localhost)(?!.*127\\.0\\.0\\.1)(?!.*,).+$"
+    Description: Single exact frontend origin. Do not use a wildcard.
+  SessionTokenSecretArn:
+    Type: String
+    Default: ""
+  AdminUsername:
+    Type: String
+    Default: ""
+  AdminPasswordSecretArn:
+    Type: String
+    Default: ""
+  AdminSessionSecretArn:
+    Type: String
+    Default: ""
+
+Conditions:
+  HasBackendImageUri: !Not [!Equals [!Ref BackendImageUri, ""]]
+  ShouldCreateAgentRequestsTable: !Equals [!Ref CreateAgentRequestsTable, "true"]
+  HasAgentCoreRuntimeArn: !Not [!Equals [!Ref AgentCoreRuntimeArn, ""]]
+  HasAgentCoreMemoryArn: !Not [!Equals [!Ref AgentCoreMemoryArn, ""]]
+  HasAgentCoreSessionTokenSecret: !Not [!Equals [!Ref AgentCoreSessionTokenSecretArn, ""]]
+  HasKnowledgeBaseId: !Not [!Equals [!Ref KnowledgeBaseId, ""]]
+  HasSessionTokenSecret: !Not [!Equals [!Ref SessionTokenSecretArn, ""]]
+  HasAdminPasswordSecret: !Not [!Equals [!Ref AdminPasswordSecretArn, ""]]
+  HasAdminSessionSecret: !Not [!Equals [!Ref AdminSessionSecretArn, ""]]
+
+Resources:
+  BackendRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${ProjectName}-backend
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AgentRuntimeRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${ProjectName}-agent-runtime
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${ProjectName}/backend
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/${ProjectName}/backend-http-api
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${ProjectName}-backend
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  VpcLinkSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${ProjectName} API Gateway VPC Link egress to ECS backend
+      VpcId: !Ref VpcId
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-apigw-vpc-link
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${ProjectName} ECS backend tasks
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-backend-tasks
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendIngressFromVpcLink:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref BackendTaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref BackendContainerPort
+      ToPort: !Ref BackendContainerPort
+      SourceSecurityGroupId: !Ref VpcLinkSecurityGroup
+
+  VpcLinkEgressToBackend:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref VpcLinkSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref BackendContainerPort
+      ToPort: !Ref BackendContainerPort
+      DestinationSecurityGroupId: !Ref BackendTaskSecurityGroup
+
+  PrivateNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub ${ProjectName}.local
+      Vpc: !Ref VpcId
+      Description: !Sub Private namespace for ${ProjectName} services.
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: backend
+      NamespaceId: !Ref PrivateNamespace
+      Description: !Sub Cloud Map service for ${ProjectName} FastAPI backend.
+      DnsConfig:
+        DnsRecords:
+          - Type: SRV
+            TTL: 10
+        RoutingPolicy: MULTIVALUE
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EcsTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-ecs-execution
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EcsTaskExecutionBasePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-execution-base
+      Roles:
+        - !Ref EcsTaskExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EcrAuthorizationToken
+            Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+            Resource: "*"
+          - Sid: PullBackendImage
+            Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+            Resource: !GetAtt BackendRepository.Arn
+          - Sid: WriteBackendContainerLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${ProjectName}/backend:log-stream:*
+
+  EcsTaskExecutionSessionSecretPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasSessionTokenSecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-execution-session-secret
+      Roles:
+        - !Ref EcsTaskExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref SessionTokenSecretArn
+
+  EcsTaskExecutionAdminPasswordPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAdminPasswordSecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-execution-admin-password
+      Roles:
+        - !Ref EcsTaskExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref AdminPasswordSecretArn
+
+  EcsTaskExecutionAdminSessionPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAdminSessionSecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-execution-admin-session
+      Roles:
+        - !Ref EcsTaskExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref AdminSessionSecretArn
+
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-ecs-app
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EcsTaskDynamoDbPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-app-dynamodb
+      Roles:
+        - !Ref EcsTaskRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:DeleteItem
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentRequestsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentRequestsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CartsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CartsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuSessionsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuSessionsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}/index/*
+
+  EcsTaskAgentCorePolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAgentCoreRuntimeArn
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-app-agentcore
+      Roles:
+        - !Ref EcsTaskRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - bedrock-agentcore:InvokeAgentRuntime
+            Resource: !Ref AgentCoreRuntimeArn
+
+  AgentCoreExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-agentcore-execution
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:agent/*
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AgentCoreExecutionEcrPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-agentcore-ecr
+      Roles:
+        - !Ref AgentCoreExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EcrAuthorizationToken
+            Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+            Resource: "*"
+          - Sid: PullAgentRuntimeImage
+            Effect: Allow
+            Action:
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+            Resource: !GetAtt AgentRuntimeRepository.Arn
+
+  AgentCoreExecutionBedrockPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-agentcore-bedrock
+      Roles:
+        - !Ref AgentCoreExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: InvokeNovaProInferenceProfile
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::inference-profile/us.amazon.nova-pro-v1:0
+          - Sid: InvokeNovaProFoundationModelsViaInferenceProfile
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0
+              - !Sub arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/amazon.nova-pro-v1:0
+              - !Sub arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0
+            Condition:
+              StringEquals:
+                bedrock:InferenceProfileArn: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::inference-profile/us.amazon.nova-pro-v1:0
+
+  AgentCoreExecutionMemoryPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAgentCoreMemoryArn
+    Properties:
+      PolicyName: !Sub ${ProjectName}-agentcore-memory
+      Roles:
+        - !Ref AgentCoreExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: UseConfiguredAgentCoreMemory
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:CreateEvent
+              - bedrock-agentcore:GetEvent
+              - bedrock-agentcore:ListEvents
+            Resource: !Ref AgentCoreMemoryArn
+
+  AgentCoreExecutionSessionSecretPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAgentCoreSessionTokenSecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-agentcore-session-secret
+      Roles:
+        - !Ref AgentCoreExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadSessionTokenSecretForMenuLinks
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref AgentCoreSessionTokenSecretArn
+
+  AgentCoreExecutionDynamoDbPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-agentcore-dynamodb
+      Roles:
+        - !Ref AgentCoreExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: UseApprovedApplicationTables
+            Effect: Allow
+            Action:
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:DeleteItem
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentRequestsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentRequestsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CartsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CartsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuSessionsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuSessionsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}/index/*
+
+  AgentCoreExecutionKnowledgeBasePolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasKnowledgeBaseId
+    Properties:
+      PolicyName: !Sub ${ProjectName}-agentcore-knowledge-base
+      Roles:
+        - !Ref AgentCoreExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: RetrieveConfiguredKnowledgeBase
+            Effect: Allow
+            Action:
+              - bedrock:Retrieve
+            Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}
+
+  AgentCoreExecutionLogsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-agentcore-logs
+      Roles:
+        - !Ref AgentCoreExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: WriteAgentCoreLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:DescribeLogStreams
+              - logs:PutLogEvents
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/${ProjectName}/*:log-stream:*
+
+  AgentRequestsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: ShouldCreateAgentRequestsTable
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref AgentRequestsTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: HasBackendImageUri
+    Properties:
+      Family: !Sub ${ProjectName}-backend
+      Cpu: !Ref BackendCpu
+      Memory: !Ref BackendMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      ContainerDefinitions:
+        - Name: backend
+          Image: !Ref BackendImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref BackendContainerPort
+              Protocol: tcp
+              AppProtocol: http
+          Environment:
+            - Name: ENVIRONMENT
+              Value: !Ref EnvironmentName
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: BEDROCK_MODEL_ID
+              Value: !Ref BedrockModelId
+            - Name: BEDROCK_GUARDRAIL_ID
+              Value: !Ref BedrockGuardrailId
+            - Name: BEDROCK_GUARDRAIL_VERSION
+              Value: !Ref BedrockGuardrailVersion
+            - Name: KNOWLEDGE_BASE_ID
+              Value: !Ref KnowledgeBaseId
+            - Name: AGENTCORE_RUNTIME_ARN
+              Value: !Ref AgentCoreRuntimeArn
+            - Name: AGENT_REQUESTS_TABLE_NAME
+              Value: !Ref AgentRequestsTableName
+            - Name: MENU_TABLE_NAME
+              Value: !Ref MenuTableName
+            - Name: CARTS_TABLE_NAME
+              Value: !Ref CartsTableName
+            - Name: ORDERS_TABLE_NAME
+              Value: !Ref OrdersTableName
+            - Name: CUSTOMERS_TABLE_NAME
+              Value: !Ref CustomersTableName
+            - Name: AGENT_SESSIONS_TABLE_NAME
+              Value: !Ref AgentSessionsTableName
+            - Name: MENU_SESSIONS_TABLE_NAME
+              Value: !Ref MenuSessionsTableName
+            - Name: AUDIT_TABLE_NAME
+              Value: !Ref AuditTableName
+            - Name: MENU_SITE_BASE_URL
+              Value: !Ref MenuSiteBaseUrl
+            - Name: RESTAURANT_ID
+              Value: !Ref RestaurantId
+            - Name: BRANCH_ID
+              Value: !Ref BranchId
+            - Name: LOG_LEVEL
+              Value: INFO
+            - Name: FRONTEND_CORS_ORIGINS
+              Value: !Ref FrontendCorsOrigins
+            - Name: ADMIN_USERNAME
+              Value: !Ref AdminUsername
+            - Name: STRANDS_SESSION_STORAGE_DIR
+              Value: ""
+          Secrets:
+            - !If
+              - HasSessionTokenSecret
+              - Name: SESSION_TOKEN_SECRET
+                ValueFrom: !Ref SessionTokenSecretArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasAdminPasswordSecret
+              - Name: ADMIN_PASSWORD
+                ValueFrom: !Ref AdminPasswordSecretArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasAdminSessionSecret
+              - Name: ADMIN_SESSION_SECRET
+                ValueFrom: !Ref AdminSessionSecretArn
+              - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: backend
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendService:
+    Type: AWS::ECS::Service
+    Condition: HasBackendImageUri
+    DependsOn:
+      - BackendRouteDefault
+    Properties:
+      ServiceName: !Sub ${ProjectName}-backend
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref BackendTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      EnableExecuteCommand: false
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref BackendTaskSecurityGroup
+          Subnets: !Ref PublicSubnetIds
+      ServiceRegistries:
+        - RegistryArn: !GetAtt BackendDiscoveryService.Arn
+          ContainerName: backend
+          ContainerPort: !Ref BackendContainerPort
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  BackendHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ${ProjectName}-backend
+      ProtocolType: HTTP
+      DisableExecuteApiEndpoint: false
+      CorsConfiguration:
+        AllowCredentials: true
+        AllowHeaders:
+          - Content-Type
+        ExposeHeaders:
+          - X-Request-ID
+          - X-Agent-Request-ID
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - OPTIONS
+        AllowOrigins:
+          - !Ref FrontendCorsOrigins
+        MaxAge: 3600
+      Tags:
+        Project: !Ref ProjectName
+
+  BackendVpcLink:
+    Type: AWS::ApiGatewayV2::VpcLink
+    Properties:
+      Name: !Sub ${ProjectName}-backend
+      SecurityGroupIds:
+        - !Ref VpcLinkSecurityGroup
+      SubnetIds: !Ref PublicSubnetIds
+      Tags:
+        Project: !Ref ProjectName
+
+  BackendIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref BackendHttpApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: ANY
+      ConnectionType: VPC_LINK
+      ConnectionId: !Ref BackendVpcLink
+      IntegrationUri: !GetAtt BackendDiscoveryService.Arn
+      PayloadFormatVersion: "1.0"
+      TimeoutInMillis: 30000
+
+  BackendRouteDefault:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref BackendHttpApi
+      RouteKey: $default
+      Target: !Sub integrations/${BackendIntegration}
+
+  BackendDefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref BackendHttpApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt BackendApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationError":"$context.integrationErrorMessage"}'
+      Tags:
+        Project: !Ref ProjectName
+
+Outputs:
+  BackendApiEndpoint:
+    Description: Public API Gateway HTTPS endpoint for the backend.
+    Value: !GetAtt BackendHttpApi.ApiEndpoint
+  BackendRepositoryUri:
+    Description: Backend ECR repository URI.
+    Value: !GetAtt BackendRepository.RepositoryUri
+  AgentRuntimeRepositoryUri:
+    Description: AgentCore Runtime ECR repository URI.
+    Value: !GetAtt AgentRuntimeRepository.RepositoryUri
+  EcsClusterName:
+    Value: !Ref EcsCluster
+  BackendServiceName:
+    Condition: HasBackendImageUri
+    Value: !GetAtt BackendService.Name
+  BackendCloudMapServiceArn:
+    Value: !GetAtt BackendDiscoveryService.Arn
+  BackendCloudMapServiceId:
+    Value: !Ref BackendDiscoveryService
+  BackendTaskExecutionRoleArn:
+    Value: !GetAtt EcsTaskExecutionRole.Arn
+  BackendTaskRoleArn:
+    Value: !GetAtt EcsTaskRole.Arn
+  AgentCoreExecutionRoleArn:
+    Value: !GetAtt AgentCoreExecutionRole.Arn
+  AgentRequestsTableName:
+    Value: !Ref AgentRequestsTableName
+  MenuTableName:
+    Value: !Ref MenuTableName
+  CartsTableName:
+    Value: !Ref CartsTableName
+  OrdersTableName:
+    Value: !Ref OrdersTableName
+  CustomersTableName:
+    Value: !Ref CustomersTableName
+  AgentSessionsTableName:
+    Value: !Ref AgentSessionsTableName
+  MenuSessionsTableName:
+    Value: !Ref MenuSessionsTableName
+  AuditTableName:
+    Value: !Ref AuditTableName

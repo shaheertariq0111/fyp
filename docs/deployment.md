@@ -361,7 +361,6 @@ Use:
 
 ```text
 NEXT_PUBLIC_API_BASE_URL
-NEXT_PUBLIC_MENU_BASE_URL
 NEXT_PUBLIC_BRANCH_ID
 ```
 
@@ -535,9 +534,10 @@ Amplify environment variables should include:
 
 ```text
 NEXT_PUBLIC_API_BASE_URL
-NEXT_PUBLIC_MENU_BASE_URL
 NEXT_PUBLIC_BRANCH_ID
 ```
+
+`NEXT_PUBLIC_MENU_BASE_URL` is not required by the current frontend. Generated menu links are owned by the backend through `MENU_SITE_BASE_URL`.
 
 The frontend will use an Amplify-provided URL. We do not have a custom domain.
 
@@ -602,6 +602,8 @@ Create or document alarms for:
 * AgentCore invocation failure
 * DynamoDB throttling
 * Agent request failure rate
+
+Document the concrete CloudWatch alarm and metric-filter setup without creating the alarms automatically.
 
 ### Phase 12: Validation
 

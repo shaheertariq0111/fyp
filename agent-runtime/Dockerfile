@@ -19,4 +19,6 @@ RUN pip install --upgrade pip \
 
 USER app
 
-CMD ["python", "-m", "agent_runtime.handler"]
+EXPOSE 8080
+
+CMD ["uvicorn", "agent_runtime.server:app", "--host", "0.0.0.0", "--port", "8080"]

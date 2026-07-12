@@ -12,12 +12,28 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        for key in ("actor_id", "agent_session_id", "channel", "tool_name", "error_code"):
+        for key in (
+            "event",
+            "http_request_id",
+            "request_id",
+            "actor_id",
+            "agent_session_id",
+            "session_id",
+            "channel",
+            "tool_name",
+            "tool_success",
+            "is_write",
+            "error_code",
+            "agentcore_invocation_status",
+            "agent_request_status",
+            "bedrock_response_time_ms",
+            "response_time_ms",
+        ):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            payload["exception_type"] = record.exc_info[0].__name__
         return json.dumps(payload, separators=(",", ":"))
 
 
