@@ -1,35 +1,55 @@
-# Phase 11 logging and monitoring
+# Phase 11 Logging And Monitoring
 
-This document describes the CloudWatch logging fields and alarm targets for the deployed architecture. It does not create AWS resources by itself.
-
-The Phase 11 monitoring resources are defined in:
+Phase 11 monitoring is defined in:
 
 ```text
 infra/phase11-monitoring.yaml
 ```
 
-## Structured log fields
+The monitoring stack is separate from the application stack. It must not recreate existing application log groups, API Gateway, ECS, AgentCore, DynamoDB, or IAM resources.
 
-Backend and AgentCore runtime logs are JSON-formatted for CloudWatch Logs. Log records may include:
+## Current Deployment Values
+
+Use these values for the current `fyp-dev` staging deployment:
 
 ```text
-timestamp
-level
-logger
-message
+Region: us-east-1
+ProjectName: fyp-dev
+HttpApiId: vogwq90ly8
+ApiStageName: $default
+EcsClusterName: fyp-dev-backend
+EcsServiceName: fyp-dev-backend
+BackendLogGroupName: /ecs/fyp-dev/backend
+Api Gateway access log group: /aws/apigateway/fyp-dev/backend-http-api
+AgentCoreLogGroupName: /aws/bedrock-agentcore/runtimes/fyp_dev_restaurant_agent-dwLwVnClBF-DEFAULT
+MinimumRunningTaskCount: 1
+```
+
+The monitored DynamoDB tables are:
+
+```text
+fyp-dev-agent-requests
+shaheer-fyp-agent-audit-events
+shaheer-fyp-agent-sessions
+shaheer-fyp-carts
+shaheer-fyp-customers
+shaheer-fyp-menu-sessions
+shaheer-fyp-orders
+shaheer-fyp-restaurant-menu
+```
+
+## Structured Logs
+
+Backend and AgentCore runtime logs are JSON-formatted for CloudWatch Logs. Monitoring filters use only bounded fields such as:
+
+```text
 event
-http_request_id
-request_id
-actor_id
-agent_session_id
-session_id
 route
 method
 status_code
 response_time_ms
 agentcore_invocation_status
 agent_request_status
-tool_name
 tool_success
 is_write
 bedrock_response_time_ms
@@ -40,87 +60,153 @@ channel
 exception_type
 ```
 
-Do not log request bodies, passwords, cookies, session tokens, AWS credentials, raw customer addresses, or full private conversation text.
+Do not log message content, request bodies, passwords, cookies, authorization headers, session tokens, secret values, AWS credentials, raw customer addresses, or full private conversation text.
 
-## Existing log groups
+## Dashboard
 
-The infrastructure template already defines:
+The template creates a CloudWatch dashboard named:
 
 ```text
-/ecs/<project-name>/backend
-/aws/apigateway/<project-name>/backend-http-api
+fyp-dev-monitoring
 ```
 
-AgentCore runtime logs should use the AgentCore-managed CloudWatch log group for the deployed runtime. The exact group name must be confirmed after the AgentCore Runtime is created.
+Dashboard widgets cover:
 
-## Monitoring template resources
+- API Gateway HTTP API `Count`, lowercase `4xx`, lowercase `5xx`, `Latency` p95, and `IntegrationLatency` p95.
+- ECS service `CPUUtilization` and `MemoryUtilization` from `AWS/ECS` with `ClusterName` and `ServiceName` dimensions.
+- ECS `RunningTaskCount` from `ECS/ContainerInsights`.
+- DynamoDB total read and write throttling across all eight configured tables.
+- Backend agent-request failures and backend AgentCore invocation failures.
+- Backend HTTP response p95 latency and backend-to-AgentCore invocation p95 latency.
+- AgentCore runtime invocation failures, tool execution failures, and runtime invocation p95 latency.
+- Unexpected ECS task stops captured by the EventBridge rule.
 
-`infra/phase11-monitoring.yaml` creates configurable CloudWatch resources for:
+The dashboard uses aggregate metrics only. It does not use request IDs, actor IDs, session IDs, tool names, error messages, or other high-cardinality dimensions.
 
-- API Gateway `5XXError` using native `AWS/ApiGateway` metrics.
-- API Gateway `Latency` or `IntegrationLatency` using native `AWS/ApiGateway` metrics.
-- DynamoDB read/write throttling across the application tables using native `AWS/DynamoDB` metrics.
-- Agent request failures using a CloudWatch Logs metric filter on `event = "agent_request_failed"`.
-- AgentCore invocation failures using CloudWatch Logs metric filters on `event = "agentcore_invocation_failed"`.
-- ECS running task failures using ECS Container Insights `RunningTaskCount`.
+## Alarms
 
-The AgentCore log group is parameterized as `AgentCoreLogGroupName` because the exact log group name only exists after the runtime is created. Leave it empty for the first monitoring deployment if AgentCore Runtime does not exist yet. The AgentCore runtime metric filter and runtime alarm both use the `HasAgentCoreLogGroup` CloudFormation condition, so they are not created while `AgentCoreLogGroupName` is empty.
+The template creates these alarms:
 
-The ECS running-task alarm uses the `HasEcsRunningTaskAlarm` CloudFormation condition. It is not created when `MinimumRunningTaskCount=0`; it is created when `MinimumRunningTaskCount` is greater than zero, and then uses `TreatMissingData=breaching`.
+- API Gateway HTTP API `5xx` sum greater than `Api5xxThreshold`, default `0`.
+- API Gateway p95 latency using `ApiLatencyMetricName`, default `Latency`, greater than `ApiLatencyP95ThresholdMs`, default `5000`.
+- ECS `RunningTaskCount` below `MinimumRunningTaskCount`; created only when `MinimumRunningTaskCount > 0`.
+- ECS service average CPU greater than `EcsCpuUtilizationThreshold`, default `80`, for 3 of 3 one-minute periods.
+- ECS service average memory greater than `EcsMemoryUtilizationThreshold`, default `80`, for 3 of 3 one-minute periods.
+- DynamoDB `ReadThrottleEvents` summed across all eight tables, default threshold `0`.
+- DynamoDB `WriteThrottleEvents` summed across all eight tables, default threshold `0`.
+- Backend `agent_request_failed` log-derived failures, default threshold `0`.
+- Backend `agentcore_invocation_failed` log-derived failures, default threshold `0`.
+- Backend HTTP response p95 latency greater than `BackendHttpLatencyP95ThresholdMs`, default `2000`.
+- Backend-to-AgentCore p95 latency greater than `BackendAgentCoreLatencyP95ThresholdMs`, default `90000`.
+- AgentCore runtime invocation failures, runtime p95 latency, and tool execution failures when `AgentCoreLogGroupName` is non-empty.
+- Unexpected ECS task stops captured by EventBridge, default threshold `0`.
 
-The application code does not call `cloudwatch:PutMetricData`; application-level metrics come from CloudWatch Logs metric filters. The ECS application task role therefore does not need `cloudwatch:PutMetricData`.
+No SNS topic or notification action is created by default. `AlarmActions` is optional; when empty, alarms can enter `ALARM` state but do not send notifications.
 
-The template accepts optional `AlarmActions`, but no SNS topic or other notification action is configured by default. If `AlarmActions` is left empty, the alarms can enter `ALARM` state in CloudWatch but will not send notifications.
+## Metric Filters
 
-## Request ID headers
+Backend log metric filters read from `/ecs/fyp-dev/backend`:
 
-The backend returns `X-Request-ID` on all HTTP responses and `X-Agent-Request-ID` on chat request responses. API Gateway and FastAPI CORS expose both headers so browser code may read them. The canonical chat request identifier is also returned in the JSON response as `request_id`, which remains the frontend's normal polling identifier.
+- `event = "agent_request_failed"` publishes `fyp-dev/Backend AgentRequestFailed`.
+- `event = "agentcore_invocation_failed"` publishes `fyp-dev/Backend AgentCoreInvocationFailed`.
+- `event = "http_request_completed"` with non-negative `response_time_ms` publishes raw `HttpResponseLatencyMs` datapoints.
+- `event = "agentcore_invocation_completed"` with non-negative `response_time_ms` publishes raw `AgentCoreInvocationLatencyMs` datapoints.
 
-## Missing data behavior
+AgentCore runtime filters are conditional on `AgentCoreLogGroupName`:
 
-The monitoring template uses these `TreatMissingData` values:
+- `event = "agentcore_invocation_failed"` publishes `fyp-dev/AgentCore AgentCoreInvocationFailed`.
+- `event = "agentcore_invocation_completed"` with non-negative `response_time_ms` publishes raw `AgentCoreInvocationLatencyMs` datapoints.
+- `event = "agent_tool_completed"` and `tool_success = false` publishes `AgentCoreToolExecutionFailed`.
 
-- ECS `RunningTaskCount`: `breaching` when the alarm is created. The alarm is not created while `MinimumRunningTaskCount=0`.
-- API Gateway 5xx and latency: `notBreaching`
-- DynamoDB throttling: `notBreaching`
-- Log-derived agent and AgentCore failures: `notBreaching`
+Latency filters publish raw millisecond datapoints without default zero values, so percentile statistics are not skewed by non-matching log events.
 
-## ECS task monitoring choice
+Tool failure metrics intentionally do not include `tool_name`, `error_code`, request IDs, actor IDs, or session IDs as CloudWatch metric dimensions.
 
-This project uses ECS Container Insights and alarms on `ECS/ContainerInsights` `RunningTaskCount`.
+## Unexpected ECS Task Stops
 
-Behavior:
+The template creates a dedicated log group:
 
-- The alarm detects when the backend ECS service has fewer running tasks than `MinimumRunningTaskCount`.
-- `MinimumRunningTaskCount` is configurable. Use `0` while the ECS service is intentionally deployed with `DesiredCount=0`; the ECS running-task alarm will not be created in that bootstrap state.
-- After the ECS service starts, update the monitoring stack with `MinimumRunningTaskCount=1`. That stack update creates the ECS running-task alarm with `TreatMissingData=breaching`.
-- It can catch task crashes, failed deployments, and capacity/configuration problems.
-- It depends on Container Insights being enabled on the ECS cluster, which is already configured in `infra/phase7-ecs-api.yaml`.
+```text
+/aws/events/fyp-dev/ecs-task-stopped
+```
 
-Cost:
+The deployed backend task group is:
 
-- Container Insights publishes additional CloudWatch metrics and logs, so it can increase CloudWatch charges.
-- For this low-traffic development deployment, the cost should remain modest, but it is not free.
-- If cost becomes a concern, an EventBridge task-stopped rule can replace or supplement this alarm later.
+```text
+service:fyp-dev-backend
+```
 
-## Recommended alarms
+An EventBridge rule captures ECS task state change events only for the configured cluster and backend service task group where:
 
-Create these alarms after the backend stack, API Gateway, DynamoDB tables, and AgentCore Runtime exist:
+```text
+clusterArn = arn:aws:ecs:us-east-1:<account-id>:cluster/fyp-dev-backend
+group = service:fyp-dev-backend
+lastStatus = STOPPED
+stopCode is not ServiceSchedulerInitiated
+stopCode is not UserInitiated
+```
 
-- ECS task failure: alert when running backend task count drops below 1.
-- API Gateway 5xx: alert when HTTP API 5xx count is greater than 0 over a short window.
-- API Gateway high latency: alert when p95/p99 latency is above the chosen threshold.
-- AgentCore invocation failure: alert on JSON logs where `event` is `agentcore_invocation_failed`.
-- DynamoDB throttling: alert on table read/write throttle events.
-- Agent request failure rate: alert on JSON logs where `agent_request_status` is `failed`.
+This prevents unrelated tasks in the same ECS cluster from contributing to the alarm. It excludes normal ECS service replacement and user-initiated stops where practical, while still catching failure stop codes such as failed task starts and essential container exits. Some AWS stop reasons can vary, so this alarm is intentionally scoped by `group` and `stopCode` rather than free-form `stoppedReason` text.
 
-## Manual deployment command
+The monitoring stack also creates the CloudWatch Logs resource policy required for EventBridge to write to the dedicated log group.
 
-Run this only when the backend log group, API Gateway, ECS service, and DynamoDB tables exist. Set `AgentCoreLogGroupName` only after the AgentCore Runtime log group exists.
+## Missing Data Behavior
 
-If the backend stack is still intentionally running with `DesiredCount=0`, set `MinimumRunningTaskCount=0` in the parameter overrides. After the ECS service starts, update this monitoring stack with `MinimumRunningTaskCount=1`; that stack update creates the ECS running-task alarm.
+The template uses these `TreatMissingData` values:
 
-`[CREATES AWS RESOURCES]`
+- ECS `RunningTaskCount`: `breaching` when the alarm exists. The alarm is not created while `MinimumRunningTaskCount=0`.
+- API Gateway errors and latency: `notBreaching`.
+- ECS CPU and memory: `notBreaching`.
+- DynamoDB throttling: `notBreaching`.
+- Log-derived failures and latency: `notBreaching`.
+- Unexpected ECS task stops: `notBreaching`.
+
+For bootstrap with the ECS service intentionally at `DesiredCount=0`, deploy or update the monitoring stack with `MinimumRunningTaskCount=0`. After the ECS service starts, update with `MinimumRunningTaskCount=1`; that update creates the running-task alarm.
+
+## Log Retention
+
+Do not declare existing application log groups as `AWS::Logs::LogGroup` resources in this monitoring stack.
+
+Use idempotent AWS CLI commands to enforce 30-day retention on existing log groups. These commands update log group configuration only.
+
+`[UPDATES AWS LOG RETENTION]`
+
+```powershell
+aws logs put-retention-policy `
+  --region us-east-1 `
+  --log-group-name "/ecs/fyp-dev/backend" `
+  --retention-in-days 30
+
+aws logs put-retention-policy `
+  --region us-east-1 `
+  --log-group-name "/aws/apigateway/fyp-dev/backend-http-api" `
+  --retention-in-days 30
+
+aws logs put-retention-policy `
+  --region us-east-1 `
+  --log-group-name "/aws/bedrock-agentcore/runtimes/fyp_dev_restaurant_agent-dwLwVnClBF-DEFAULT" `
+  --retention-in-days 30
+```
+
+The backend and API Gateway log groups already use 30 days. The AgentCore runtime log group should be updated from unlimited retention to 30 days.
+
+## Validation
+
+Validate the template before deployment:
+
+```powershell
+aws cloudformation validate-template `
+  --region us-east-1 `
+  --template-body file://infra/phase11-monitoring.yaml
+```
+
+This command validates only. It does not create, update, or delete AWS resources.
+
+## Manual Deployment
+
+Run this only when the backend log group, API Gateway, ECS service, DynamoDB tables, and AgentCore Runtime log group exist.
+
+`[CREATES OR UPDATES AWS MONITORING RESOURCES]`
 
 ```powershell
 aws cloudformation deploy `
@@ -129,21 +215,21 @@ aws cloudformation deploy `
   --template-file infra/phase11-monitoring.yaml `
   --parameter-overrides `
     ProjectName=fyp-dev `
-    HttpApiId=<http-api-id> `
+    HttpApiId=vogwq90ly8 `
     ApiStageName='$default' `
-    EcsClusterName=<ecs-cluster-name> `
-    EcsServiceName=<ecs-service-name> `
+    EcsClusterName=fyp-dev-backend `
+    EcsServiceName=fyp-dev-backend `
     MinimumRunningTaskCount=1 `
     BackendLogGroupName=/ecs/fyp-dev/backend `
-    AgentCoreLogGroupName= `
-    AgentRequestsTableName=fyp-dev-AgentRequests `
-    MenuTableName=fyp-dev-Menu `
-    CartsTableName=fyp-dev-Carts `
-    OrdersTableName=fyp-dev-Orders `
-    CustomersTableName=fyp-dev-Customers `
-    AgentSessionsTableName=fyp-dev-AgentSessions `
-    MenuSessionsTableName=fyp-dev-MenuSessions `
-    AuditTableName=fyp-dev-Audit
+    AgentCoreLogGroupName=/aws/bedrock-agentcore/runtimes/fyp_dev_restaurant_agent-dwLwVnClBF-DEFAULT `
+    AgentRequestsTableName=fyp-dev-agent-requests `
+    MenuTableName=shaheer-fyp-restaurant-menu `
+    CartsTableName=shaheer-fyp-carts `
+    OrdersTableName=shaheer-fyp-orders `
+    CustomersTableName=shaheer-fyp-customers `
+    AgentSessionsTableName=shaheer-fyp-agent-sessions `
+    MenuSessionsTableName=shaheer-fyp-menu-sessions `
+    AuditTableName=shaheer-fyp-agent-audit-events
 ```
 
 Expected success output:
@@ -152,4 +238,4 @@ Expected success output:
 Successfully created/updated stack - fyp-dev-monitoring
 ```
 
-The template is the source of truth for Phase 11 monitoring resources. Avoid creating separate ad hoc alarms or metric filters unless the template is updated to match.
+The template remains the source of truth for Phase 11 monitoring resources. Avoid creating separate ad hoc alarms or metric filters unless the template is updated to match.
