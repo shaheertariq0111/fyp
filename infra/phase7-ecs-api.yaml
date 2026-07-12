@@ -125,7 +125,7 @@ Parameters:
   AgentCoreMemoryArn:
     Type: String
     Default: ""
-    Description: Leave empty until AgentCore Memory is created.
+    Description: Exact ARN of the AgentCore Memory used by the runtime.
   AgentCoreSessionTokenSecretArn:
     Type: String
     Default: ""
@@ -523,13 +523,16 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: UseConfiguredAgentCoreMemory
-            Effect: Allow
-            Action:
-              - bedrock-agentcore:CreateEvent
-              - bedrock-agentcore:GetEvent
-              - bedrock-agentcore:ListEvents
-            Resource: !Ref AgentCoreMemoryArn
+          - !If
+            - HasAgentCoreMemoryArn
+            - Sid: AccessAgentCoreMemoryEvents
+              Effect: Allow
+              Action:
+                - bedrock-agentcore:CreateEvent
+                - bedrock-agentcore:GetEvent
+                - bedrock-agentcore:ListEvents
+              Resource: !Ref AgentCoreMemoryArn
+            - !Ref AWS::NoValue
 
   AgentCoreExecutionSessionSecretPolicy:
     Type: AWS::IAM::Policy
@@ -546,6 +549,22 @@ Resources:
             Action:
               - secretsmanager:GetSecretValue
             Resource: !Ref AgentCoreSessionTokenSecretArn
+
+  AgentCoreExecutionSharedSessionSecretPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasSessionTokenSecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-agentcore-shared-session-secret
+      Roles:
+        - !Ref AgentCoreExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadSessionTokenSecret
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref SessionTokenSecretArn
 
   AgentCoreExecutionDynamoDbPolicy:
     Type: AWS::IAM::Policy
