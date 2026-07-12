@@ -442,6 +442,7 @@ Resources:
           - Effect: Allow
             Action:
               - bedrock-agentcore:InvokeAgentRuntime
+              - bedrock-agentcore:InvokeAgentRuntimeForUser
             Resource: !Ref AgentCoreRuntimeArn
 
   AgentCoreExecutionRole:
