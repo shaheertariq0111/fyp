@@ -31,6 +31,7 @@ SAFE_LOG_FIELDS = (
     "dynamodb_operation",
     "dynamodb_table",
     "exception_type",
+    "exception_message",
 )
 
 
