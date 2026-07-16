@@ -19,6 +19,9 @@ class CartItem(BaseModel):
 class Cart(BaseModel):
     cart_id: str
     user_id: str
+    customer_id: str | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
     agent_session_id: str
     restaurant_id: str
     branch_id: str

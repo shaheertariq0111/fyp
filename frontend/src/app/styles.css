@@ -170,6 +170,17 @@ button {
   margin-top: 10px;
 }
 
+.status {
+  display: block;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.full {
+  width: 100%;
+  margin-bottom: 18px;
+}
+
 .side {
   border-left: 1px solid var(--line);
   background: #f0eadf;
@@ -187,6 +198,17 @@ button {
   color: var(--muted);
   font-size: 14px;
   line-height: 1.45;
+}
+
+.summary {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 18px;
+}
+
+.summary ul {
+  margin: 8px 0 12px;
+  padding-left: 18px;
 }
 
 .menu-layout {
@@ -235,6 +257,238 @@ button {
 .item-card h3 {
   margin: 0;
   font-size: 18px;
+}
+
+.admin-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  background: #f6f7f8;
+  color: #1f2328;
+}
+
+.admin-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 14px;
+  border-right: 1px solid #d8dee4;
+  background: #ffffff;
+}
+
+.admin-brand {
+  font-weight: 800;
+  padding: 8px 10px 18px;
+}
+
+.admin-nav a,
+.admin-nav-button {
+  min-height: 38px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  color: #1f2328;
+  text-align: left;
+  text-decoration: none;
+  background: transparent;
+}
+
+.admin-nav a:hover,
+.admin-nav-button:hover {
+  background: #eef1f4;
+}
+
+.admin-content {
+  min-width: 0;
+  padding: 22px;
+}
+
+.admin-header {
+  margin-bottom: 18px;
+}
+
+.admin-header h1 {
+  margin: 0;
+  font-size: 26px;
+}
+
+.admin-login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: #f6f7f8;
+}
+
+.admin-login-panel {
+  width: min(420px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.admin-login-panel h1 {
+  margin: 0 0 6px;
+}
+
+.admin-login-panel label,
+.admin-form-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: start;
+}
+
+.admin-form-grid textarea {
+  min-height: 86px;
+  grid-column: 1 / -1;
+}
+
+.admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.admin-toolbar input {
+  min-width: min(420px, 100%);
+}
+
+.admin-panel {
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.admin-panel h2,
+.admin-panel h3 {
+  margin: 0 0 12px;
+}
+
+.admin-grid-two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.admin-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.admin-metrics div {
+  display: grid;
+  gap: 4px;
+  padding: 16px;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.admin-metrics strong {
+  font-size: 24px;
+}
+
+.admin-metrics span,
+.admin-detail-grid span {
+  color: #656d76;
+  font-size: 13px;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid #d8dee4;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-table pre {
+  max-width: 420px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.admin-row-actions,
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.admin-detail-grid div {
+  display: grid;
+  gap: 3px;
+}
+
+.admin-success,
+.admin-error {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+}
+
+.admin-success {
+  background: #dafbe1;
+  color: #116329;
+}
+
+.admin-error,
+.danger {
+  color: #a40e26;
+}
+
+.admin-login input,
+.admin-content input,
+.admin-content select,
+.admin-content textarea {
+  width: 100%;
+  border: 1px solid #d8dee4;
+  border-radius: 6px;
+  padding: 10px 11px;
+  background: #ffffff;
+  color: #1f2328;
+}
+
+@media (max-width: 760px) {
+  .admin-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-nav {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .admin-brand {
+    grid-column: 1 / -1;
+    padding-bottom: 8px;
+  }
 }
 
 .item-card p {

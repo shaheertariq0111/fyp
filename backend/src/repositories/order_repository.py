@@ -38,6 +38,16 @@ class OrderRepository:
                 return from_dynamodb(items)
             kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
+    def list_all(self) -> list[dict]:
+        kwargs = {}
+        items: list[dict] = []
+        while True:
+            response = self.table.scan(**kwargs)
+            items.extend(response.get("Items", []))
+            if "LastEvaluatedKey" not in response:
+                return from_dynamodb(items)
+            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
     def save(self, order: dict, expected_version: int) -> None:
         updated = dict(order)
         updated["version"] = expected_version + 1

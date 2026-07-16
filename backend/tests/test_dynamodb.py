@@ -1,12 +1,11 @@
 from unittest.mock import Mock, patch
 
-from src.infrastructure.config import Settings
 from src.infrastructure.dynamodb import get_dynamodb_resource, verify_dynamodb_tables
-from test_config import BASE
+from test_config import make_test_settings
 
 
 def test_aws_resource_uses_region_and_default_credential_chain():
-    settings = Settings(**BASE)
+    settings = make_test_settings()
     with patch("src.infrastructure.dynamodb.boto3.resource") as resource:
         get_dynamodb_resource(settings)
     kwargs = resource.call_args.kwargs
@@ -17,7 +16,7 @@ def test_aws_resource_uses_region_and_default_credential_chain():
 
 
 def test_verify_tables_loads_every_configured_table():
-    settings = Settings(**BASE)
+    settings = make_test_settings()
     tables = {}
 
     def make_table(name):
@@ -28,6 +27,6 @@ def test_verify_tables_loads_every_configured_table():
     dynamodb = Mock()
     dynamodb.Table.side_effect = make_table
     statuses = verify_dynamodb_tables(settings, dynamodb)
-    assert len(statuses) == 5
+    assert len(statuses) == 8
     assert set(statuses.values()) == {"ACTIVE"}
     assert all(table.load.called for table in tables.values())

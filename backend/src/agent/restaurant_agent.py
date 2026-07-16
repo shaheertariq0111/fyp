@@ -28,8 +28,10 @@ def build_bedrock_model() -> BedrockModel:
     return BedrockModel(region_name=settings.aws_region, **model_config)
 
 
-def build_session_manager(agent_session_id: str) -> FileSessionManager:
+def build_session_manager(agent_session_id: str) -> FileSessionManager | None:
     settings = get_settings()
+    if not settings.strands_session_storage_dir:
+        return None
     return FileSessionManager(
         session_id=agent_session_id,
         storage_dir=settings.strands_session_storage_dir,
@@ -38,7 +40,7 @@ def build_session_manager(agent_session_id: str) -> FileSessionManager:
 
 def build_restaurant_agent(
     model: BedrockModel | str | None = None,
-    session_manager: FileSessionManager | None = None,
+    session_manager: Any | None = None,
 ) -> Agent:
     return Agent(
         model=model or build_bedrock_model(),
@@ -63,6 +65,10 @@ def invoke_restaurant_agent(
     user_id: str,
     agent_session_id: str,
     branch_id: str | None = None,
+    customer_id: str | None = None,
+    customer_name: str | None = None,
+    customer_phone: str | None = None,
+    channel: str = "web",
     agent: Agent | None = None,
     **kwargs: Any,
 ):
@@ -70,12 +76,21 @@ def invoke_restaurant_agent(
         user_id=user_id,
         agent_session_id=agent_session_id,
         branch_id=branch_id,
+        customer_id=customer_id or user_id,
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        channel=channel,
     )
     runtime_agent = agent or build_restaurant_agent(
         session_manager=build_session_manager(agent_session_id)
     )
     with request_context(context):
-        return runtime_agent(message, **kwargs)
+        result = runtime_agent(message, **kwargs)
+        try:
+            setattr(result, "tool_calls", list(context.tool_calls))
+        except Exception:
+            pass
+        return result
 
 
 def agent_result_text(result: Any) -> str:

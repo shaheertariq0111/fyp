@@ -5,11 +5,11 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "next": "^16.0.10",
+    "next": "^15.5.20",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },
@@ -17,6 +17,8 @@
     "@types/node": "^24.10.0",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.20",
     "typescript": "^5.9.3"
   }
 }

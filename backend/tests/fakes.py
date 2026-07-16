@@ -3,9 +3,11 @@ from copy import deepcopy
 
 class MemoryMenuRepository:
     def __init__(self, items, groups, upsells=None):
+        self.menu_pk = "MENU#restaurant"
         self.items = {item["product_id"]: deepcopy(item) for item in items}
         self.groups = {group["option_group_id"]: deepcopy(group) for group in groups}
         self.upsells = {group["upsell_group_id"]: deepcopy(group) for group in upsells or []}
+        self.categories = {}
 
     def get_item(self, item_id):
         return deepcopy(self.items.get(item_id))
@@ -18,7 +20,40 @@ class MemoryMenuRepository:
 
     def search(self, available_only=True):
         return [deepcopy(item) for item in self.items.values()
-                if not available_only or item["available"]]
+                if not available_only or (item["available"] and not item.get("archived"))]
+
+    def list_entities(self, entity_type):
+        if entity_type == "menu_item":
+            return [deepcopy(item) for item in self.items.values()]
+        if entity_type == "option_group":
+            return [deepcopy(group) for group in self.groups.values()]
+        if entity_type == "upsell_group":
+            return [deepcopy(group) for group in self.upsells.values()]
+        if entity_type == "category":
+            return [deepcopy(category) for category in self.categories.values()]
+        return []
+
+    def get_entity(self, entity_type, entity_id):
+        if entity_type == "menu_item":
+            return self.get_item(entity_id)
+        if entity_type == "option_group":
+            return self.get_option_group(entity_id)
+        if entity_type == "upsell_group":
+            return self.get_upsell_group(entity_id)
+        if entity_type == "category":
+            return deepcopy(self.categories.get(entity_id))
+        return None
+
+    def save_entity(self, entity):
+        sk = entity["SK"]
+        if sk.startswith("ITEM#"):
+            self.items[entity["product_id"]] = deepcopy(entity)
+        elif sk.startswith("OPTION_GROUP#"):
+            self.groups[entity["option_group_id"]] = deepcopy(entity)
+        elif sk.startswith("UPSELL_GROUP#"):
+            self.upsells[entity["upsell_group_id"]] = deepcopy(entity)
+        elif sk.startswith("CATEGORY#"):
+            self.categories[entity["category_id"]] = deepcopy(entity)
 
 
 class MemoryCartRepository:
@@ -34,6 +69,15 @@ class MemoryCartRepository:
     def find_by_cart_item_id(self, item_id):
         return next((deepcopy(cart) for cart in self.data.values()
                      if item_id in cart["cart_item_ids"]), None)
+
+    def find_active_by_session(self, user_id, agent_session_id, terminal_statuses):
+        matches = [
+            deepcopy(cart) for cart in self.data.values()
+            if cart["user_id"] == user_id
+            and cart["agent_session_id"] == agent_session_id
+            and cart["status"] not in terminal_statuses
+        ]
+        return max(matches, key=lambda cart: cart.get("updated_at", "")) if matches else None
 
     def save(self, cart, expected_version):
         assert self.data[cart["cart_id"]]["version"] == expected_version
@@ -61,3 +105,6 @@ class MemoryOrderRepository:
     def list_active(self, user_id, terminal_statuses):
         return [deepcopy(order) for order in self.data.values()
                 if order["user_id"] == user_id and order["status"] not in terminal_statuses]
+
+    def list_all(self):
+        return [deepcopy(order) for order in self.data.values()]

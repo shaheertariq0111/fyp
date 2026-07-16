@@ -4,7 +4,21 @@
 __pycache__/
 .pytest_cache/
 .strands_sessions/
+agent-runtime/env.agentcore.dev.json
 *.py[cod]
 *.egg-info/
 node_modules/
 .next/
+
+# Python environments
+.venv/
+venv/
+.agentcore-dependency-check/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Secrets
+.env
+.env.*

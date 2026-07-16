@@ -2,107 +2,155 @@
 
 ## Source of Truth
 
-Before making implementation decisions, read:
+Before making deployment or infrastructure decisions, read:
 
-- `docs/pizza_restaurant_ordering_agent_prd.md`
+* `docs/deployment.md`
 
-Treat this PRD as the primary product and architecture source of truth.
+Treat this file as the primary deployment and architecture source of truth.
 
-Do not implement features that conflict with the PRD unless explicitly instructed by the user.
+Do not reference or depend on the old PRD unless the user explicitly asks you to.
 
-## Implementation Priorities
+## Working Method
 
-Build the MVP first.
+Work strictly one deployment phase at a time.
 
-Follow the PRD sections for:
+* Implement only the current phase.
+* Do not begin the next phase until the user explicitly says to proceed.
+* Inspect the existing repository before making changes.
+* Reuse existing architecture and working code.
+* Do not introduce unrelated features or refactors.
+* Do not implement future deployment phases early.
 
-- local development setup
-- Strands agent architecture
-- 11-tool MVP tool set
-- backend service/repository structure
-- AWS DynamoDB support
-- frontend chat UI
-- menu website UI
-- no-hardcoding rule
-- trusted context injection
-- state machines
-- testing scenarios
+## AWS Infrastructure Rules
 
-## Hard Rules
+The user will run all AWS infrastructure commands manually.
 
-- Do not hardcode menu items, prices, pizza options, toppings, table names, model IDs, URLs, or secrets.
-- Read menu data, customization options, prices, cart state, and order state from backend/DynamoDB.
-- Strands tools must be thin wrappers around services.
-- Services own business logic.
-- Repositories own DynamoDB access.
-- Frontend must not calculate final prices or decide order state.
-- Backend must validate all cart and order transitions.
-- Use AWS DynamoDB as the development and deployment datastore.
+Do not run commands that create, update, deploy, replace, or delete AWS resources unless the user explicitly tells you to run them.
 
-## MVP Tool Set
+This includes:
 
-Implement these 11 Strands tools first:
+* AWS CLI
+* ECR login and image push
+* ECS deployment
+* CloudFormation
+* CDK
+* SAM
+* AgentCore deployment
+* API Gateway deployment
+* Amplify deployment
+* DynamoDB creation
+* IAM changes
+* Secrets Manager operations
 
-1. `search_menu`
-2. `get_menu_item`
-3. `create_menu_session_link`
-4. `start_cart_item_customization`
-5. `set_customization_mode`
-6. `save_customization_choice`
-7. `handle_cart_upsell`
-8. `create_pending_order_from_cart`
-9. `update_order_flow`
-10. `get_order_status`
-11. `retrieve_restaurant_knowledge`
+When AWS work is required:
 
-Do not add optional preference tools until the MVP is working.
+1. Provide the exact commands in the correct order.
+2. Explain what each command creates or changes.
+3. Show the expected output.
+4. Clearly warn before any destructive or replacement operation.
+5. Stop and wait for the user to run the commands.
+
+## Deployment Architecture
+
+Follow the architecture defined in `docs/deployment.md`.
+
+The intended deployment includes:
+
+* Next.js frontend on AWS Amplify
+* FastAPI backend on ECS Fargate
+* Backend container images stored in ECR
+* API Gateway HTTP API as the public backend endpoint
+* API Gateway VPC Link and AWS Cloud Map for ECS integration
+* Strands agent deployed to Amazon Bedrock AgentCore Runtime
+* AgentCore Memory for short-term conversation memory
+* DynamoDB for persistent application and request data
+* Secrets Manager for sensitive configuration
+* CloudWatch for logs and monitoring
+
+Do not add an Application Load Balancer, Route 53, ACM, or a custom domain unless explicitly instructed.
+
+## Code Architecture Rules
+
+* Do not hardcode table names, model IDs, API URLs, resource ARNs, account IDs, credentials, or secrets.
+* Use environment variables for configuration.
+* Use IAM roles instead of AWS access keys in deployed services.
+* FastAPI route handlers should remain thin.
+* Services should own business logic.
+* Repositories should own DynamoDB access.
+* AWS integrations should be isolated behind service or client classes.
+* The frontend must not calculate final prices or control order-state transitions.
+* Request status must not be stored only in ECS memory.
+* Do not rely on local file-based agent memory in deployed environments.
+* Do not expose raw AWS exceptions or internal stack traces to clients.
+
+## Secrets and Security
+
+Never commit or expose:
+
+* `.env` files
+* AWS credentials
+* access tokens
+* passwords
+* session secrets
+* generated secret values
+* private customer data
+
+Do not use broad IAM policies such as:
+
+* `AdministratorAccess`
+* `AmazonBedrockFullAccess`
+* `AmazonDynamoDBFullAccess`
+
+Use least-privilege, resource-specific permissions.
 
 ## Local Development
 
-The app should run locally with:
+Keep local development working during deployment changes.
 
-- frontend on `http://localhost:3000`
-- backend on `http://localhost:8001`
-- DynamoDB in the configured AWS region
-- Bedrock called remotely through AWS credentials
+Expected local services:
 
-Use environment variables for all config.
+* frontend on `http://localhost:3000`
+* backend on `http://localhost:8001`
+* DynamoDB in the configured AWS region
+* Bedrock accessed through local AWS credentials
+
+Do not break existing menu, cart, ordering, chat, or admin functionality.
 
 ## Testing
 
-After implementing or changing code, run relevant tests.
+After every code change, run the relevant local checks.
 
-At minimum, test:
+At minimum, run where applicable:
 
-- menu loading
-- recommendation flow
-- chat customization flow
-- 2 identical pizzas
-- 2 separately customized pizzas
-- upsell flow
-- pending order confirmation
-- delivery/takeaway flow
-- AWS DynamoDB configuration and access behavior
+* backend tests
+* frontend type checking
+* frontend linting
+* frontend production build
+* Docker build
+* container health check
+* infrastructure template validation
+* agent tool tests
+* API request-status tests
 
-## Progress Tracking
+Do not claim a phase is complete if required tests are failing.
 
-Maintain implementation progress against the PRD phases.
+## Phase Completion Report
 
-Create and update a file:
+After completing each phase, stop and report:
 
-- `docs/implementation_status.md`
+* phase completed
+* repository findings
+* files changed
+* changes made
+* tests and checks run
+* test results
+* AWS commands the user must run
+* expected command outputs
+* remaining blockers
+* next phase scope
 
-After completing any meaningful implementation step, update this file with:
+Do not continue until the user explicitly says:
 
-- current phase
-- completed tasks
-- in-progress tasks
-- blocked tasks
-- next recommended task
-- important decisions made
-- files changed
-- tests added or run
-
-Use the PRD phase names from `docs/pizza_restaurant_ordering_agent_prd.md`.
-
-Do not mark a phase complete unless the code, config, and relevant tests for that phase are implemented.
+```text
+Proceed to Phase N
+```

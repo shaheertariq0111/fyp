@@ -16,13 +16,14 @@ class MenuSessionService:
         return hashlib.sha256(f"{secret}:{token}".encode()).hexdigest()
 
     def create_link(self, user_id: str, agent_session_id: str,
-                    item_id: str | None = None) -> ToolResponse:
+                    item_id: str | None = None, customer_id: str | None = None) -> ToolResponse:
         token = secrets.token_urlsafe(32)
         token_hash = self._hash(token, self.settings.session_token_secret)
         now = datetime.now(timezone.utc)
         session = {
             "PK": f"MENU_SESSION#{token_hash}", "SK": "METADATA",
             "session_token_hash": token_hash, "user_id": user_id,
+            "customer_id": customer_id or user_id,
             "agent_session_id": agent_session_id,
             "restaurant_id": self.settings.restaurant_id,
             "branch_id": self.settings.branch_id,
@@ -45,5 +46,6 @@ class MenuSessionService:
             return ToolResponse.error(error_code="MENU_SESSION_INVALID",
                                       user_message="This menu link is invalid or has expired.")
         public = {key: session.get(key) for key in
-                  ("restaurant_id", "branch_id", "preselected_item_id", "agent_session_id", "user_id")}
+                  ("restaurant_id", "branch_id", "preselected_item_id", "agent_session_id",
+                   "user_id", "customer_id")}
         return ToolResponse.ok(data=public, user_message="Menu session resolved.")

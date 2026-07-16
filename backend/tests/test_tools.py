@@ -14,13 +14,39 @@ class MenuStub:
 
 
 class SessionStub:
-    def create_link(self, user_id, session_id, item_id):
+    def create_link(self, user_id, session_id, item_id, customer_id=None):
         return ToolResponse.ok(data={"user_id": user_id, "session_id": session_id,
-                                     "item_id": item_id}, user_message="ok")
+                                     "item_id": item_id, "customer_id": customer_id}, user_message="ok")
 
 
-def test_exactly_eleven_mvp_tools():
-    assert len(tools.MVP_TOOLS) == 11
+class CartStub:
+    def get_active_cart(self, user_id, session_id):
+        return ToolResponse.ok(
+            data={"cart": {"user_id": user_id, "session_id": session_id}},
+            user_message="cart",
+        )
+
+
+class CustomerStub:
+    def get_profile(self, customer_id):
+        return ToolResponse.ok(data={"customer": {"customer_id": customer_id}}, user_message="ok")
+
+    def update_profile(self, customer_id, **kwargs):
+        return ToolResponse.ok(data={"customer": {"customer_id": customer_id, **kwargs}},
+                               user_message="ok")
+
+    def save_address(self, customer_id, **kwargs):
+        return ToolResponse.ok(data={"customer": {"customer_id": customer_id},
+                                     "address": kwargs},
+                               user_message="ok")
+
+
+def test_mvp_tools_include_active_cart_lookup():
+    assert len(tools.MVP_TOOLS) == 15
+    assert tools.get_active_cart in tools.MVP_TOOLS
+    assert tools.get_customer_profile in tools.MVP_TOOLS
+    assert tools.update_customer_profile in tools.MVP_TOOLS
+    assert tools.save_customer_address in tools.MVP_TOOLS
 
 
 def test_menu_link_injects_trusted_context(monkeypatch):
@@ -29,17 +55,59 @@ def test_menu_link_injects_trusted_context(monkeypatch):
     with request_context(AgentRequestContext("trusted-user", "trusted-session")):
         result = tools.create_menu_session_link(item_id="dynamic-item")
     assert result["data"] == {
-        "user_id": "trusted-user", "session_id": "trusted-session", "item_id": "dynamic-item"
+        "user_id": "trusted-user", "session_id": "trusted-session",
+        "item_id": "dynamic-item", "customer_id": "trusted-user"
     }
 
 
-def test_tool_converts_service_exception_to_safe_error(monkeypatch):
+def test_search_menu_tool_caps_chat_results_to_five(monkeypatch):
+    container = SimpleNamespace(menu=MenuStub())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    result = tools.search_menu(query="recommend", max_results=12)
+
+    assert result["data"]["limit"] == 5
+
+
+def test_get_active_cart_uses_trusted_user_and_session(monkeypatch):
+    container = SimpleNamespace(carts=CartStub())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+    with request_context(AgentRequestContext("trusted-user", "trusted-session")):
+        result = tools.get_active_cart()
+    assert result["data"]["cart"] == {
+        "user_id": "trusted-user",
+        "session_id": "trusted-session",
+    }
+
+
+def test_customer_tools_use_trusted_customer_context(monkeypatch):
+    container = SimpleNamespace(customers=CustomerStub())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+    with request_context(AgentRequestContext(
+        "trusted-user", "trusted-session", customer_id="customer-1", channel="web"
+    )):
+        profile = tools.get_customer_profile()
+        updated = tools.update_customer_profile(display_name="Ava", phone_number="+923001234567")
+        address = tools.save_customer_address(
+            address_text="House 1, Street 2", label="Home", make_default=True
+        )
+    assert profile["data"]["customer"]["customer_id"] == "customer-1"
+    assert updated["data"]["customer"]["display_name"] == "Ava"
+    assert address["data"]["address"]["address_text"] == "House 1, Street 2"
+    assert address["data"]["address"]["channel"] == "web"
+
+
+def test_tool_converts_service_exception_to_safe_error_and_logs(monkeypatch, caplog):
     class BrokenMenu:
         def get_menu_item(self, _item_id):
             raise RuntimeError("internal table details")
 
     monkeypatch.setattr(tools, "get_services",
                         lambda: SimpleNamespace(menu=BrokenMenu()))
-    result = tools.get_menu_item(item_id="item")
+    with caplog.at_level("ERROR", logger="src.agent.tools"):
+        with request_context(AgentRequestContext("trusted-user", "trusted-session")):
+            result = tools.get_menu_item(item_id="item")
     assert result["error_code"] == "BACKEND_UNAVAILABLE"
     assert "table" not in result["user_message"]
+    assert "get_menu_item" in caplog.text
+    assert "RuntimeError" in caplog.text

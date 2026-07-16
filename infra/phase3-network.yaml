@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Dedicated low-cost VPC for the FYP ECS and API Gateway deployment.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: fyp-dev
+    AllowedPattern: "^[a-zA-Z0-9-]+$"
+
+  VpcCidr:
+    Type: String
+    Default: 10.20.0.0/16
+
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.20.1.0/24
+
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.20.2.0/24
+
+Resources:
+  FypVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-vpc
+        - Key: Project
+          Value: !Ref ProjectName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-igw
+        - Key: Project
+          Value: !Ref ProjectName
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref FypVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FypVpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Ref PublicSubnetACidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-a
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FypVpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Ref PublicSubnetBCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-b
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FypVpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-rt
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PublicInternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+Outputs:
+  VpcId:
+    Description: Dedicated FYP VPC ID
+    Value: !Ref FypVpc
+
+  VpcCidr:
+    Value: !Ref VpcCidr
+
+  PublicSubnetAId:
+    Value: !Ref PublicSubnetA
+
+  PublicSubnetBId:
+    Value: !Ref PublicSubnetB
+
+  PublicSubnetIds:
+    Description: Comma-separated subnet IDs for the backend stack
+    Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+
+  PublicSubnetAAvailabilityZone:
+    Value: !GetAtt PublicSubnetA.AvailabilityZone
+
+  PublicSubnetBAvailabilityZone:
+    Value: !GetAtt PublicSubnetB.AvailabilityZone
+
+  InternetGatewayId:
+    Value: !Ref InternetGateway
+
+  PublicRouteTableId:
+    Value: !Ref PublicRouteTable

@@ -1,19 +1,42 @@
+const sessionKey = "pizza-agent-session-id";
+const customerKey = "pizza-agent-customer-id";
+
+export const createLocalSessionId = (): string => `web-${crypto.randomUUID()}`;
+export const createLocalCustomerId = (): string => `cust-${crypto.randomUUID()}`;
+
 export const getLocalSessionId = (): string => {
   if (typeof window === "undefined") return "server-session";
-  const key = "pizza-agent-session-id";
-  const existing = window.localStorage.getItem(key);
+  const existing = window.localStorage.getItem(sessionKey);
   if (existing) return existing;
-  const created = `web-${crypto.randomUUID()}`;
-  window.localStorage.setItem(key, created);
+  const created = createLocalSessionId();
+  window.localStorage.setItem(sessionKey, created);
   return created;
 };
 
-export const getLocalUserId = (): string => {
-  if (typeof window === "undefined") return "server-user";
-  const key = "pizza-agent-user-id";
-  const existing = window.localStorage.getItem(key);
-  if (existing) return existing;
-  const created = `user-${crypto.randomUUID()}`;
-  window.localStorage.setItem(key, created);
+export const resetLocalSessionId = (): string => {
+  if (typeof window === "undefined") return "server-session";
+  const created = createLocalSessionId();
+  window.localStorage.setItem(sessionKey, created);
   return created;
 };
+
+export const saveLocalSessionId = (sessionId: string): void => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(sessionKey, sessionId);
+};
+
+export const getLocalCustomerId = (): string => {
+  if (typeof window === "undefined") return "server-user";
+  const existing = window.localStorage.getItem(customerKey);
+  if (existing) return existing;
+  const created = createLocalCustomerId();
+  window.localStorage.setItem(customerKey, created);
+  return created;
+};
+
+export const saveLocalCustomerId = (customerId: string): void => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(customerKey, customerId);
+};
+
+export const getLocalUserId = getLocalCustomerId;

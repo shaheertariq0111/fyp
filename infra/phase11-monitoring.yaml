@@ -1,0 +1,962 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Phase 11 monitoring resources for API Gateway, ECS, DynamoDB, backend logs, and AgentCore runtime logs.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: fyp-dev
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9-]{1,31}$"
+    Description: Short prefix used for alarm and metric names.
+  HttpApiId:
+    Type: String
+    Default: vogwq90ly8
+    Description: API Gateway HTTP API ID.
+  ApiStageName:
+    Type: String
+    Default: "$default"
+    Description: API Gateway HTTP API stage name.
+  Api5xxThreshold:
+    Type: Number
+    Default: 0
+  ApiLatencyMetricName:
+    Type: String
+    Default: Latency
+    AllowedValues:
+      - Latency
+      - IntegrationLatency
+  ApiLatencyP95ThresholdMs:
+    Type: Number
+    Default: 5000
+  BackendHttpLatencyP95ThresholdMs:
+    Type: Number
+    Default: 2000
+    Description: Backend HTTP response p95 latency alarm threshold in milliseconds.
+  BackendAgentCoreLatencyP95ThresholdMs:
+    Type: Number
+    Default: 90000
+    Description: Backend-to-AgentCore invocation p95 latency alarm threshold in milliseconds.
+  AgentCoreRuntimeLatencyP95ThresholdMs:
+    Type: Number
+    Default: 90000
+    Description: AgentCore Runtime invocation p95 latency alarm threshold in milliseconds.
+  EcsClusterName:
+    Type: String
+    Default: fyp-dev-backend
+    Description: ECS cluster name.
+  EcsServiceName:
+    Type: String
+    Default: fyp-dev-backend
+    Description: ECS service name.
+  MinimumRunningTaskCount:
+    Type: Number
+    Default: 1
+  EcsCpuUtilizationThreshold:
+    Type: Number
+    Default: 80
+    Description: ECS service average CPU utilization percentage threshold.
+  EcsMemoryUtilizationThreshold:
+    Type: Number
+    Default: 80
+    Description: ECS service average memory utilization percentage threshold.
+  BackendLogGroupName:
+    Type: String
+    Default: /ecs/fyp-dev/backend
+  EcsTaskStoppedLogGroupName:
+    Type: String
+    Default: /aws/events/fyp-dev/ecs-task-stopped
+    Description: Dedicated log group for unexpected ECS task stopped events captured by EventBridge.
+  AgentCoreLogGroupName:
+    Type: String
+    Default: ""
+    Description: Optional AgentCore Runtime log group name. Leave empty until the runtime creates it.
+  AgentRequestFailureThreshold:
+    Type: Number
+    Default: 0
+  AgentCoreFailureThreshold:
+    Type: Number
+    Default: 0
+  AgentCoreToolFailureThreshold:
+    Type: Number
+    Default: 0
+  UnexpectedEcsTaskStopThreshold:
+    Type: Number
+    Default: 0
+  DynamoDbThrottleThreshold:
+    Type: Number
+    Default: 0
+  AgentRequestsTableName:
+    Type: String
+    Default: fyp-dev-agent-requests
+  MenuTableName:
+    Type: String
+    Default: shaheer-fyp-restaurant-menu
+  CartsTableName:
+    Type: String
+    Default: shaheer-fyp-carts
+  OrdersTableName:
+    Type: String
+    Default: shaheer-fyp-orders
+  CustomersTableName:
+    Type: String
+    Default: shaheer-fyp-customers
+  AgentSessionsTableName:
+    Type: String
+    Default: shaheer-fyp-agent-sessions
+  MenuSessionsTableName:
+    Type: String
+    Default: shaheer-fyp-menu-sessions
+  AuditTableName:
+    Type: String
+    Default: shaheer-fyp-agent-audit-events
+  AlarmActions:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Optional SNS topic ARNs or alarm action ARNs.
+
+Conditions:
+  HasAgentCoreLogGroup: !Not [!Equals [!Ref AgentCoreLogGroupName, ""]]
+  HasAlarmActions: !Not [!Equals [!Join ["", !Ref AlarmActions], ""]]
+  HasEcsRunningTaskAlarm: !Not [!Equals [!Ref MinimumRunningTaskCount, 0]]
+
+Resources:
+  UnexpectedEcsTaskStopsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref EcsTaskStoppedLogGroupName
+      RetentionInDays: 30
+
+  EventBridgeToLogsResourcePolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-eventbridge-to-ecs-task-stops-logs
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowEventBridgeToWriteUnexpectedEcsTaskStops",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "events.amazonaws.com",
+                  "delivery.logs.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${EcsTaskStoppedLogGroupName}:*"
+            }
+          ]
+        }
+
+  UnexpectedEcsTaskStoppedRule:
+    Type: AWS::Events::Rule
+    DependsOn: EventBridgeToLogsResourcePolicy
+    Properties:
+      Name: !Sub ${ProjectName}-unexpected-ecs-task-stopped
+      Description: Captures unexpected stopped ECS backend tasks while excluding normal service and user initiated stops.
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.ecs
+        detail-type:
+          - ECS Task State Change
+        detail:
+          clusterArn:
+            - !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}
+          group:
+            - !Sub service:${EcsServiceName}
+          lastStatus:
+            - STOPPED
+          stopCode:
+            - anything-but:
+                - ServiceSchedulerInitiated
+                - UserInitiated
+      Targets:
+        - Arn: !GetAtt UnexpectedEcsTaskStopsLogGroup.Arn
+          Id: UnexpectedEcsTaskStopsLogGroup
+
+  UnexpectedEcsTaskStoppedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    DependsOn: UnexpectedEcsTaskStoppedRule
+    Properties:
+      LogGroupName: !Ref UnexpectedEcsTaskStopsLogGroup
+      FilterName: !Sub ${ProjectName}-unexpected-ecs-task-stopped
+      FilterPattern: '{ $.detail.lastStatus = "STOPPED" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/ECS
+          MetricName: UnexpectedTaskStopped
+          MetricValue: "1"
+          DefaultValue: 0
+
+  BackendAgentRequestFailedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroupName
+      FilterName: !Sub ${ProjectName}-agent-request-failed
+      FilterPattern: '{ $.event = "agent_request_failed" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/Backend
+          MetricName: AgentRequestFailed
+          MetricValue: "1"
+          DefaultValue: 0
+
+  BackendAgentCoreInvocationFailedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroupName
+      FilterName: !Sub ${ProjectName}-agentcore-invocation-failed
+      FilterPattern: '{ $.event = "agentcore_invocation_failed" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/Backend
+          MetricName: AgentCoreInvocationFailed
+          MetricValue: "1"
+          DefaultValue: 0
+
+  BackendHttpResponseLatencyMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroupName
+      FilterName: !Sub ${ProjectName}-backend-http-response-latency
+      FilterPattern: '{ $.event = "http_request_completed" && $.response_time_ms >= 0 }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/Backend
+          MetricName: HttpResponseLatencyMs
+          MetricValue: $.response_time_ms
+          Unit: Milliseconds
+
+  BackendAgentCoreInvocationLatencyMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroupName
+      FilterName: !Sub ${ProjectName}-backend-agentcore-invocation-latency
+      FilterPattern: '{ $.event = "agentcore_invocation_completed" && $.response_time_ms >= 0 }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/Backend
+          MetricName: AgentCoreInvocationLatencyMs
+          MetricValue: $.response_time_ms
+          Unit: Milliseconds
+
+  AgentCoreInvocationFailedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: HasAgentCoreLogGroup
+    Properties:
+      LogGroupName: !Ref AgentCoreLogGroupName
+      FilterName: !Sub ${ProjectName}-agentcore-runtime-invocation-failed
+      FilterPattern: '{ $.event = "agentcore_invocation_failed" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/AgentCore
+          MetricName: AgentCoreInvocationFailed
+          MetricValue: "1"
+          DefaultValue: 0
+
+  AgentCoreInvocationLatencyMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: HasAgentCoreLogGroup
+    Properties:
+      LogGroupName: !Ref AgentCoreLogGroupName
+      FilterName: !Sub ${ProjectName}-agentcore-runtime-invocation-latency
+      FilterPattern: '{ $.event = "agentcore_invocation_completed" && $.response_time_ms >= 0 }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/AgentCore
+          MetricName: AgentCoreInvocationLatencyMs
+          MetricValue: $.response_time_ms
+          Unit: Milliseconds
+
+  AgentCoreToolExecutionFailedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: HasAgentCoreLogGroup
+    Properties:
+      LogGroupName: !Ref AgentCoreLogGroupName
+      FilterName: !Sub ${ProjectName}-agentcore-runtime-tool-execution-failed
+      FilterPattern: '{ $.event = "agent_tool_completed" && $.tool_success = false }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/AgentCore
+          MetricName: AgentCoreToolExecutionFailed
+          MetricValue: "1"
+          DefaultValue: 0
+
+  ApiGateway5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-api-gateway-5xx
+      AlarmDescription: API Gateway returned 5XX responses.
+      Namespace: AWS/ApiGateway
+      MetricName: 5xx
+      Dimensions:
+        - Name: ApiId
+          Value: !Ref HttpApiId
+        - Name: Stage
+          Value: !Ref ApiStageName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref Api5xxThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  ApiGatewayLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-api-gateway-latency-high
+      AlarmDescription: API Gateway latency is above the configured p95 threshold.
+      Namespace: AWS/ApiGateway
+      MetricName: !Ref ApiLatencyMetricName
+      Dimensions:
+        - Name: ApiId
+          Value: !Ref HttpApiId
+        - Name: Stage
+          Value: !Ref ApiStageName
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: !Ref ApiLatencyP95ThresholdMs
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  EcsRunningTaskCountAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasEcsRunningTaskAlarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-ecs-running-task-count-low
+      AlarmDescription: ECS backend running task count is below the configured minimum. Requires ECS Container Insights.
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref EcsServiceName
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: !Ref MinimumRunningTaskCount
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  EcsCpuUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-ecs-cpu-utilization-high
+      AlarmDescription: ECS backend service average CPU utilization is above the configured threshold.
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref EcsServiceName
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: !Ref EcsCpuUtilizationThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  EcsMemoryUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-ecs-memory-utilization-high
+      AlarmDescription: ECS backend service average memory utilization is above the configured threshold.
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref EcsServiceName
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: !Ref EcsMemoryUtilizationThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  BackendHttpResponseLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-backend-http-response-latency-high
+      AlarmDescription: Backend HTTP response p95 latency is above the configured threshold.
+      Namespace: !Sub ${ProjectName}/Backend
+      MetricName: HttpResponseLatencyMs
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: !Ref BackendHttpLatencyP95ThresholdMs
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  BackendAgentCoreInvocationLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-backend-agentcore-invocation-latency-high
+      AlarmDescription: Backend-to-AgentCore invocation p95 latency is above the configured threshold.
+      Namespace: !Sub ${ProjectName}/Backend
+      MetricName: AgentCoreInvocationLatencyMs
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: !Ref BackendAgentCoreLatencyP95ThresholdMs
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  DynamoDbReadThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-dynamodb-read-throttles
+      AlarmDescription: One or more application DynamoDB tables reported read throttling.
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: !Ref DynamoDbThrottleThreshold
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: agentRequestsRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentRequestsTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuTableName
+            Period: 60
+            Stat: Sum
+        - Id: cartsRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CartsTableName
+            Period: 60
+            Stat: Sum
+        - Id: ordersRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref OrdersTableName
+            Period: 60
+            Stat: Sum
+        - Id: customersRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CustomersTableName
+            Period: 60
+            Stat: Sum
+        - Id: agentSessionsRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentSessionsTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuSessionsRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuSessionsTableName
+            Period: 60
+            Stat: Sum
+        - Id: auditRead
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AuditTableName
+            Period: 60
+            Stat: Sum
+        - Id: readThrottles
+          Expression: SUM(METRICS())
+          Label: TotalDynamoDbReadThrottleEvents
+          ReturnData: true
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  DynamoDbWriteThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-dynamodb-write-throttles
+      AlarmDescription: One or more application DynamoDB tables reported write throttling.
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: !Ref DynamoDbThrottleThreshold
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: agentRequestsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentRequestsTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuTableName
+            Period: 60
+            Stat: Sum
+        - Id: cartsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CartsTableName
+            Period: 60
+            Stat: Sum
+        - Id: ordersWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref OrdersTableName
+            Period: 60
+            Stat: Sum
+        - Id: customersWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref CustomersTableName
+            Period: 60
+            Stat: Sum
+        - Id: agentSessionsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AgentSessionsTableName
+            Period: 60
+            Stat: Sum
+        - Id: menuSessionsWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MenuSessionsTableName
+            Period: 60
+            Stat: Sum
+        - Id: auditWrite
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: WriteThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref AuditTableName
+            Period: 60
+            Stat: Sum
+        - Id: writeThrottles
+          Expression: SUM(METRICS())
+          Label: TotalDynamoDbWriteThrottleEvents
+          ReturnData: true
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  AgentRequestFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-agent-request-failures
+      AlarmDescription: Backend logs reported failed agent requests.
+      Namespace: !Sub ${ProjectName}/Backend
+      MetricName: AgentRequestFailed
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref AgentRequestFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  BackendAgentCoreFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-backend-agentcore-invocation-failures
+      AlarmDescription: Backend logs reported failed AgentCore invocations.
+      Namespace: !Sub ${ProjectName}/Backend
+      MetricName: AgentCoreInvocationFailed
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref AgentCoreFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  AgentCoreRuntimeFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAgentCoreLogGroup
+    Properties:
+      AlarmName: !Sub ${ProjectName}-agentcore-runtime-invocation-failures
+      AlarmDescription: AgentCore runtime logs reported failed invocations.
+      Namespace: !Sub ${ProjectName}/AgentCore
+      MetricName: AgentCoreInvocationFailed
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref AgentCoreFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  AgentCoreRuntimeLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAgentCoreLogGroup
+    Properties:
+      AlarmName: !Sub ${ProjectName}-agentcore-runtime-invocation-latency-high
+      AlarmDescription: AgentCore Runtime invocation p95 latency is above the configured threshold.
+      Namespace: !Sub ${ProjectName}/AgentCore
+      MetricName: AgentCoreInvocationLatencyMs
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: !Ref AgentCoreRuntimeLatencyP95ThresholdMs
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  AgentCoreToolExecutionFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAgentCoreLogGroup
+    Properties:
+      AlarmName: !Sub ${ProjectName}-agentcore-runtime-tool-execution-failures
+      AlarmDescription: AgentCore runtime logs reported failed tool executions.
+      Namespace: !Sub ${ProjectName}/AgentCore
+      MetricName: AgentCoreToolExecutionFailed
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref AgentCoreToolFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  UnexpectedEcsTaskStoppedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-unexpected-ecs-task-stopped
+      AlarmDescription: EventBridge captured unexpected stopped ECS backend tasks.
+      Namespace: !Sub ${ProjectName}/ECS
+      MetricName: UnexpectedTaskStopped
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref UnexpectedEcsTaskStopThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${ProjectName}-monitoring
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "API Gateway HTTP API traffic and errors",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "Sum",
+                "metrics": [
+                  [ "AWS/ApiGateway", "Count", "ApiId", "${HttpApiId}", "Stage", "${ApiStageName}", { "label": "Count" } ],
+                  [ "AWS/ApiGateway", "4xx", "ApiId", "${HttpApiId}", "Stage", "${ApiStageName}", { "label": "4xx" } ],
+                  [ "AWS/ApiGateway", "5xx", "ApiId", "${HttpApiId}", "Stage", "${ApiStageName}", { "label": "5xx" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "API Gateway p95 latency",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "p95",
+                "metrics": [
+                  [ "AWS/ApiGateway", "Latency", "ApiId", "${HttpApiId}", "Stage", "${ApiStageName}", { "label": "Latency p95" } ],
+                  [ "AWS/ApiGateway", "IntegrationLatency", "ApiId", "${HttpApiId}", "Stage", "${ApiStageName}", { "label": "IntegrationLatency p95" } ]
+                ],
+                "yAxis": {
+                  "left": {
+                    "label": "Milliseconds"
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "ECS service utilization",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "Average",
+                "metrics": [
+                  [ "AWS/ECS", "CPUUtilization", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "label": "CPU %" } ],
+                  [ "AWS/ECS", "MemoryUtilization", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "label": "Memory %" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "ECS running tasks",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "Minimum",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "RunningTaskCount", "ClusterName", "${EcsClusterName}", "ServiceName", "${EcsServiceName}", { "label": "Running tasks" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "DynamoDB total read throttling",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "Sum",
+                "metrics": [
+                  [ "AWS/DynamoDB", "ReadThrottleEvents", "TableName", "${AgentRequestsTableName}", { "id": "r1", "visible": false } ],
+                  [ "AWS/DynamoDB", "ReadThrottleEvents", "TableName", "${MenuTableName}", { "id": "r2", "visible": false } ],
+                  [ "AWS/DynamoDB", "ReadThrottleEvents", "TableName", "${CartsTableName}", { "id": "r3", "visible": false } ],
+                  [ "AWS/DynamoDB", "ReadThrottleEvents", "TableName", "${OrdersTableName}", { "id": "r4", "visible": false } ],
+                  [ "AWS/DynamoDB", "ReadThrottleEvents", "TableName", "${CustomersTableName}", { "id": "r5", "visible": false } ],
+                  [ "AWS/DynamoDB", "ReadThrottleEvents", "TableName", "${AgentSessionsTableName}", { "id": "r6", "visible": false } ],
+                  [ "AWS/DynamoDB", "ReadThrottleEvents", "TableName", "${MenuSessionsTableName}", { "id": "r7", "visible": false } ],
+                  [ "AWS/DynamoDB", "ReadThrottleEvents", "TableName", "${AuditTableName}", { "id": "r8", "visible": false } ],
+                  [ { "expression": "SUM(METRICS())", "label": "Total read throttles", "id": "readTotal" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "DynamoDB total write throttling",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "Sum",
+                "metrics": [
+                  [ "AWS/DynamoDB", "WriteThrottleEvents", "TableName", "${AgentRequestsTableName}", { "id": "w1", "visible": false } ],
+                  [ "AWS/DynamoDB", "WriteThrottleEvents", "TableName", "${MenuTableName}", { "id": "w2", "visible": false } ],
+                  [ "AWS/DynamoDB", "WriteThrottleEvents", "TableName", "${CartsTableName}", { "id": "w3", "visible": false } ],
+                  [ "AWS/DynamoDB", "WriteThrottleEvents", "TableName", "${OrdersTableName}", { "id": "w4", "visible": false } ],
+                  [ "AWS/DynamoDB", "WriteThrottleEvents", "TableName", "${CustomersTableName}", { "id": "w5", "visible": false } ],
+                  [ "AWS/DynamoDB", "WriteThrottleEvents", "TableName", "${AgentSessionsTableName}", { "id": "w6", "visible": false } ],
+                  [ "AWS/DynamoDB", "WriteThrottleEvents", "TableName", "${MenuSessionsTableName}", { "id": "w7", "visible": false } ],
+                  [ "AWS/DynamoDB", "WriteThrottleEvents", "TableName", "${AuditTableName}", { "id": "w8", "visible": false } ],
+                  [ { "expression": "SUM(METRICS())", "label": "Total write throttles", "id": "writeTotal" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 18,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Backend failures",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "Sum",
+                "metrics": [
+                  [ "${ProjectName}/Backend", "AgentRequestFailed", { "label": "Agent request failures" } ],
+                  [ "${ProjectName}/Backend", "AgentCoreInvocationFailed", { "label": "Backend AgentCore invocation failures" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 18,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Backend p95 latency",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "p95",
+                "metrics": [
+                  [ "${ProjectName}/Backend", "HttpResponseLatencyMs", { "label": "HTTP response p95" } ],
+                  [ "${ProjectName}/Backend", "AgentCoreInvocationLatencyMs", { "label": "Backend-to-AgentCore p95" } ]
+                ],
+                "yAxis": {
+                  "left": {
+                    "label": "Milliseconds"
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 24,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "AgentCore runtime failures and tool failures",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "Sum",
+                "metrics": [
+                  [ "${ProjectName}/AgentCore", "AgentCoreInvocationFailed", { "label": "Runtime invocation failures" } ],
+                  [ "${ProjectName}/AgentCore", "AgentCoreToolExecutionFailed", { "label": "Tool execution failures" } ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 24,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "AgentCore runtime p95 latency",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "p95",
+                "metrics": [
+                  [ "${ProjectName}/AgentCore", "AgentCoreInvocationLatencyMs", { "label": "Runtime invocation p95" } ]
+                ],
+                "yAxis": {
+                  "left": {
+                    "label": "Milliseconds"
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 30,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Unexpected ECS task stops",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "period": 60,
+                "stat": "Sum",
+                "metrics": [
+                  [ "${ProjectName}/ECS", "UnexpectedTaskStopped", { "label": "Unexpected stopped tasks" } ]
+                ]
+              }
+            }
+          ]
+        }
+
+Outputs:
+  MonitoringTemplate:
+    Description: Phase 11 monitoring template name.
+    Value: phase11-monitoring
+  BackendAgentRequestFailureMetric:
+    Value: !Sub ${ProjectName}/Backend AgentRequestFailed
+  BackendAgentCoreFailureMetric:
+    Value: !Sub ${ProjectName}/Backend AgentCoreInvocationFailed
+  AgentCoreLogGroupConfigured:
+    Value: !If [HasAgentCoreLogGroup, "true", "false"]

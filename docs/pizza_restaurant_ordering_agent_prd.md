@@ -521,7 +521,6 @@ same/customize separately buttons
 upsell buttons
 delivery/takeaway buttons
 confirm/cancel buttons
-submit/cancel buttons
 loading states
 error states
 ```
@@ -1249,21 +1248,13 @@ The agent must continue calling `save_customization_choice` until the backend ma
 After upsell is fully customized and skipped, or skipped without adding:
 
 ```text
-cart_ready → pending_confirmation
+cart_ready → converted_to_order
 ```
 
 Then agent asks:
 
 ```text
-Please confirm your order:
-
-1 × Medium Chicken Fajita Pizza with Cheese Burst Crust — PKR 1600
-1 × Pepsi — PKR 150
-
-Total: PKR 1750
-
-Would you like to confirm this order?
-[Confirm] [Cancel]
+Would you like delivery or takeaway?
 ```
 
 ### 13.6 Multiple Quantity Customization Rule
@@ -1452,35 +1443,36 @@ Backend behavior:
 2. Validate all required customizations are complete.
 3. Validate item availability.
 4. Recalculate price server-side.
-5. Create order with `status=pending_confirmation`.
-6. Link order to same `agent_session_id`.
-7. Return order summary.
+5. Create order with `status=awaiting_fulfillment_method`.
+6. Mark the source cart `status=converted_to_order`.
+7. Link order to same `agent_session_id`.
+8. Return order summary.
 
-Agent then asks for confirmation exactly like website-created orders.
+Agent then asks for delivery or takeaway before final confirmation.
 
-### 13.10 User confirms order
+### 13.10 User chooses fulfillment
 
 ```text
-User: Confirm.
+User: Takeaway.
 ```
 
 Agent calls:
 
 ```text
-update_order_flow(order_id="ORD-1042", action="confirm")
+update_order_flow(order_id="ORD-1042", action="set_takeaway")
 ```
 
 Backend:
 
 ```text
-pending_confirmation → awaiting_fulfillment_method
+awaiting_fulfillment_method → pending_confirmation
 ```
 
 Agent:
 
 ```text
-Great. Would you like delivery or takeaway?
-[Delivery] [Takeaway]
+Please confirm your takeaway order.
+[Confirm] [Cancel]
 ```
 
 ### 13.11 User cancels pending order
@@ -1551,7 +1543,7 @@ update_order_flow(
 Backend:
 
 ```text
-awaiting_delivery_address → ready_for_submission
+awaiting_delivery_address → pending_confirmation
 ```
 
 Agent:
@@ -1559,8 +1551,8 @@ Agent:
 ```text
 Thanks. I have your delivery address.
 
-Should I submit this order to the restaurant?
-[Submit] [Cancel]
+Please confirm your delivery order.
+[Confirm] [Cancel]
 ```
 
 ### 13.14 User chooses takeaway
@@ -1578,7 +1570,7 @@ update_order_flow(order_id="ORD-1042", action="set_takeaway")
 Backend:
 
 ```text
-awaiting_fulfillment_method → ready_for_submission
+awaiting_fulfillment_method → pending_confirmation
 ```
 
 Agent:
@@ -1586,26 +1578,26 @@ Agent:
 ```text
 Perfect. I’ll mark this as takeaway.
 
-Should I submit this order to the restaurant?
-[Submit] [Cancel]
+Please confirm your takeaway order.
+[Confirm] [Cancel]
 ```
 
-### 13.15 User submits final order
+### 13.15 User confirms final order
 
 ```text
-User: Submit.
+User: Confirm.
 ```
 
 Agent calls:
 
 ```text
-update_order_flow(order_id="ORD-1042", action="submit")
+update_order_flow(order_id="ORD-1042", action="confirm")
 ```
 
 Backend validates:
 
 ```text
-status = ready_for_submission
+status = pending_confirmation
 fulfillment_method exists
 if delivery: delivery_address exists
 cart total still valid
@@ -1616,7 +1608,7 @@ idempotency key not already used
 Backend:
 
 ```text
-ready_for_submission → submitted_to_restaurant
+pending_confirmation → submitted_to_restaurant
 ```
 
 Agent:
@@ -1782,7 +1774,6 @@ cart_ready
 pending_confirmation
 awaiting_fulfillment_method
 awaiting_delivery_address
-ready_for_submission
 submitted_to_restaurant
 accepted
 preparing
@@ -1797,18 +1788,16 @@ failed
 
 ```python
 ORDER_TRANSITIONS = {
-    ("cart_ready", "create_pending_order"): "pending_confirmation",
-    ("cart_created", "place_from_menu"): "pending_confirmation",
+    ("cart_ready", "create_pending_order"): "awaiting_fulfillment_method",
+    ("cart_created", "place_from_menu"): "awaiting_fulfillment_method",
 
-    ("pending_confirmation", "confirm"): "awaiting_fulfillment_method",
+    ("pending_confirmation", "confirm"): "submitted_to_restaurant",
     ("pending_confirmation", "cancel"): "rejected",
 
     ("awaiting_fulfillment_method", "set_delivery"): "awaiting_delivery_address",
-    ("awaiting_fulfillment_method", "set_takeaway"): "ready_for_submission",
+    ("awaiting_fulfillment_method", "set_takeaway"): "pending_confirmation",
 
-    ("awaiting_delivery_address", "save_address"): "ready_for_submission",
-
-    ("ready_for_submission", "submit"): "submitted_to_restaurant",
+    ("awaiting_delivery_address", "save_address"): "pending_confirmation",
 
     ("submitted_to_restaurant", "restaurant_accept"): "accepted",
     ("submitted_to_restaurant", "restaurant_reject"): "rejected",
@@ -1819,8 +1808,7 @@ ORDER_TRANSITIONS = {
 
     ("pending_confirmation", "expire"): "cancelled",
     ("awaiting_fulfillment_method", "cancel"): "cancelled",
-    ("awaiting_delivery_address", "cancel"): "cancelled",
-    ("ready_for_submission", "cancel"): "cancelled"
+    ("awaiting_delivery_address", "cancel"): "cancelled"
 }
 ```
 
@@ -1836,6 +1824,7 @@ customizing_item
 item_ready
 awaiting_upsell_decision
 cart_ready
+converted_to_order
 ```
 
 ### 16.4 Allowed cart transitions
@@ -1850,7 +1839,7 @@ CART_TRANSITIONS = {
     ("awaiting_upsell_decision", "add_configurable_upsell"): "customizing_item",
     ("customizing_item", "complete_configurable_upsell_choices"): "item_ready",
     ("awaiting_upsell_decision", "skip_upsell"): "cart_ready",
-    ("cart_ready", "create_pending_order"): "pending_confirmation"
+    ("cart_ready", "create_pending_order"): "converted_to_order"
 }
 ```
 
@@ -2650,7 +2639,6 @@ def update_order_flow(
     - set_delivery
     - set_takeaway
     - save_address
-    - submit
 
     The backend validates the current order state before applying any update.
     """
@@ -3170,13 +3158,11 @@ ORDERING RULES
 - After the main item is ready, offer backend-returned upsell options.
 - If an accepted upsell returns next_action="ask_customization_choice", save the returned customization choices before offering the next upsell decision.
 - After upsells are skipped and the backend marks the cart ready, create a pending order from cart.
-- When a pending order exists, ask the customer to confirm or cancel it.
-- Never say an order is confirmed unless update_order_flow returns success for confirm.
-- After order confirmation, ask delivery or takeaway.
+- When a pending order exists, ask delivery or takeaway before final confirmation.
 - If delivery, ask for address and save it with update_order_flow.
 - If takeaway, do not ask for address.
-- Before final submission, ask the user to confirm submission.
-- Never submit an order unless update_order_flow returns success for submit.
+- When fulfillment details are complete, ask the customer to confirm or cancel.
+- Never say an order is confirmed or submitted unless update_order_flow returns success for confirm.
 - If the user changes topic while an order is pending, answer the topic if possible and remind them of the pending required input.
 - If multiple active orders exist and the user's request is ambiguous, ask which order they mean.
 
@@ -3558,7 +3544,7 @@ DynamoDB + Bedrock + Optional AgentCore Memory + CloudWatch
 
 ### Phase 7: Strands tools
 
-Implement 11 MVP Strands tools:
+Implement MVP Strands tools:
 
 ```text
 1. search_menu
@@ -3571,7 +3557,10 @@ Implement 11 MVP Strands tools:
 8. create_pending_order_from_cart
 9. update_order_flow
 10. get_order_status
-11. retrieve_restaurant_knowledge
+11. get_active_cart
+12. get_customer_profile
+13. update_customer_profile
+14. retrieve_restaurant_knowledge
 ```
 
 Optional phase 2 tools:
@@ -3695,12 +3684,12 @@ Codex should implement tests for:
 
 ```text
 - cart creates pending order
-- user confirms order
 - agent asks delivery/takeaway
 - user chooses delivery and gives address
 - user chooses takeaway
-- user submits final order
-- duplicate submit does not create duplicate order
+- agent asks for final confirmation
+- user confirms final order
+- duplicate confirm does not create duplicate order
 ```
 
 ### Frontend
@@ -3765,8 +3754,8 @@ Codex should implement tests for:
 - Agent can send item-specific menu link.
 - Menu website can preselect/highlight recommended item.
 - User can customize pizza on menu website.
-- Menu website creates `pending_confirmation` order.
-- Agent receives pending order event and asks for confirmation.
+- Menu website creates an order awaiting fulfillment details.
+- Agent receives pending order event and asks for delivery or takeaway.
 
 ### Chat customization
 
@@ -3782,7 +3771,8 @@ Codex should implement tests for:
 - Backend tracks active cart item, current step, missing required fields, selected options, and current price.
 - Agent offers backend-returned upsells.
 - Backend creates pending order from completed cart.
-- Agent asks for confirmation.
+- Backend marks the source cart `converted_to_order`.
+- Agent asks for delivery or takeaway.
 
 ### Frontend
 
@@ -3797,24 +3787,24 @@ Codex should implement tests for:
 
 ### Pending order
 
-- Website or chat cart creates order with `pending_confirmation`.
+- Website or chat cart creates an order with `awaiting_fulfillment_method`.
 - Backend invokes same agent session.
-- Agent displays order summary and asks for confirmation.
+- Agent displays order summary and asks for delivery or takeaway.
 - Agent does not mark order confirmed without tool success.
 
 ### Delivery/takeaway
 
-- After confirmation, agent asks delivery or takeaway.
+- After checkout starts, agent asks delivery or takeaway.
 - Delivery path asks for address.
 - Takeaway path skips address.
 - Backend enforces transitions.
 
-### Submission
+### Final confirmation
 
-- Agent asks before final submission.
+- Agent asks once before final confirmation.
 - Backend validates order state.
-- Backend submits only if required fields are complete.
-- Duplicate submit does not create duplicate order.
+- Backend submits only if fulfillment details and required fields are complete.
+- Duplicate confirm does not create duplicate order.
 
 ### Status updates
 

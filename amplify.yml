@@ -1,0 +1,30 @@
+version: 1
+applications:
+  - appRoot: frontend
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - nvm install 20
+            - nvm use 20
+            - node --version
+            - node --version | grep -E '^v20\.'
+            - npm ci
+        build:
+          commands:
+            - test -n "$NEXT_PUBLIC_API_BASE_URL"
+            - test -n "$NEXT_PUBLIC_BRANCH_ID"
+            - rm -f .env.production
+            - printf 'NEXT_PUBLIC_API_BASE_URL=%s\n' "$NEXT_PUBLIC_API_BASE_URL" >> .env.production
+            - printf 'NEXT_PUBLIC_BRANCH_ID=%s\n' "$NEXT_PUBLIC_BRANCH_ID" >> .env.production
+            - npm run typecheck
+            - npm run lint
+            - npm run build
+      artifacts:
+        baseDirectory: .next
+        files:
+          - "**/*"
+      cache:
+        paths:
+          - node_modules/**/*
+          - .next/cache/**/*
