@@ -1,6 +1,6 @@
 # CI/CD
 
-This repository has validation-only workflows and a backend deployment workflow. The GitHub OIDC/IAM stack is configured as `fyp-dev-github-oidc`, and the GitHub `staging` environment is configured with a `deployment` branch restriction and a required reviewer.
+This repository has validation-only workflows and protected backend and AgentCore deployment workflows. The GitHub OIDC/IAM stack is configured as `fyp-dev-github-oidc`, and the GitHub `staging` environment is configured with a `deployment` branch restriction and a required reviewer.
 
 ## Workflows
 
@@ -76,6 +76,109 @@ service: fyp-dev-backend
 ```
 
 The deployment job intentionally does not run for pull requests, does not use static AWS credentials, does not deploy AgentCore, does not execute CloudFormation, and does not perform automatic rollback.
+
+### `.github/workflows/deploy-agentcore.yml`
+
+Prepares automated deployment of the AgentCore Runtime image to the existing runtime. It runs only for:
+
+- pushes to the `deployment` branch when AgentCore image inputs change
+- manual `workflow_dispatch` runs
+
+Path filters are:
+
+- `agent-runtime/**`
+- `backend/src/agent/**`
+- `backend/src/models/**`
+- `backend/src/services/**`
+- `backend/src/repositories/**`
+- `backend/src/infrastructure/**`
+- `backend/src/agent_client/schemas.py`
+- `backend/pyproject.toml`
+- `dominos_pakistan_menu_import.json`
+- `.github/workflows/deploy-agentcore.yml`
+- `.github/scripts/build-agentcore-update-input.py`
+- `.github/scripts/tests/**`
+
+The workflow has two jobs:
+
+| Job | Environment | AWS access | Purpose |
+| --- | --- | --- | --- |
+| `validate` | none | none | Check out the repository, set up Python 3.10, install backend and AgentCore runtime dev dependencies, run runtime and helper tests, build the `linux/arm64` image through Buildx/QEMU, start it locally, and check `http://localhost:8080/ping`. |
+| `deploy` | `staging` | GitHub OIDC only | Build and push the SHA-tagged `linux/arm64` image, capture the current AgentCore Runtime, construct a preserved update request, call `update-agent-runtime`, wait for `READY`, and verify runtime version, image URI, role, and network configuration. |
+
+The deploy job uses this GitHub environment variable:
+
+```text
+AGENTCORE_DEPLOY_ROLE_ARN=arn:aws:iam::352306494518:role/fyp-github-agentcore-deployer
+```
+
+It also uses `AWS_REGION=us-east-1`.
+
+It builds exactly one immutable image tag per run:
+
+```text
+352306494518.dkr.ecr.us-east-1.amazonaws.com/fyp-dev-agent-runtime:${GITHUB_SHA}
+```
+
+It does not push a `latest` tag or `deployment-latest` tag.
+
+The workflow reads the existing runtime:
+
+```text
+runtime ID: fyp_dev_restaurant_agent-dwLwVnClBF
+runtime ARN: arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_restaurant_agent-dwLwVnClBF
+execution role: arn:aws:iam::352306494518:role/fyp-dev-agentcore-execution
+```
+
+Normal deployment requires the runtime to be `READY` before update. The current runtime artifact must be container-based, and the runtime ARN and execution role must match the configured target.
+
+`.github/scripts/build-agentcore-update-input.py` constructs `agentcore-update-input.json` for `aws bedrock-agentcore-control update-agent-runtime`. It includes:
+
+- `agentRuntimeId`
+- `agentRuntimeArtifact.containerConfiguration.containerUri`
+- `roleArn`
+- `networkConfiguration`
+- `clientToken`
+
+It preserves optional mutable runtime configuration only when present:
+
+- `description`
+- `authorizerConfiguration`
+- `requestHeaderConfiguration`
+- `protocolConfiguration`
+- `lifecycleConfiguration`
+- `metadataConfiguration`
+- `environmentVariables`
+- `filesystemConfigurations`
+
+It excludes response-only fields such as runtime ARN, name, version, status, timestamps, failure reason, and workload identity details. It validates that the new image URI belongs to the expected ECR repository, that the role ARN remains unchanged, and that the network configuration remains unchanged.
+
+The helper has two image-validation modes:
+
+- `deployment` requires a full 40-character lowercase Git commit SHA, and the image tag must equal that SHA.
+- `rollback` accepts any non-empty legacy or SHA tag in the exact configured ECR repository. This supports early manually deployed images that may use tags such as `dev-*`.
+
+Both modes reject digest references and untagged image references.
+
+For `networkConfiguration.networkModeConfig.requireServiceS3Endpoint`, the helper preserves the field only if it is already present in the current runtime response. It never invents the field. This avoids sending a field that can produce `ValidationException` for newer AgentCore runtimes while preserving the current configuration for older runtimes that already contain it.
+
+Deployed functional invocation is intentionally deferred. The inspected `/invocations` contract accepts:
+
+```json
+{
+  "message": "hello",
+  "user_id": "synthetic-user",
+  "agent_session_id": "synthetic-session-id-at-least-33-characters",
+  "branch_id": "default",
+  "channel": "web"
+}
+```
+
+The backend AgentCore client also sends `runtimeSessionId` and `runtimeUserId`. The runtime immediately integrates AgentCore Memory and the restaurant agent, whose tools can touch menu, cart, order, customer, session, and audit data. Because the repository does not contain a proven non-mutating deployed invocation mode, the workflow verifies deployment with READY status plus image URI, runtime version, role, and network checks. The local `/ping` smoke test remains the executable container contract test.
+
+The AgentCore deployment role intentionally lacks runtime invocation permission because deployed functional invocation is deferred.
+
+AgentCore creates a new immutable runtime version during update. The DEFAULT endpoint follows the latest runtime version automatically. Existing active sessions may continue using the code version with which their microVM started until those sessions terminate.
 
 ## GitHub OIDC Preparation
 
@@ -199,16 +302,54 @@ Invoke-RestMethod https://vogwq90ly8.execute-api.us-east-1.amazonaws.com/health
 
 Replace `<previous-task-definition-arn>` with the ARN shown in the failed or prior successful workflow summary. This updates the existing service back to a previously registered task-definition revision; it does not rebuild images or change infrastructure.
 
+## AgentCore Runtime Rollback
+
+The AgentCore deployment workflow records the previous image URI and previous runtime version in the GitHub step summary. Manual rollback creates another immutable runtime version that points back to the previous known-good image. It does not delete the failed version.
+
+Rollback process:
+
+1. Identify the previous known-good container URI from the workflow summary.
+2. Read the current runtime configuration:
+
+```powershell
+aws bedrock-agentcore-control get-agent-runtime `
+  --region us-east-1 `
+  --agent-runtime-id fyp_dev_restaurant_agent-dwLwVnClBF `
+  --output json > current-agent-runtime.json
+```
+
+3. Build a rollback update input while preserving the current role, network configuration, and mutable settings. Manual rollback may be constructed from a runtime in `READY` or `UPDATE_FAILED`. The previous known-good image may have either a SHA tag or an older manual tag such as `dev-*`, but it must belong to the exact AgentCore runtime ECR repository. Do not attempt rollback while the runtime is actively `CREATING`, `UPDATING`, or `DELETING`.
+
+```powershell
+python .github/scripts/build-agentcore-update-input.py `
+  --current-runtime current-agent-runtime.json `
+  --image-uri <previous-known-good-container-uri> `
+  --agent-runtime-id fyp_dev_restaurant_agent-dwLwVnClBF `
+  --expected-runtime-arn arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_restaurant_agent-dwLwVnClBF `
+  --expected-role-arn arn:aws:iam::352306494518:role/fyp-dev-agentcore-execution `
+  --expected-ecr-repository 352306494518.dkr.ecr.us-east-1.amazonaws.com/fyp-dev-agent-runtime `
+  --mode rollback `
+  --client-token agentcore-rollback-<unique-33-plus-character-token> `
+  --output agentcore-rollback-input.json
+```
+
+4. Update the runtime:
+
+```powershell
+aws bedrock-agentcore-control update-agent-runtime `
+  --region us-east-1 `
+  --cli-input-json file://agentcore-rollback-input.json
+```
+
+5. Poll `get-agent-runtime` until status is `READY`.
+6. Verify the new rollback runtime version uses the previous image URI and that role/network configuration stayed unchanged.
+7. Use the same safe verification policy as the deployment workflow: READY, version, image, role, and network verification unless a future non-mutating invocation mode is added.
+
+The DEFAULT endpoint moves to the latest runtime version automatically. If custom endpoints are introduced later, they require explicit version updates. Existing sessions can continue using the code version with which their microVM started.
+
+Do not create an automatic rollback workflow yet.
+
 ## Future Deployment Phases
-
-A later AgentCore deployment workflow should:
-
-- use GitHub OIDC instead of AWS access keys
-- build and push the `linux/arm64` AgentCore runtime image tagged with the Git commit SHA
-- read the existing AgentCore Runtime configuration
-- update only the container image while preserving runtime settings
-- wait for the runtime to become `READY`
-- run a safe ping or invocation check
 
 When a deployment job uses the GitHub environment named `staging`, the AWS OIDC trust subject must be:
 
@@ -255,6 +396,7 @@ cd agent-runtime
 $env:PYTHONPATH='E:\fyp-agent\agent-runtime\src;E:\fyp-agent\backend'
 E:\fyp-agent\.venv\Scripts\python.exe -m pytest tests
 cd ..
+.\.venv\Scripts\python.exe -m pytest .github\scripts\tests
 docker build --platform linux/arm64 -f agent-runtime/Dockerfile -t fyp-agent-runtime-ci:local .
 docker run --rm -d --platform linux/arm64 --name fyp-agent-runtime-ci-ping -p 8080:8080 fyp-agent-runtime-ci:local
 Invoke-RestMethod http://localhost:8080/ping

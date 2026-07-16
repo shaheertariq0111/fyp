@@ -211,13 +211,6 @@ Resources:
                   - bedrock-agentcore:GetAgentRuntime
                   - bedrock-agentcore:UpdateAgentRuntime
                 Resource: !Ref AgentCoreRuntimeArn
-              - Sid: InvokeExistingAgentCoreRuntimeForVerification
-                Effect: Allow
-                Action:
-                  - bedrock-agentcore:InvokeAgentRuntime
-                Resource:
-                  - !Ref AgentCoreRuntimeArn
-                  - !Sub ${AgentCoreRuntimeArn}/runtime-endpoint/*
               - Sid: PassOnlyAgentCoreExecutionRole
                 Effect: Allow
                 Action:
