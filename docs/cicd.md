@@ -37,8 +37,109 @@ It validates:
 - `infra/phase3-network.yaml`
 - `infra/phase7-ecs-api.yaml`
 - `infra/phase11-monitoring.yaml`
+- `infra/phase13-github-oidc.yaml`
 
 This phase uses local YAML parsing and `cfn-lint`. It does not run `aws cloudformation validate-template`, create change sets, or deploy stacks because no GitHub OIDC role or AWS credentials exist yet.
+
+## GitHub OIDC Preparation
+
+`infra/phase13-github-oidc.yaml` prepares, but does not deploy, GitHub Actions authentication for future deployment workflows.
+
+OIDC is used so GitHub Actions can exchange a short-lived GitHub identity token for an AWS role session. No permanent AWS access keys should be stored in GitHub variables, GitHub secrets, workflow files, Amplify, ECS, Docker images, or `.env` files.
+
+The template defines two separate deployment roles:
+
+- `fyp-github-backend-deployer` for the ECS backend image and service update path.
+- `fyp-github-agentcore-deployer` for the AgentCore runtime image and runtime update path.
+
+Both roles trust only the GitHub OIDC provider and require this exact subject:
+
+```text
+repo:shaheertariq0111/fyp:environment:staging
+```
+
+The audience is:
+
+```text
+sts.amazonaws.com
+```
+
+The future GitHub `staging` environment must restrict deployments to the `deployment` branch. Because the trust policy uses an environment subject, the branch restriction lives in the GitHub environment rules, not in the AWS OIDC `sub` claim.
+
+### Existing Provider Check
+
+AWS accounts can contain only one IAM OIDC provider for `https://token.actions.githubusercontent.com`. Before deploying the Phase 13 template, check whether the provider already exists:
+
+```powershell
+aws iam list-open-id-connect-providers
+aws iam get-open-id-connect-provider `
+  --open-id-connect-provider-arn arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com
+```
+
+The template is intentionally conditional:
+
+- `CreateGitHubOidcProvider=false` reuses `ExistingGitHubOidcProviderArn`.
+- `CreateGitHubOidcProvider=true` creates `AWS::IAM::OIDCProvider`.
+
+Use `CreateGitHubOidcProvider=true` only when the account does not already have the GitHub Actions provider. This avoids failed stack creation from trying to create a duplicate provider.
+
+### Current Dev Defaults
+
+The current dev defaults in `infra/phase13-github-oidc.yaml` target:
+
+- AWS account: `352306494518`
+- Region: `us-east-1`
+- Backend ECR repository: `arn:aws:ecr:us-east-1:352306494518:repository/fyp-dev-backend`
+- Agent runtime ECR repository: `arn:aws:ecr:us-east-1:352306494518:repository/fyp-dev-agent-runtime`
+- ECS cluster/service/task family: `fyp-dev-backend`
+- ECS execution role: `arn:aws:iam::352306494518:role/fyp-dev-ecs-execution`
+- ECS task role: `arn:aws:iam::352306494518:role/fyp-dev-ecs-app`
+- AgentCore runtime: `arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_restaurant_agent-dwLwVnClBF`
+- AgentCore execution role: `arn:aws:iam::352306494518:role/fyp-dev-agentcore-execution`
+
+The AgentCore execution role ARN is derived from `infra/phase7-ecs-api.yaml`, where `AgentCoreExecutionRole` uses `RoleName: !Sub ${ProjectName}-agentcore-execution`, and the current dev parameters use `ProjectName=fyp-dev`.
+
+IAM resource-scoping limitations are documented in the template through intentionally small wildcard-resource statements:
+
+- `ecr:GetAuthorizationToken` requires `Resource: "*"`.
+- `sts:GetCallerIdentity` uses `Resource: "*"`.
+- `ecs:DescribeTaskDefinition` requires `Resource: "*"` because ECS does not support resource-level scoping for that action.
+- `ecs:ListTasks` uses `Resource: "*"` and is restricted with `ecs:cluster`; ECS does not support service-resource scoping for that list call. The service itself is still resource-scoped for `ecs:DescribeServices` and `ecs:UpdateService`.
+
+### Local Template Validation
+
+This does not create AWS resources:
+
+```powershell
+python -m pip install cfn-lint
+cfn-lint `
+  infra/phase3-network.yaml `
+  infra/phase7-ecs-api.yaml `
+  infra/phase11-monitoring.yaml `
+  infra/phase13-github-oidc.yaml
+```
+
+AWS-authenticated validation and deployment are deferred until the deployment phase:
+
+```powershell
+aws cloudformation validate-template `
+  --region us-east-1 `
+  --template-body file://infra/phase13-github-oidc.yaml
+```
+
+Do not run `aws cloudformation deploy` for this template until the user explicitly proceeds to the IAM/OIDC deployment phase.
+
+### Future GitHub Variables
+
+Future deployment workflows should use GitHub environment or repository variables for:
+
+```text
+AWS_REGION=us-east-1
+BACKEND_DEPLOY_ROLE_ARN=<BackendDeploymentRoleArn output>
+AGENTCORE_DEPLOY_ROLE_ARN=<AgentCoreDeploymentRoleArn output>
+```
+
+No GitHub secret should contain AWS access keys.
 
 ## Future Deployment Phases
 
@@ -127,7 +228,7 @@ Infrastructure:
 
 ```powershell
 python -m pip install cfn-lint
-cfn-lint infra/phase3-network.yaml infra/phase7-ecs-api.yaml infra/phase11-monitoring.yaml
+cfn-lint infra/phase3-network.yaml infra/phase7-ecs-api.yaml infra/phase11-monitoring.yaml infra/phase13-github-oidc.yaml
 ```
 
 Authenticated CloudFormation validation is deferred to a later phase:
@@ -136,6 +237,7 @@ Authenticated CloudFormation validation is deferred to a later phase:
 aws cloudformation validate-template --region us-east-1 --template-body file://infra/phase3-network.yaml
 aws cloudformation validate-template --region us-east-1 --template-body file://infra/phase7-ecs-api.yaml
 aws cloudformation validate-template --region us-east-1 --template-body file://infra/phase11-monitoring.yaml
+aws cloudformation validate-template --region us-east-1 --template-body file://infra/phase13-github-oidc.yaml
 ```
 
 Do not run those AWS commands in CI until OIDC and least-privilege roles are added.
