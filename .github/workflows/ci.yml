@@ -20,6 +20,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       agent_runtime: ${{ steps.filter.outputs.agent_runtime }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      infrastructure: ${{ steps.filter.outputs.infrastructure }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -44,6 +45,7 @@ jobs:
               "backend": [
                   "backend/**",
                   "dominos_pakistan_menu_import.json",
+                  ".github/workflows/deploy-backend.yml",
               ],
               "agent_runtime": [
                   "agent-runtime/**",
@@ -55,10 +57,20 @@ jobs:
                   "backend/src/agent_client/schemas.py",
                   "backend/pyproject.toml",
                   "dominos_pakistan_menu_import.json",
+                  ".github/workflows/deploy-agentcore.yml",
+                  ".github/scripts/build-agentcore-update-input.py",
+                  ".github/scripts/tests/**",
               ],
               "frontend": [
                   "frontend/**",
                   "amplify.yml",
+              ],
+              "infrastructure": [
+                  "infra/**",
+                  "docs/deployment.md",
+                  "docs/cicd.md",
+                  "infra/README.md",
+                  ".github/workflows/validate-infra.yml",
               ],
           }
 
@@ -96,14 +108,17 @@ jobs:
                   text=True,
               )
               changed = [line.strip().replace("\\", "/") for line in output.splitlines() if line.strip()]
-              results = {
-                  name: any(
-                      _matches(path, pattern)
-                      for path in changed
-                      for pattern in patterns
-                  )
-                  for name, patterns in groups.items()
-              }
+              if any(path == ".github/workflows/ci.yml" for path in changed):
+                  results = {name: True for name in groups}
+              else:
+                  results = {
+                      name: any(
+                          _matches(path, pattern)
+                          for path in changed
+                          for pattern in patterns
+                      )
+                      for name, patterns in groups.items()
+                  }
 
           print("Changed files:")
           for path in changed:
@@ -267,3 +282,119 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+  infrastructure:
+    name: Infrastructure validation
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.infrastructure == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      - name: Install local CloudFormation tooling
+        run: python -m pip install --upgrade pip cfn-lint
+
+      - name: Validate CloudFormation YAML syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          class CloudFormationLoader(yaml.SafeLoader):
+              pass
+
+          def cloudformation_tag(loader, tag_suffix, node):
+              if isinstance(node, yaml.ScalarNode):
+                  return loader.construct_scalar(node)
+              if isinstance(node, yaml.SequenceNode):
+                  return loader.construct_sequence(node)
+              if isinstance(node, yaml.MappingNode):
+                  return loader.construct_mapping(node)
+              return None
+
+          CloudFormationLoader.add_multi_constructor("!", cloudformation_tag)
+
+          templates = [
+              Path("infra/phase3-network.yaml"),
+              Path("infra/phase7-ecs-api.yaml"),
+              Path("infra/phase11-monitoring.yaml"),
+              Path("infra/phase13-github-oidc.yaml"),
+          ]
+          for template in templates:
+              with template.open("r", encoding="utf-8") as handle:
+                  yaml.load(handle, Loader=CloudFormationLoader)
+              print(f"YAML OK: {template}")
+          PY
+
+      - name: Lint CloudFormation templates
+        run: |
+          cfn-lint \
+            infra/phase3-network.yaml \
+            infra/phase7-ecs-api.yaml \
+            infra/phase11-monitoring.yaml \
+            infra/phase13-github-oidc.yaml
+
+  quality-gate:
+    name: CI / Quality gate
+    if: always()
+    needs:
+      - changes
+      - backend
+      - agent-runtime
+      - frontend
+      - infrastructure
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Evaluate required CI results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          AGENT_RUNTIME_RESULT: ${{ needs.agent-runtime.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          INFRASTRUCTURE_RESULT: ${{ needs.infrastructure.result }}
+        run: |
+          set -euo pipefail
+
+          echo "| Job | Result |"
+          echo "| --- | --- |"
+          echo "| changes | $CHANGES_RESULT |"
+          echo "| backend | $BACKEND_RESULT |"
+          echo "| AgentCore | $AGENT_RUNTIME_RESULT |"
+          echo "| frontend | $FRONTEND_RESULT |"
+          echo "| infrastructure | $INFRASTRUCTURE_RESULT |"
+
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "Quality gate failed: changes job must succeed and produced '$CHANGES_RESULT'." >&2
+            exit 1
+          fi
+
+          for item in \
+            "backend:$BACKEND_RESULT" \
+            "AgentCore:$AGENT_RUNTIME_RESULT" \
+            "frontend:$FRONTEND_RESULT" \
+            "infrastructure:$INFRASTRUCTURE_RESULT"
+          do
+            job="${item%%:*}"
+            result="${item#*:}"
+            case "$result" in
+              success|skipped)
+                ;;
+              *)
+                echo "Quality gate failed: $job result '$result' is not allowed." >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          echo "Quality gate passed."

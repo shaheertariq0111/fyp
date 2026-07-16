@@ -16,15 +16,26 @@ contents: read
 
 The workflow does not request `id-token: write`, does not use secrets, does not configure AWS credentials, does not push Docker images, and does not deploy ECS or AgentCore.
 
+The stable branch-protection check is:
+
+```text
+CI / Quality gate
+```
+
+This is the explicit display name of the `quality-gate` job in `.github/workflows/ci.yml`.
+
 Jobs are path-aware:
 
 | Job | Triggering paths | Validation |
 | --- | --- | --- |
-| Backend | `backend/**`, `dominos_pakistan_menu_import.json` | Install backend package, run backend tests, build `linux/amd64` backend image, start it, and check `http://localhost:8000/health`. |
-| Agent runtime | `agent-runtime/**`, `backend/src/agent/**`, `backend/src/models/**`, `backend/src/services/**`, `backend/src/repositories/**`, `backend/src/infrastructure/**`, `backend/src/agent_client/schemas.py`, `backend/pyproject.toml`, `dominos_pakistan_menu_import.json` | Install backend and runtime packages, run runtime tests, build `linux/arm64` image with `agent-runtime/Dockerfile`, start it through QEMU, and check `http://localhost:8080/ping`. |
+| Backend | `backend/**`, `dominos_pakistan_menu_import.json`, `.github/workflows/deploy-backend.yml` | Install backend package, run backend tests, build `linux/amd64` backend image, start it, and check `http://localhost:8000/health`. |
+| Agent runtime | `agent-runtime/**`, `backend/src/agent/**`, `backend/src/models/**`, `backend/src/services/**`, `backend/src/repositories/**`, `backend/src/infrastructure/**`, `backend/src/agent_client/schemas.py`, `backend/pyproject.toml`, `dominos_pakistan_menu_import.json`, `.github/workflows/deploy-agentcore.yml`, `.github/scripts/build-agentcore-update-input.py`, `.github/scripts/tests/**` | Install backend and runtime packages, run runtime tests, build `linux/arm64` image with `agent-runtime/Dockerfile`, start it through QEMU, and check `http://localhost:8080/ping`. |
 | Frontend | `frontend/**`, `amplify.yml` | Use Node 20, run `npm ci`, `npm run typecheck`, `npm run lint`, and `npm run build`. |
+| Infrastructure | `infra/**`, `docs/deployment.md`, `docs/cicd.md`, `infra/README.md`, `.github/workflows/validate-infra.yml` | Parse CloudFormation YAML locally and run `cfn-lint` against the four infrastructure templates. |
 
-Manual `workflow_dispatch` runs all component jobs.
+Changes to `.github/workflows/ci.yml` run every validation job. Manual `workflow_dispatch` runs all component jobs.
+
+The final `Quality gate` job always runs. It requires the path-detection job to succeed and accepts only `success` or `skipped` for path-aware component jobs. It fails on `failure`, `cancelled`, `timed_out`, `action_required`, `neutral`, `stale`, empty, or any unexpected result.
 
 The AgentCore runtime image uses the repository root as the Docker build context and `agent-runtime/Dockerfile`. Docker uses `agent-runtime/Dockerfile.dockerignore` for that Dockerfile-specific build context filtering.
 
@@ -40,6 +51,8 @@ It validates:
 - `infra/phase13-github-oidc.yaml`
 
 This workflow intentionally has no AWS authentication. It performs local YAML parsing and `cfn-lint` validation only, and does not run `aws cloudformation validate-template`, create change sets, or deploy stacks.
+
+The standalone infrastructure workflow remains separate from the CI infrastructure job. The CI job exists so `CI / Quality gate` can cover infrastructure pull-request changes without requiring another branch-protection check.
 
 ### `.github/workflows/deploy-backend.yml`
 
@@ -179,6 +192,53 @@ The backend AgentCore client also sends `runtimeSessionId` and `runtimeUserId`. 
 The AgentCore deployment role intentionally lacks runtime invocation permission because deployed functional invocation is deferred.
 
 AgentCore creates a new immutable runtime version during update. The DEFAULT endpoint follows the latest runtime version automatically. Existing active sessions may continue using the code version with which their microVM started until those sessions terminate.
+
+## Release Flow
+
+The intended flow after branch protection is enabled is:
+
+```text
+feature branch
+-> pull request into deployment
+-> CI / Quality gate
+-> review and merge
+-> path-aware protected staging deployment
+-> reviewer approval
+-> backend ECS and/or AgentCore deployment
+-> frontend through Amplify
+-> verified deployment
+-> deployment merged into main
+```
+
+Path behavior:
+
+- Backend-only changes run backend CI and, after merge to `deployment`, backend ECS deployment. AgentCore deployment also runs only when shared AgentCore-imported backend paths change.
+- AgentCore-only changes run AgentCore validation and, after merge to `deployment`, AgentCore deployment.
+- Frontend-only changes run frontend CI and deploy through Amplify from the `deployment` branch.
+- Infrastructure-only changes run infrastructure validation only; CloudFormation is not deployed automatically.
+- Documentation-only changes run only relevant validation. Backend or AgentCore deployment does not run unless a deployment workflow file itself changed.
+
+`deployment` remains the source branch for staging deployments. `main` remains the stable synchronized branch. Merges into `main` do not deploy AWS resources. Deployment approval through the protected `staging` environment remains separate from pull-request approval.
+
+After branch protection is enabled, avoid direct pushes.
+
+Recommended `deployment` branch protection:
+
+- require pull request
+- require one approval
+- require conversation resolution
+- require `CI / Quality gate`
+- block force pushes
+- restrict deletion
+
+Recommended `main` branch protection:
+
+- require pull request
+- require one approval
+- require conversation resolution
+- require `CI / Quality gate`
+- block force pushes
+- restrict deletion
 
 ## GitHub OIDC Preparation
 
@@ -348,6 +408,19 @@ aws bedrock-agentcore-control update-agent-runtime `
 The DEFAULT endpoint moves to the latest runtime version automatically. If custom endpoints are introduced later, they require explicit version updates. Existing sessions can continue using the code version with which their microVM started.
 
 Do not create an automatic rollback workflow yet.
+
+## Operational Checklist
+
+Before final synchronization from `deployment` to `main`, confirm:
+
+- backend deployment workflow is green
+- AgentCore deployment workflow is green
+- Amplify latest job is successful
+- ECS desired count equals running count
+- public `/health` succeeds
+- AgentCore status is `READY`
+- monitoring stack is healthy
+- `main` and `deployment` are synchronized after final merge
 
 ## Future Deployment Phases
 
