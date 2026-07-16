@@ -1,0 +1,269 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changed components
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      agent_runtime: ${{ steps.filter.outputs.agent_runtime }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          from pathlib import PurePosixPath
+
+          groups = {
+              "backend": [
+                  "backend/**",
+                  "dominos_pakistan_menu_import.json",
+              ],
+              "agent_runtime": [
+                  "agent-runtime/**",
+                  "backend/src/agent/**",
+                  "backend/src/models/**",
+                  "backend/src/services/**",
+                  "backend/src/repositories/**",
+                  "backend/src/infrastructure/**",
+                  "backend/src/agent_client/schemas.py",
+                  "backend/pyproject.toml",
+                  "dominos_pakistan_menu_import.json",
+              ],
+              "frontend": [
+                  "frontend/**",
+                  "amplify.yml",
+              ],
+          }
+
+          def _matches(path: str, pattern: str) -> bool:
+              normalized = path.replace("\\", "/")
+              if pattern.endswith("/**"):
+                  prefix = pattern[:-3]
+                  return normalized == prefix or normalized.startswith(prefix + "/")
+              return PurePosixPath(normalized).match(pattern)
+
+          def write_output(name: str, value: bool) -> None:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+                  handle.write(f"{name}={str(value).lower()}\n")
+
+          event_name = os.environ["EVENT_NAME"]
+          if event_name == "workflow_dispatch":
+              changed = ["__manual_full_validation__"]
+              results = {name: True for name in groups}
+          else:
+              if event_name == "pull_request":
+                  base = os.environ["PR_BASE_SHA"]
+                  head = os.environ["PR_HEAD_SHA"]
+              else:
+                  before = os.environ.get("BEFORE_SHA", "")
+                  head = os.environ["CURRENT_SHA"]
+                  if before and set(before) != {"0"}:
+                      base = before
+                  else:
+                      base = subprocess.check_output(
+                          ["git", "rev-list", "--max-parents=0", head],
+                          text=True,
+                      ).strip()
+              output = subprocess.check_output(
+                  ["git", "diff", "--name-only", base, head],
+                  text=True,
+              )
+              changed = [line.strip().replace("\\", "/") for line in output.splitlines() if line.strip()]
+              results = {
+                  name: any(
+                      _matches(path, pattern)
+                      for path in changed
+                      for pattern in patterns
+                  )
+                  for name, patterns in groups.items()
+              }
+
+          print("Changed files:")
+          for path in changed:
+              print(f"  {path}")
+          for name, value in results.items():
+              print(f"{name}: {value}")
+              write_output(name, value)
+          PY
+
+  backend:
+    name: Backend tests and image validation
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run backend tests
+        working-directory: backend
+        run: python -m pytest
+
+      - name: Build backend Docker image
+        run: docker build --platform linux/amd64 -t fyp-backend-ci:${{ github.sha }} backend
+
+      - name: Start backend container
+        run: |
+          docker run -d --name fyp-backend-ci-health \
+            -p 8000:8000 \
+            -e ENVIRONMENT=test \
+            -e AWS_REGION=us-east-1 \
+            -e MENU_TABLE_NAME=ci-menu \
+            -e CARTS_TABLE_NAME=ci-carts \
+            -e ORDERS_TABLE_NAME=ci-orders \
+            -e CUSTOMERS_TABLE_NAME=ci-customers \
+            -e AGENT_SESSIONS_TABLE_NAME=ci-agent-sessions \
+            -e AGENT_REQUESTS_TABLE_NAME=ci-agent-requests \
+            -e MENU_SESSIONS_TABLE_NAME=ci-menu-sessions \
+            -e AUDIT_TABLE_NAME=ci-audit \
+            -e MENU_SITE_BASE_URL=http://localhost:3000/menu \
+            -e SESSION_TOKEN_SECRET=ci-session-token-secret \
+            -e RESTAURANT_ID=ci-restaurant \
+            -e BRANCH_ID=default \
+            fyp-backend-ci:${{ github.sha }}
+
+      - name: Test backend health endpoint
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent http://localhost:8000/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs fyp-backend-ci-health
+          exit 1
+
+      - name: Stop backend container
+        if: always()
+        run: docker rm -f fyp-backend-ci-health || true
+
+  agent-runtime:
+    name: Agent runtime tests and image validation
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.agent_runtime == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: |
+            backend/pyproject.toml
+            agent-runtime/pyproject.toml
+
+      - name: Install backend and agent runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./backend[dev]"
+          python -m pip install -e "./agent-runtime[dev]"
+
+      - name: Run agent runtime tests
+        working-directory: agent-runtime
+        env:
+          PYTHONPATH: ${{ github.workspace }}/agent-runtime/src:${{ github.workspace }}/backend
+        run: python -m pytest tests
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build AgentCore runtime Docker image
+        run: docker build --platform linux/arm64 -f agent-runtime/Dockerfile -t fyp-agent-runtime-ci:${{ github.sha }} .
+
+      - name: Start AgentCore runtime container
+        run: docker run -d --platform linux/arm64 --name fyp-agent-runtime-ci-ping -p 8080:8080 fyp-agent-runtime-ci:${{ github.sha }}
+
+      - name: Test AgentCore runtime ping endpoint
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent http://localhost:8080/ping; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs fyp-agent-runtime-ci-ping
+          exit 1
+
+      - name: Stop AgentCore runtime container
+        if: always()
+        run: docker rm -f fyp-agent-runtime-ci-ping || true
+
+  frontend:
+    name: Frontend validation
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      NEXT_PUBLIC_BRANCH_ID: default
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Build frontend
+        run: npm run build

@@ -1,0 +1,76 @@
+name: Validate Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - 'docs/deployment.md'
+      - '.github/workflows/validate-infra.yml'
+  push:
+    paths:
+      - 'infra/**'
+      - 'docs/deployment.md'
+      - '.github/workflows/validate-infra.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-infra-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cloudformation-lint:
+    name: Local CloudFormation validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      - name: Install local CloudFormation tooling
+        run: python -m pip install --upgrade pip cfn-lint
+
+      - name: Validate YAML syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          class CloudFormationLoader(yaml.SafeLoader):
+              pass
+
+          def cloudformation_tag(loader, tag_suffix, node):
+              if isinstance(node, yaml.ScalarNode):
+                  return loader.construct_scalar(node)
+              if isinstance(node, yaml.SequenceNode):
+                  return loader.construct_sequence(node)
+              if isinstance(node, yaml.MappingNode):
+                  return loader.construct_mapping(node)
+              return None
+
+          CloudFormationLoader.add_multi_constructor("!", cloudformation_tag)
+
+          templates = [
+              Path("infra/phase3-network.yaml"),
+              Path("infra/phase7-ecs-api.yaml"),
+              Path("infra/phase11-monitoring.yaml"),
+          ]
+          for template in templates:
+              with template.open("r", encoding="utf-8") as handle:
+                  yaml.load(handle, Loader=CloudFormationLoader)
+              print(f"YAML OK: {template}")
+          PY
+
+      - name: Lint CloudFormation templates
+        run: |
+          cfn-lint \
+            infra/phase3-network.yaml \
+            infra/phase7-ecs-api.yaml \
+            infra/phase11-monitoring.yaml

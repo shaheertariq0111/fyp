@@ -526,16 +526,13 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - !If
-            - HasAgentCoreMemoryArn
-            - Sid: AccessAgentCoreMemoryEvents
-              Effect: Allow
-              Action:
-                - bedrock-agentcore:CreateEvent
-                - bedrock-agentcore:GetEvent
-                - bedrock-agentcore:ListEvents
-              Resource: !Ref AgentCoreMemoryArn
-            - !Ref AWS::NoValue
+          - Sid: AccessAgentCoreMemoryEvents
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:CreateEvent
+              - bedrock-agentcore:GetEvent
+              - bedrock-agentcore:ListEvents
+            Resource: !Ref AgentCoreMemoryArn
 
   AgentCoreExecutionSessionSecretPolicy:
     Type: AWS::IAM::Policy

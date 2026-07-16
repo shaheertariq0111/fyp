@@ -3,6 +3,8 @@
 !.env.example
 .venv/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .strands_sessions/
 __pycache__/
 *.py[cod]
@@ -18,6 +20,7 @@ build/
 dist/
 htmlcov/
 .coverage
+coverage.xml
 
 # Local AWS and credential material must never enter container build context.
 .aws/
