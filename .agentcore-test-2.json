@@ -1,8 +1,0 @@
-{
-    "agent_session_id":  "agent-1b39ae45fdfd41b2ae0e301a791b22e4",
-    "message":  "What name and pizza preference did I tell you?",
-    "branch_id":  "default",
-    "customer_id":  "deployment-test-user",
-    "channel":  "web",
-    "user_id":  "deployment-test-user"
-}
