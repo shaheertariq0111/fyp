@@ -1,6 +1,6 @@
 # CI/CD
 
-This repository currently has validation-only GitHub Actions. Nothing in this phase creates, updates, deploys, or deletes AWS resources.
+This repository has validation-only workflows and a backend deployment workflow. The GitHub OIDC/IAM stack is configured as `fyp-dev-github-oidc`, and the GitHub `staging` environment is configured with a `deployment` branch restriction and a required reviewer.
 
 ## Workflows
 
@@ -39,11 +39,47 @@ It validates:
 - `infra/phase11-monitoring.yaml`
 - `infra/phase13-github-oidc.yaml`
 
-This phase uses local YAML parsing and `cfn-lint`. It does not run `aws cloudformation validate-template`, create change sets, or deploy stacks because no GitHub OIDC role or AWS credentials exist yet.
+This workflow intentionally has no AWS authentication. It performs local YAML parsing and `cfn-lint` validation only, and does not run `aws cloudformation validate-template`, create change sets, or deploy stacks.
+
+### `.github/workflows/deploy-backend.yml`
+
+Prepares automated deployment of the FastAPI backend to the existing ECS service. It runs only for:
+
+- pushes to the `deployment` branch when `backend/**`, `dominos_pakistan_menu_import.json`, or `.github/workflows/deploy-backend.yml` changes
+- manual `workflow_dispatch` runs
+
+The workflow has two jobs:
+
+| Job | Environment | AWS access | Purpose |
+| --- | --- | --- | --- |
+| `validate` | none | none | Check out the repository, set up Python 3.10, install backend dev dependencies, and run backend tests. |
+| `deploy` | `staging` | GitHub OIDC only | Build and push the backend image, register a task-definition revision with only the backend container image changed, update the existing ECS service, wait for stability, and check the API Gateway `/health` endpoint. |
+
+The deploy job uses these GitHub environment or repository variables:
+
+```text
+AWS_REGION=us-east-1
+BACKEND_DEPLOY_ROLE_ARN=<BackendDeploymentRoleArn output>
+```
+
+It builds exactly one immutable image tag per run:
+
+```text
+352306494518.dkr.ecr.us-east-1.amazonaws.com/fyp-dev-backend:${GITHUB_SHA}
+```
+
+It does not push a `latest` tag. It reads the task definition currently deployed by ECS as the source of truth, renders a new revision by replacing only the `backend` container image, and deploys that revision to:
+
+```text
+cluster: fyp-dev-backend
+service: fyp-dev-backend
+```
+
+The deployment job intentionally does not run for pull requests, does not use static AWS credentials, does not deploy AgentCore, does not execute CloudFormation, and does not perform automatic rollback.
 
 ## GitHub OIDC Preparation
 
-`infra/phase13-github-oidc.yaml` prepares, but does not deploy, GitHub Actions authentication for future deployment workflows.
+`infra/phase13-github-oidc.yaml` defines the GitHub Actions OIDC authentication used by deployment workflows. The configured CloudFormation stack is `fyp-dev-github-oidc`.
 
 OIDC is used so GitHub Actions can exchange a short-lived GitHub identity token for an AWS role session. No permanent AWS access keys should be stored in GitHub variables, GitHub secrets, workflow files, Amplify, ECS, Docker images, or `.env` files.
 
@@ -64,7 +100,7 @@ The audience is:
 sts.amazonaws.com
 ```
 
-The future GitHub `staging` environment must restrict deployments to the `deployment` branch. Because the trust policy uses an environment subject, the branch restriction lives in the GitHub environment rules, not in the AWS OIDC `sub` claim.
+The GitHub `staging` environment restricts deployments to the `deployment` branch and requires reviewer approval. Because the trust policy uses an environment subject, the branch restriction lives in the GitHub environment rules, not in the AWS OIDC `sub` claim.
 
 ### Existing Provider Check
 
@@ -91,7 +127,7 @@ The current dev defaults in `infra/phase13-github-oidc.yaml` target:
 - Region: `us-east-1`
 - Backend ECR repository: `arn:aws:ecr:us-east-1:352306494518:repository/fyp-dev-backend`
 - Agent runtime ECR repository: `arn:aws:ecr:us-east-1:352306494518:repository/fyp-dev-agent-runtime`
-- ECS cluster/service/task family: `fyp-dev-backend`
+- ECS cluster/service: `fyp-dev-backend`
 - ECS execution role: `arn:aws:iam::352306494518:role/fyp-dev-ecs-execution`
 - ECS task role: `arn:aws:iam::352306494518:role/fyp-dev-ecs-app`
 - AgentCore runtime: `arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_restaurant_agent-dwLwVnClBF`
@@ -104,6 +140,7 @@ IAM resource-scoping limitations are documented in the template through intentio
 - `ecr:GetAuthorizationToken` requires `Resource: "*"`.
 - `sts:GetCallerIdentity` uses `Resource: "*"`.
 - `ecs:DescribeTaskDefinition` requires `Resource: "*"` because ECS does not support resource-level scoping for that action.
+- `ecs:RegisterTaskDefinition` requires `Resource: "*"` because ECS task-definition registration does not support resource-level scoping for that action.
 - `ecs:ListTasks` uses `Resource: "*"` and is restricted with `ecs:cluster`; ECS does not support service-resource scoping for that list call. The service itself is still resource-scoped for `ecs:DescribeServices` and `ecs:UpdateService`.
 
 ### Local Template Validation
@@ -119,7 +156,7 @@ cfn-lint `
   infra/phase13-github-oidc.yaml
 ```
 
-AWS-authenticated validation and deployment are deferred until the deployment phase:
+AWS-authenticated CloudFormation validation is kept out of CI because `validate-infra.yml` is local-only:
 
 ```powershell
 aws cloudformation validate-template `
@@ -127,11 +164,11 @@ aws cloudformation validate-template `
   --template-body file://infra/phase13-github-oidc.yaml
 ```
 
-Do not run `aws cloudformation deploy` for this template until the user explicitly proceeds to the IAM/OIDC deployment phase.
+Do not run `aws cloudformation deploy` from CI. Infrastructure stack updates remain a manual operation unless the user explicitly asks for a deployment workflow phase.
 
-### Future GitHub Variables
+### GitHub Variables
 
-Future deployment workflows should use GitHub environment or repository variables for:
+Deployment workflows use GitHub environment or repository variables for:
 
 ```text
 AWS_REGION=us-east-1
@@ -141,18 +178,28 @@ AGENTCORE_DEPLOY_ROLE_ARN=<AgentCoreDeploymentRoleArn output>
 
 No GitHub secret should contain AWS access keys.
 
+## Backend Deployment Rollback
+
+The backend workflow records the previous and new task definition ARNs in the GitHub step summary. If a backend deployment needs manual rollback, run:
+
+```powershell
+aws ecs update-service `
+  --region us-east-1 `
+  --cluster fyp-dev-backend `
+  --service fyp-dev-backend `
+  --task-definition <previous-task-definition-arn>
+
+aws ecs wait services-stable `
+  --region us-east-1 `
+  --cluster fyp-dev-backend `
+  --services fyp-dev-backend
+
+Invoke-RestMethod https://vogwq90ly8.execute-api.us-east-1.amazonaws.com/health
+```
+
+Replace `<previous-task-definition-arn>` with the ARN shown in the failed or prior successful workflow summary. This updates the existing service back to a previously registered task-definition revision; it does not rebuild images or change infrastructure.
+
 ## Future Deployment Phases
-
-Deployment workflows are intentionally not created in this phase.
-
-A later backend deployment workflow should:
-
-- use GitHub OIDC instead of AWS access keys
-- authenticate to ECR
-- build and push the backend image tagged with the Git commit SHA
-- update only the existing ECS backend image
-- wait for ECS service stability
-- check the API Gateway `/health` endpoint
 
 A later AgentCore deployment workflow should:
 
@@ -163,13 +210,13 @@ A later AgentCore deployment workflow should:
 - wait for the runtime to become `READY`
 - run a safe ping or invocation check
 
-When a future deployment job uses the GitHub environment named `staging`, the AWS OIDC trust subject must be:
+When a deployment job uses the GitHub environment named `staging`, the AWS OIDC trust subject must be:
 
 ```text
 repo:shaheertariq0111/fyp:environment:staging
 ```
 
-The GitHub `staging` environment itself must restrict deployments to the `deployment` branch. Do not use branch-based trust and environment-based trust interchangeably; choose the subject that matches the workflow's environment usage.
+The GitHub `staging` environment restricts deployments to the `deployment` branch and requires reviewer approval. Do not use branch-based trust and environment-based trust interchangeably; choose the subject that matches the workflow's environment usage.
 
 ## Local Commands Matching CI
 
@@ -240,4 +287,4 @@ aws cloudformation validate-template --region us-east-1 --template-body file://i
 aws cloudformation validate-template --region us-east-1 --template-body file://infra/phase13-github-oidc.yaml
 ```
 
-Do not run those AWS commands in CI until OIDC and least-privilege roles are added.
+Do not run those AWS commands in CI from `validate-infra.yml`; that workflow intentionally remains local validation only.

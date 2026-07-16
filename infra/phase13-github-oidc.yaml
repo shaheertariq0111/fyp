@@ -48,9 +48,6 @@ Parameters:
   EcsServiceName:
     Type: String
     Default: fyp-dev-backend
-  EcsTaskDefinitionFamily:
-    Type: String
-    Default: fyp-dev-backend
   EcsExecutionRoleArn:
     Type: String
     Default: arn:aws:iam::352306494518:role/fyp-dev-ecs-execution
@@ -126,7 +123,7 @@ Resources:
                 Effect: Allow
                 Action:
                   - ecs:RegisterTaskDefinition
-                Resource: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${EcsTaskDefinitionFamily}:*
+                Resource: "*"
               - Sid: UpdateAndReadBackendService
                 Effect: Allow
                 Action:
