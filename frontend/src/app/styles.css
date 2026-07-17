@@ -907,9 +907,253 @@ button {
 }
 
 .admin-orders-page,
-.admin-order-detail {
+.admin-order-detail,
+.admin-menu-page {
   display: grid;
   gap: 18px;
+}
+
+.admin-menu-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-menu-summary-card {
+  min-height: 122px;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 16px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: var(--admin-surface);
+  box-shadow: 0 1px 2px rgba(11, 45, 77, 0.04);
+}
+
+.admin-menu-summary-card span {
+  color: var(--admin-muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.admin-menu-summary-card strong {
+  color: var(--admin-navy);
+  font-size: 28px;
+  line-height: 1;
+}
+
+.admin-menu-summary-card p {
+  margin: 0;
+  color: var(--admin-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.admin-menu-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(150px, 0.8fr)) auto auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: var(--admin-surface);
+}
+
+.admin-menu-toolbar label,
+.admin-menu-form label,
+.admin-json-editor {
+  display: grid;
+  gap: 6px;
+  color: var(--admin-muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.admin-menu-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.admin-menu-form-wide {
+  grid-column: 1 / -1;
+}
+
+.admin-checkbox-row {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  align-self: end;
+  min-height: 42px;
+  color: var(--admin-text) !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+.admin-checkbox-row input {
+  width: auto !important;
+}
+
+.admin-form-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--admin-danger) !important;
+  font-weight: 800;
+}
+
+.admin-menu-catalogue {
+  overflow: hidden;
+}
+
+.admin-menu-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.admin-menu-table {
+  min-width: 940px;
+}
+
+.admin-menu-table tr.is-archived {
+  color: var(--admin-muted);
+  background: #f8fafb;
+}
+
+.admin-menu-item-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-menu-item-cell strong {
+  color: var(--admin-text);
+}
+
+.admin-menu-item-cell p {
+  max-width: 460px;
+  margin: 0;
+  color: var(--admin-muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.admin-menu-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.admin-menu-tag-row span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--admin-blue);
+  background: rgba(0, 100, 145, 0.08);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.admin-menu-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 26px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.admin-menu-badge.is-available,
+.admin-menu-badge.is-active {
+  color: var(--admin-success);
+  background: rgba(29, 138, 85, 0.1);
+}
+
+.admin-menu-badge.is-unavailable {
+  color: #9a5a06;
+  background: rgba(232, 145, 24, 0.12);
+}
+
+.admin-menu-badge.is-archived {
+  color: var(--admin-muted);
+  background: #eef3f6;
+}
+
+.admin-menu-categories,
+.admin-menu-form-panel,
+.admin-menu-advanced {
+  border-top: 4px solid var(--admin-blue);
+}
+
+.admin-menu-advanced-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0;
+  color: var(--admin-text);
+  background: transparent;
+  text-align: left;
+}
+
+.admin-menu-advanced-toggle span,
+.admin-menu-tabs,
+.admin-menu-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-menu-advanced-body {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.admin-menu-tabs {
+  flex-wrap: wrap;
+}
+
+.admin-menu-tabs button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  color: var(--admin-text);
+  background: var(--admin-surface);
+  font-weight: 800;
+}
+
+.admin-menu-tabs button.is-active {
+  border-color: rgba(0, 100, 145, 0.28);
+  color: var(--admin-blue);
+  background: rgba(0, 100, 145, 0.08);
+}
+
+.admin-json-editor textarea {
+  min-height: 240px;
+  font-family: Consolas, "Courier New", monospace;
+  line-height: 1.45;
+}
+
+.admin-json-preview {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: #f8fafb;
+  font-size: 12px;
 }
 
 .admin-orders-summary {
@@ -1502,7 +1746,16 @@ button {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .admin-orders-toolbar {
+  .admin-menu-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-orders-toolbar,
+  .admin-menu-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-menu-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1599,7 +1852,10 @@ button {
 
 @media (max-width: 720px) {
   .admin-orders-summary,
-  .admin-orders-toolbar {
+  .admin-orders-toolbar,
+  .admin-menu-summary,
+  .admin-menu-toolbar,
+  .admin-menu-form {
     grid-template-columns: 1fr;
   }
 
@@ -1645,6 +1901,52 @@ button {
 
   .admin-orders-table td::before {
     content: attr(data-label);
+    color: var(--admin-muted);
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .admin-menu-table {
+    min-width: 0;
+  }
+
+  .admin-menu-table thead {
+    display: none;
+  }
+
+  .admin-menu-table,
+  .admin-menu-table tbody,
+  .admin-menu-table tr,
+  .admin-menu-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .admin-menu-table tr {
+    margin-bottom: 12px;
+    padding: 12px;
+    border: 1px solid var(--admin-border);
+    border-radius: 8px;
+    background: var(--admin-surface);
+  }
+
+  .admin-menu-table td {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--admin-border);
+  }
+
+  .admin-menu-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .admin-menu-table td::before {
+    content: attr(data-label);
+    flex: 0 0 110px;
     color: var(--admin-muted);
     font-size: 12px;
     font-weight: 900;
