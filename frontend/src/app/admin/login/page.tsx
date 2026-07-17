@@ -175,7 +175,7 @@ export default function AdminLoginPage() {
             className="admin-login-brand-image"
             fill
             sizes="(max-width: 620px) 0px, (max-width: 1100px) 80vw, 55vw"
-            src="/images/admin-login/pizza-hero.png"
+            src="/images/admin-login/pizza-kitchen.png"
           />
         </div>
       </section>
