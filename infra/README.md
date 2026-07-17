@@ -11,6 +11,7 @@ The template intentionally does not create an Application Load Balancer, Route 5
 ## Files
 
 - `phase7-ecs-api.yaml` - CloudFormation template for ECR, ECS, Cloud Map, API Gateway, security groups, log groups, optional AgentRequests DynamoDB table, and least-privilege IAM roles.
+- `phase13-github-oidc.yaml` - CloudFormation template for the GitHub Actions OIDC provider selection and separate backend/AgentCore deployment roles. Do not deploy until the account has been checked for an existing GitHub OIDC provider.
 - `parameters/dev.example.json` - placeholder development parameters. Replace placeholders locally before deploying. Do not commit real secret ARNs, account IDs, image URIs, or generated values.
 - `secrets-and-config.md` - Phase 9 secret creation, ECS configuration, Amplify configuration, and AgentCore Runtime configuration notes.
 

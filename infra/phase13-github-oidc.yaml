@@ -1,0 +1,240 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Phase 13 GitHub Actions OIDC provider and least-privilege deployment roles.
+
+Parameters:
+  GitHubOrganization:
+    Type: String
+    Default: shaheertariq0111
+    AllowedPattern: "^[A-Za-z0-9_.-]+$"
+    Description: GitHub organization or user that owns the repository.
+  GitHubRepository:
+    Type: String
+    Default: fyp
+    AllowedPattern: "^[A-Za-z0-9_.-]+$"
+    Description: GitHub repository name.
+  GitHubEnvironment:
+    Type: String
+    Default: staging
+    AllowedPattern: "^[A-Za-z0-9_.-]+$"
+    Description: GitHub environment used by future deployment jobs.
+  CreateGitHubOidcProvider:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Set true only after confirming the account does not already have the GitHub Actions OIDC provider.
+  ExistingGitHubOidcProviderArn:
+    Type: String
+    Default: arn:aws:iam::352306494518:oidc-provider/token.actions.githubusercontent.com
+    Description: Existing GitHub Actions OIDC provider ARN. Leave as-is only if that provider already exists in this account.
+  BackendDeployRoleName:
+    Type: String
+    Default: fyp-github-backend-deployer
+    AllowedPattern: "^[A-Za-z0-9+=,.@_-]{1,64}$"
+  AgentCoreDeployRoleName:
+    Type: String
+    Default: fyp-github-agentcore-deployer
+    AllowedPattern: "^[A-Za-z0-9+=,.@_-]{1,64}$"
+  BackendEcrRepositoryArn:
+    Type: String
+    Default: arn:aws:ecr:us-east-1:352306494518:repository/fyp-dev-backend
+  AgentRuntimeEcrRepositoryArn:
+    Type: String
+    Default: arn:aws:ecr:us-east-1:352306494518:repository/fyp-dev-agent-runtime
+  EcsClusterName:
+    Type: String
+    Default: fyp-dev-backend
+  EcsServiceName:
+    Type: String
+    Default: fyp-dev-backend
+  EcsExecutionRoleArn:
+    Type: String
+    Default: arn:aws:iam::352306494518:role/fyp-dev-ecs-execution
+  EcsTaskRoleArn:
+    Type: String
+    Default: arn:aws:iam::352306494518:role/fyp-dev-ecs-app
+  AgentCoreRuntimeArn:
+    Type: String
+    Default: arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_restaurant_agent-dwLwVnClBF
+  AgentCoreExecutionRoleArn:
+    Type: String
+    Default: arn:aws:iam::352306494518:role/fyp-dev-agentcore-execution
+    Description: Existing AgentCore execution role created by phase7-ecs-api.yaml with ProjectName=fyp-dev.
+
+Conditions:
+  ShouldCreateGitHubOidcProvider: !Equals [!Ref CreateGitHubOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateGitHubOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+
+  BackendDeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref BackendDeployRoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TrustGitHubStagingEnvironmentOnly
+            Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateGitHubOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Ref ExistingGitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrganization}/${GitHubRepository}:environment:${GitHubEnvironment}
+      Policies:
+        - PolicyName: backend-deployment
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: GetEcrAuthorizationToken
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PushAndReadBackendImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !Ref BackendEcrRepositoryArn
+              - Sid: ReadBackendTaskDefinition
+                Effect: Allow
+                Action:
+                  - ecs:DescribeTaskDefinition
+                Resource: "*"
+              - Sid: RegisterBackendTaskDefinition
+                Effect: Allow
+                Action:
+                  - ecs:RegisterTaskDefinition
+                Resource: "*"
+              - Sid: UpdateAndReadBackendService
+                Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                Resource: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${EcsClusterName}/${EcsServiceName}
+                Condition:
+                  ArnEquals:
+                    ecs:cluster: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}
+              - Sid: ListBackendServiceTasks
+                Effect: Allow
+                Action:
+                  - ecs:ListTasks
+                Resource: "*"
+                Condition:
+                  ArnEquals:
+                    ecs:cluster: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}
+              - Sid: DescribeBackendTasks
+                Effect: Allow
+                Action:
+                  - ecs:DescribeTasks
+                Resource: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task/${EcsClusterName}/*
+                Condition:
+                  ArnEquals:
+                    ecs:cluster: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}
+              - Sid: PassOnlyBackendTaskRoles
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Ref EcsExecutionRoleArn
+                  - !Ref EcsTaskRoleArn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+              - Sid: IdentifyCaller
+                Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: "*"
+
+  AgentCoreDeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref AgentCoreDeployRoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TrustGitHubStagingEnvironmentOnly
+            Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateGitHubOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Ref ExistingGitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrganization}/${GitHubRepository}:environment:${GitHubEnvironment}
+      Policies:
+        - PolicyName: agentcore-deployment
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: GetEcrAuthorizationToken
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PushAndReadAgentRuntimeImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !Ref AgentRuntimeEcrRepositoryArn
+              - Sid: ReadAndUpdateExistingAgentCoreRuntime
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:GetAgentRuntime
+                  - bedrock-agentcore:UpdateAgentRuntime
+                Resource: !Ref AgentCoreRuntimeArn
+              - Sid: PassOnlyAgentCoreExecutionRole
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !Ref AgentCoreExecutionRoleArn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: bedrock-agentcore.amazonaws.com
+              - Sid: IdentifyCaller
+                Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: "*"
+
+Outputs:
+  GitHubOidcProviderArn:
+    Description: GitHub Actions OIDC provider ARN used by the deployment roles.
+    Value: !If
+      - ShouldCreateGitHubOidcProvider
+      - !Ref GitHubOidcProvider
+      - !Ref ExistingGitHubOidcProviderArn
+  BackendDeploymentRoleArn:
+    Description: IAM role ARN for future backend deployment workflows.
+    Value: !GetAtt BackendDeploymentRole.Arn
+  AgentCoreDeploymentRoleArn:
+    Description: IAM role ARN for future AgentCore deployment workflows.
+    Value: !GetAtt AgentCoreDeploymentRole.Arn

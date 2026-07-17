@@ -1,0 +1,350 @@
+name: Deploy AgentCore Runtime
+
+on:
+  push:
+    branches:
+      - deployment
+    paths:
+      - 'agent-runtime/**'
+      - 'backend/src/agent/**'
+      - 'backend/src/models/**'
+      - 'backend/src/services/**'
+      - 'backend/src/repositories/**'
+      - 'backend/src/infrastructure/**'
+      - 'backend/src/agent_client/schemas.py'
+      - 'backend/pyproject.toml'
+      - 'dominos_pakistan_menu_import.json'
+      - '.github/workflows/deploy-agentcore.yml'
+      - '.github/scripts/build-agentcore-update-input.py'
+      - '.github/scripts/tests/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate AgentCore runtime
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: |
+            backend/pyproject.toml
+            agent-runtime/pyproject.toml
+
+      - name: Install backend and AgentCore runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./backend[dev]"
+          python -m pip install -e "./agent-runtime[dev]"
+
+      - name: Run AgentCore runtime tests
+        working-directory: agent-runtime
+        env:
+          PYTHONPATH: ${{ github.workspace }}/agent-runtime/src:${{ github.workspace }}/backend
+        run: python -m pytest tests
+
+      - name: Run AgentCore deployment helper tests
+        run: python -m pytest .github/scripts/tests
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build AgentCore runtime ARM64 image
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --load \
+            -f agent-runtime/Dockerfile \
+            -t fyp-agent-runtime-ci:${{ github.sha }} \
+            .
+
+      - name: Start AgentCore runtime container
+        run: |
+          docker run -d \
+            --platform linux/arm64 \
+            --name fyp-agent-runtime-ci-ping \
+            -p 8080:8080 \
+            fyp-agent-runtime-ci:${{ github.sha }}
+
+      - name: Test AgentCore runtime ping endpoint
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent http://localhost:8080/ping; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs fyp-agent-runtime-ci-ping
+          exit 1
+
+      - name: Stop AgentCore runtime container
+        if: always()
+        run: docker rm -f fyp-agent-runtime-ci-ping || true
+
+  deploy:
+    name: Deploy AgentCore runtime
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: agentcore-staging-deployment
+      cancel-in-progress: false
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REGISTRY: 352306494518.dkr.ecr.us-east-1.amazonaws.com
+      ECR_REPOSITORY: fyp-dev-agent-runtime
+      AGENTCORE_RUNTIME_ID: fyp_dev_restaurant_agent-dwLwVnClBF
+      AGENTCORE_RUNTIME_ARN: arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_restaurant_agent-dwLwVnClBF
+      AGENTCORE_EXECUTION_ROLE_ARN: arn:aws:iam::352306494518:role/fyp-dev-agentcore-execution
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AGENTCORE_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: agentcore-deploy-${{ github.run_id }}
+
+      - name: Verify AWS identity and CLI support
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
+          aws --version
+          if ! aws bedrock-agentcore-control get-agent-runtime --generate-cli-skeleton input >/dev/null 2>&1; then
+            curl --fail --silent --show-error "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+            unzip -q awscliv2.zip
+            sudo ./aws/install --update
+            aws --version
+          fi
+          aws bedrock-agentcore-control get-agent-runtime --generate-cli-skeleton input >/dev/null
+          aws bedrock-agentcore-control update-agent-runtime --generate-cli-skeleton input >/dev/null
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push AgentCore runtime image
+        id: image
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/arm64 \
+            -f agent-runtime/Dockerfile \
+            -t "$IMAGE_URI" \
+            --push \
+            .
+          echo "image-uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+      - name: Capture current AgentCore runtime
+        id: current-runtime
+        run: |
+          set -euo pipefail
+          aws bedrock-agentcore-control get-agent-runtime \
+            --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+            --output json > current-agent-runtime.json
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+          with open("current-agent-runtime.json", "r", encoding="utf-8") as handle:
+              runtime = json.load(handle)
+
+          def fail(message):
+              print(message, file=sys.stderr)
+              raise SystemExit(1)
+
+          artifact = runtime.get("agentRuntimeArtifact") or {}
+          container = artifact.get("containerConfiguration") or {}
+          network = runtime.get("networkConfiguration") or {}
+          if runtime.get("status") != "READY":
+              fail(f"AgentCore runtime must be READY before update. Current status: {runtime.get('status')}")
+          if runtime.get("agentRuntimeArn") != os.environ["AGENTCORE_RUNTIME_ARN"]:
+              fail("AgentCore runtime ARN does not match the configured target.")
+          if runtime.get("roleArn") != os.environ["AGENTCORE_EXECUTION_ROLE_ARN"]:
+              fail("AgentCore execution role ARN does not match the configured target.")
+          if not container.get("containerUri"):
+              fail("AgentCore runtime artifact is not container-based.")
+          if not network.get("networkMode"):
+              fail("AgentCore runtime network mode is missing.")
+
+          output_path = os.environ["GITHUB_OUTPUT"]
+          with open(output_path, "a", encoding="utf-8") as output:
+              output.write(f"previous-version={runtime.get('agentRuntimeVersion', '')}\n")
+              output.write(f"previous-image-uri={container.get('containerUri', '')}\n")
+              output.write(f"previous-status={runtime.get('status', '')}\n")
+              output.write(f"runtime-arn={runtime.get('agentRuntimeArn', '')}\n")
+              output.write(f"execution-role-arn={runtime.get('roleArn', '')}\n")
+              output.write(f"network-mode={network.get('networkMode', '')}\n")
+          PY
+
+      - name: Build AgentCore update input
+        run: |
+          set -euo pipefail
+          python .github/scripts/build-agentcore-update-input.py \
+            --current-runtime current-agent-runtime.json \
+            --image-uri "${{ steps.image.outputs.image-uri }}" \
+            --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+            --expected-runtime-arn "$AGENTCORE_RUNTIME_ARN" \
+            --expected-role-arn "$AGENTCORE_EXECUTION_ROLE_ARN" \
+            --expected-ecr-repository "$ECR_REGISTRY/$ECR_REPOSITORY" \
+            --mode deployment \
+            --github-sha "${{ github.sha }}" \
+            --client-token "agentcore-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}" \
+            --output agentcore-update-input.json
+
+      - name: Update AgentCore runtime
+        id: update-runtime
+        run: |
+          set -euo pipefail
+          aws bedrock-agentcore-control update-agent-runtime \
+            --cli-input-json file://agentcore-update-input.json \
+            --output json > update-agent-runtime-response.json
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+          with open("update-agent-runtime-response.json", "r", encoding="utf-8") as handle:
+              response = json.load(handle)
+          runtime_arn = response.get("agentRuntimeArn")
+          runtime_version = response.get("agentRuntimeVersion")
+          status = response.get("status")
+          if runtime_arn != os.environ["AGENTCORE_RUNTIME_ARN"]:
+              print("UpdateAgentRuntime returned an unexpected runtime ARN.", file=sys.stderr)
+              raise SystemExit(1)
+          if not isinstance(runtime_version, str) or not runtime_version.isdigit():
+              print("UpdateAgentRuntime did not return a numeric runtime version.", file=sys.stderr)
+              raise SystemExit(1)
+          if status not in {"UPDATING", "READY"}:
+              print(f"UpdateAgentRuntime returned unexpected status: {status}", file=sys.stderr)
+              raise SystemExit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"runtime-arn={runtime_arn}\n")
+              output.write(f"new-version={runtime_version}\n")
+              output.write(f"initial-status={status}\n")
+          PY
+
+      - name: Wait for AgentCore runtime READY
+        id: ready
+        run: |
+          set -euo pipefail
+          expected_version="${{ steps.update-runtime.outputs.new-version }}"
+          if [ -z "$expected_version" ]; then
+            echo "UpdateAgentRuntime did not provide a runtime version; refusing to poll." >&2
+            exit 1
+          fi
+          for attempt in {1..90}; do
+            aws bedrock-agentcore-control get-agent-runtime \
+              --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+              --output json > latest-agent-runtime.json
+            status="$(python -c "import json; print(json.load(open('latest-agent-runtime.json', encoding='utf-8')).get('status', ''))")"
+            if [ "$status" = "READY" ]; then
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+          with open("latest-agent-runtime.json", "r", encoding="utf-8") as handle:
+              runtime = json.load(handle)
+          with open("current-agent-runtime.json", "r", encoding="utf-8") as handle:
+              previous = json.load(handle)
+
+          expected_version = os.environ["EXPECTED_VERSION"]
+          expected_image = os.environ["EXPECTED_IMAGE"]
+          if runtime.get("agentRuntimeVersion") != expected_version:
+              print("AgentCore runtime version does not match the update response.", file=sys.stderr)
+              raise SystemExit(1)
+          container = (runtime.get("agentRuntimeArtifact") or {}).get("containerConfiguration") or {}
+          if container.get("containerUri") != expected_image:
+              print("AgentCore runtime container URI does not match the new image.", file=sys.stderr)
+              raise SystemExit(1)
+          if runtime.get("roleArn") != previous.get("roleArn"):
+              print("AgentCore runtime role changed unexpectedly.", file=sys.stderr)
+              raise SystemExit(1)
+          if runtime.get("networkConfiguration") != previous.get("networkConfiguration"):
+              print("AgentCore runtime network configuration changed unexpectedly.", file=sys.stderr)
+              raise SystemExit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"final-status={runtime.get('status', '')}\n")
+              output.write(f"new-version={runtime.get('agentRuntimeVersion', '')}\n")
+              output.write(f"new-image-uri={container.get('containerUri', '')}\n")
+          PY
+              exit 0
+            fi
+            if [ "$status" = "UPDATE_FAILED" ] || [ "$status" = "CREATE_FAILED" ] || [ "$status" = "DELETING" ]; then
+          python - <<'PY'
+          import json
+          with open("latest-agent-runtime.json", "r", encoding="utf-8") as handle:
+              runtime = json.load(handle)
+          safe = {
+              "status": runtime.get("status"),
+              "agentRuntimeId": runtime.get("agentRuntimeId"),
+              "agentRuntimeArn": runtime.get("agentRuntimeArn"),
+              "agentRuntimeVersion": runtime.get("agentRuntimeVersion"),
+              "failureReason": runtime.get("failureReason"),
+          }
+          print(json.dumps(safe, indent=2, sort_keys=True))
+          PY
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "Timed out waiting for AgentCore runtime to become READY." >&2
+          exit 1
+        env:
+          EXPECTED_VERSION: ${{ steps.update-runtime.outputs.new-version }}
+          EXPECTED_IMAGE: ${{ steps.image.outputs.image-uri }}
+
+      - name: Record deployed verification decision
+        id: deployed-verification
+        run: |
+          echo "result=deferred-ready-image-version-verified" >> "$GITHUB_OUTPUT"
+          echo "Deployed invocation is deferred because the inspected runtime contract can use AgentCore Memory and restaurant tools; READY status plus image/version/role/network verification is used." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write AgentCore deployment summary
+        if: always()
+        run: |
+          {
+            echo "## AgentCore Runtime Deployment Summary"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Git commit SHA | \`${{ github.sha }}\` |"
+            echo "| Image URI | \`${{ steps.image.outputs.image-uri }}\` |"
+            echo "| Runtime ID | \`${{ env.AGENTCORE_RUNTIME_ID }}\` |"
+            echo "| Runtime ARN | \`${{ steps.current-runtime.outputs.runtime-arn || env.AGENTCORE_RUNTIME_ARN }}\` |"
+            echo "| Previous runtime version | \`${{ steps.current-runtime.outputs.previous-version }}\` |"
+            echo "| Previous image URI | \`${{ steps.current-runtime.outputs.previous-image-uri }}\` |"
+            echo "| New runtime version | \`${{ steps.ready.outputs.new-version || steps.update-runtime.outputs.new-version }}\` |"
+            echo "| New image URI | \`${{ steps.ready.outputs.new-image-uri || steps.image.outputs.image-uri }}\` |"
+            echo "| Final runtime status | \`${{ steps.ready.outputs.final-status || steps.update-runtime.outputs.initial-status || 'not-completed' }}\` |"
+            echo "| Deployed verification | \`${{ steps.deployed-verification.outputs.result || 'not-completed' }}\` |"
+            echo
+            echo "Existing active sessions may continue using the runtime version with which their microVM started until those sessions terminate."
+          } >> "$GITHUB_STEP_SUMMARY"
