@@ -1710,6 +1710,278 @@ button {
   border-radius: 999px;
 }
 
+.admin-customers-page,
+.admin-monitoring-page {
+  display: grid;
+  gap: 18px;
+}
+
+.admin-customer-search-panel {
+  margin-bottom: 0;
+}
+
+.admin-customer-search-form {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.admin-customer-search-form label,
+.admin-monitoring-toolbar label {
+  display: grid;
+  gap: 6px;
+  color: var(--admin-muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.admin-customer-workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.75fr) minmax(0, 1.35fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.admin-customer-results-panel,
+.admin-customer-profile-panel,
+.admin-monitoring-panel {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.admin-customer-result-list,
+.admin-monitoring-list,
+.admin-address-list,
+.admin-customer-order-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-customer-result-card {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  padding: 13px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: #fbfcfd;
+  color: var(--admin-text);
+  text-align: left;
+}
+
+button.admin-customer-result-card {
+  cursor: pointer;
+}
+
+.admin-customer-result-card:hover:not(:disabled),
+.admin-customer-result-card:focus-visible,
+.admin-customer-result-card.is-selected {
+  border-color: rgba(0, 100, 145, 0.34);
+  box-shadow: 0 0 0 3px rgba(0, 100, 145, 0.1);
+}
+
+.admin-customer-result-card strong,
+.admin-customer-profile-header h3,
+.admin-error-event-card strong {
+  color: var(--admin-text);
+}
+
+.admin-customer-result-card small,
+.admin-customer-result-card span:not(:first-child),
+.admin-customer-profile-header span,
+.admin-customer-profile-header p,
+.admin-failed-order-row > span,
+.admin-error-event-header p {
+  color: var(--admin-muted);
+}
+
+.admin-customer-result-card span:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-customer-profile,
+.admin-customer-profile-skeleton,
+.admin-customer-subsection {
+  display: grid;
+  gap: 14px;
+}
+
+.admin-customer-profile-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--admin-border);
+}
+
+.admin-customer-profile-header h3 {
+  margin: 4px 0;
+  font-size: 26px;
+}
+
+.admin-phone-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--admin-blue);
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.admin-phone-link:hover {
+  text-decoration: underline;
+}
+
+.admin-address-card,
+.admin-customer-order-card,
+.admin-failed-order-row,
+.admin-error-event-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.admin-address-card > div,
+.admin-customer-order-card > div,
+.admin-failed-order-row > div,
+.admin-error-event-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+}
+
+.admin-address-card p {
+  margin: 0;
+}
+
+.admin-customer-order-card {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+}
+
+.admin-monitoring-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.admin-monitoring-summary-card {
+  min-height: 122px;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 16px;
+  border: 1px solid var(--admin-border);
+  border-top: 4px solid var(--admin-blue);
+  border-radius: 8px;
+  background: var(--admin-surface);
+  box-shadow: 0 1px 2px rgba(11, 45, 77, 0.04);
+}
+
+.admin-monitoring-summary-card span {
+  color: var(--admin-muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.admin-monitoring-summary-card strong {
+  color: var(--admin-navy);
+  font-size: 26px;
+  line-height: 1.1;
+}
+
+.admin-monitoring-summary-card p {
+  margin: 0;
+  color: var(--admin-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.admin-monitoring-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.admin-monitoring-toolbar {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.admin-failed-order-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+}
+
+.admin-error-event-card {
+  background: var(--admin-surface);
+}
+
+.admin-event-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  color: var(--admin-danger);
+  background: rgba(201, 52, 52, 0.1);
+}
+
+.admin-redacted-details {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.admin-redacted-details div {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.admin-redacted-details dt {
+  color: var(--admin-muted);
+  font-weight: 900;
+}
+
+.admin-redacted-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-technical-details {
+  border-top: 1px solid var(--admin-border);
+  padding-top: 10px;
+}
+
+.admin-technical-details summary {
+  cursor: pointer;
+  color: var(--admin-blue);
+  font-weight: 900;
+}
+
 @keyframes admin-skeleton {
   from {
     background-position: 100% 0;
@@ -1761,6 +2033,15 @@ button {
 
   .admin-order-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .admin-customer-workspace,
+  .admin-monitoring-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-monitoring-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .admin-status-pipeline {
@@ -1855,7 +2136,15 @@ button {
   .admin-orders-toolbar,
   .admin-menu-summary,
   .admin-menu-toolbar,
-  .admin-menu-form {
+  .admin-menu-form,
+  .admin-customer-search-form,
+  .admin-monitoring-summary,
+  .admin-monitoring-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-customer-order-card,
+  .admin-failed-order-row {
     grid-template-columns: 1fr;
   }
 
@@ -1955,6 +2244,10 @@ button {
   }
 
   .admin-customization-list div {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-redacted-details div {
     grid-template-columns: 1fr;
   }
 }
