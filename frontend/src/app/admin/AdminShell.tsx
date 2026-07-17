@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { adminPost } from "@/lib/adminApi";
 
 type AdminShellProps = {
@@ -126,12 +126,51 @@ function formatEnvironmentLabel(branchId: string | undefined) {
 export function AdminShell({ title, subtitle, actions, children }: AdminShellProps) {
   const pathname = usePathname();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileDrawerRef = useRef<HTMLDivElement>(null);
   const branchId = process.env.NEXT_PUBLIC_BRANCH_ID;
   const environmentLabel = formatEnvironmentLabel(branchId);
 
+  useEffect(() => {
+    if (!isDrawerOpen) {
+      return;
+    }
+    const firstLink = mobileDrawerRef.current?.querySelector<HTMLAnchorElement | HTMLButtonElement>("a, button");
+    firstLink?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsDrawerOpen(false);
+        menuButtonRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isDrawerOpen]);
+
+  function closeDrawer() {
+    setIsDrawerOpen(false);
+    menuButtonRef.current?.focus();
+  }
+
   async function logout() {
-    await adminPost("/api/admin/logout", {});
-    window.location.href = "/admin/login";
+    if (isSigningOut) {
+      return;
+    }
+    setIsSigningOut(true);
+    setLogoutError("");
+    try {
+      await adminPost("/api/admin/logout", {});
+      window.location.href = "/admin/login";
+    } catch (exc) {
+      if (!(exc instanceof Error)) {
+        throw exc;
+      }
+      setLogoutError("Sign out could not be completed. Please try again.");
+      setIsSigningOut(false);
+      console.warn("Admin sign-out failed", { reason: "request_rejected_or_unavailable" });
+    }
   }
 
   const sidebar = (
@@ -166,32 +205,43 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
           );
         })}
       </nav>
-      <button className="admin-logout-button" onClick={() => void logout()} type="button">
+      {logoutError && <p className="admin-sidebar-error" role="alert">{logoutError}</p>}
+      <button className="admin-logout-button" disabled={isSigningOut} onClick={() => void logout()} type="button">
         <AdminIcon name="logout" />
-        <span>Logout</span>
+        <span>{isSigningOut ? "Signing out..." : "Logout"}</span>
       </button>
     </aside>
   );
 
   return (
     <div className="admin-layout">
+      <a className="admin-skip-link" href="#admin-main-content">Skip to main content</a>
       <div className="admin-desktop-sidebar">{sidebar}</div>
       {isDrawerOpen && (
         <button
           aria-label="Close admin navigation"
           className="admin-drawer-scrim"
-          onClick={() => setIsDrawerOpen(false)}
+          onClick={closeDrawer}
           type="button"
         />
       )}
-      <div className={`admin-mobile-drawer${isDrawerOpen ? " is-open" : ""}`}>{sidebar}</div>
+      <div
+        aria-label="Mobile admin navigation"
+        className={`admin-mobile-drawer${isDrawerOpen ? " is-open" : ""}`}
+        id="admin-mobile-navigation"
+        ref={mobileDrawerRef}
+      >
+        {sidebar}
+      </div>
       <div className="admin-main-shell">
         <header className="admin-topbar">
           <button
+            aria-controls="admin-mobile-navigation"
             aria-expanded={isDrawerOpen}
             aria-label="Open admin navigation"
             className="admin-menu-button"
             onClick={() => setIsDrawerOpen(true)}
+            ref={menuButtonRef}
             type="button"
           >
             <AdminIcon name="menuToggle" />
@@ -206,7 +256,7 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
           </div>
           {actions && <div className="admin-topbar-actions">{actions}</div>}
         </header>
-        <main className="admin-content">{children}</main>
+        <main className="admin-content" id="admin-main-content" tabIndex={-1}>{children}</main>
       </div>
     </div>
   );
