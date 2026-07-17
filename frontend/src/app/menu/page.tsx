@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api";
 import { getLocalCustomerId, getLocalSessionId } from "@/lib/session";
 import type { MenuItem, MenuOrderItem, OptionGroup, ToolResponse } from "@/types";
@@ -29,14 +29,7 @@ export default function MenuPage() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const itemId = params.get("item_id");
-    void loadMenu("");
-    if (itemId) void selectItem(itemId);
-  }, []);
-
-  async function loadMenu(nextQuery = query) {
+  const loadMenu = useCallback(async (nextQuery: string) => {
     setLoading(true);
     try {
       const suffix = nextQuery ? `?query=${encodeURIComponent(nextQuery)}` : "";
@@ -47,9 +40,9 @@ export default function MenuPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
-  async function selectItem(itemId: string) {
+  const selectItem = useCallback(async (itemId: string) => {
     setLoading(true);
     try {
       const response = await apiGet<ItemResponse>(`/api/menu/items/${itemId}`);
@@ -62,7 +55,14 @@ export default function MenuPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const itemId = params.get("item_id");
+    void loadMenu("");
+    if (itemId) void selectItem(itemId);
+  }, [loadMenu, selectItem]);
 
   function choose(group: OptionGroup, optionId: string) {
     setChoices((current) => {
@@ -142,7 +142,7 @@ export default function MenuPage() {
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search menu"
             />
-            <button className="primary" onClick={() => loadMenu()} type="button">
+            <button className="primary" onClick={() => loadMenu(query)} type="button">
               Search
             </button>
           </div>
