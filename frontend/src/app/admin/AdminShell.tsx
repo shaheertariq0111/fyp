@@ -1,36 +1,226 @@
 "use client";
 
 import Link from "next/link";
-import { ReactNode } from "react";
+import { usePathname } from "next/navigation";
+import { ReactNode, useState } from "react";
 import { adminPost } from "@/lib/adminApi";
 
-export function AdminShell({ title, children }: { title: string; children: ReactNode }) {
+type AdminShellProps = {
+  title: string;
+  subtitle?: string;
+  actions?: ReactNode;
+  children: ReactNode;
+};
+
+type IconName = "overview" | "orders" | "menu" | "customers" | "monitoring" | "logout" | "menuToggle";
+
+const navigationItems: Array<{ href: string; label: string; icon: IconName }> = [
+  { href: "/admin", label: "Overview", icon: "overview" },
+  { href: "/admin/orders", label: "Live Orders", icon: "orders" },
+  { href: "/admin/menu", label: "Menu", icon: "menu" },
+  { href: "/admin/customers", label: "Customers", icon: "customers" },
+  { href: "/admin/monitoring", label: "Monitoring", icon: "monitoring" },
+];
+
+function AdminIcon({ name }: { name: IconName }) {
+  const common = {
+    width: 18,
+    height: 18,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  switch (name) {
+    case "overview":
+      return (
+        <svg {...common}>
+          <path d="M4 13h6V4H4z" />
+          <path d="M14 20h6v-9h-6z" />
+          <path d="M4 20h6v-3H4z" />
+          <path d="M14 7h6V4h-6z" />
+        </svg>
+      );
+    case "orders":
+      return (
+        <svg {...common}>
+          <path d="M7 4h10" />
+          <path d="M6 8h12" />
+          <path d="M8 12h8" />
+          <path d="M5 20h14l-1-12H6z" />
+        </svg>
+      );
+    case "menu":
+      return (
+        <svg {...common}>
+          <path d="M4 6h16" />
+          <path d="M4 12h16" />
+          <path d="M4 18h10" />
+        </svg>
+      );
+    case "customers":
+      return (
+        <svg {...common}>
+          <path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2" />
+          <circle cx="9.5" cy="7" r="4" />
+          <path d="M20 21v-2a3 3 0 0 0-2-2.83" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+        </svg>
+      );
+    case "monitoring":
+      return (
+        <svg {...common}>
+          <path d="M4 19V5" />
+          <path d="M4 19h16" />
+          <path d="M8 16v-5" />
+          <path d="M12 16V8" />
+          <path d="M16 16v-3" />
+        </svg>
+      );
+    case "logout":
+      return (
+        <svg {...common}>
+          <path d="M10 17l5-5-5-5" />
+          <path d="M15 12H3" />
+          <path d="M21 19V5" />
+        </svg>
+      );
+    case "menuToggle":
+      return (
+        <svg {...common}>
+          <path d="M4 7h16" />
+          <path d="M4 12h16" />
+          <path d="M4 17h16" />
+        </svg>
+      );
+  }
+}
+
+function isActiveRoute(pathname: string, href: string) {
+  if (href === "/admin") {
+    return pathname === href;
+  }
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+export function humanizeStatus(status: string) {
+  return status
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatEnvironmentLabel(branchId: string | undefined) {
+  const trimmed = branchId?.trim() ?? "";
+  if (!trimmed || trimmed.toLowerCase() === "default") {
+    return "Local development";
+  }
+  return trimmed;
+}
+
+export function AdminShell({ title, subtitle, actions, children }: AdminShellProps) {
+  const pathname = usePathname();
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const branchId = process.env.NEXT_PUBLIC_BRANCH_ID;
+  const environmentLabel = formatEnvironmentLabel(branchId);
+
   async function logout() {
     await adminPost("/api/admin/logout", {});
     window.location.href = "/admin/login";
   }
 
+  const sidebar = (
+    <aside className="admin-sidebar" aria-label="Admin navigation">
+      <div className="admin-sidebar-brand">
+        <span className="admin-brand-mark" aria-hidden="true">
+          <span />
+        </span>
+        <span>
+          <strong>Pizza Operations</strong>
+          <small>Restaurant Control Center</small>
+        </span>
+      </div>
+      <div className="admin-branch-indicator">
+        <span>Environment</span>
+        <strong>{environmentLabel}</strong>
+      </div>
+      <nav className="admin-sidebar-nav" aria-label="Admin sections">
+        {navigationItems.map((item) => {
+          const active = isActiveRoute(pathname, item.href);
+          return (
+            <Link
+              aria-current={active ? "page" : undefined}
+              className={`admin-nav-item${active ? " is-active" : ""}`}
+              href={item.href}
+              key={item.href}
+              onClick={() => setIsDrawerOpen(false)}
+            >
+              <AdminIcon name={item.icon} />
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
+      </nav>
+      <button className="admin-logout-button" onClick={() => void logout()} type="button">
+        <AdminIcon name="logout" />
+        <span>Logout</span>
+      </button>
+    </aside>
+  );
+
   return (
-    <main className="admin-shell">
-      <aside className="admin-nav">
-        <div className="admin-brand">MVP Pizza Admin</div>
-        <Link href="/admin">Dashboard</Link>
-        <Link href="/admin/orders">Live Orders</Link>
-        <Link href="/admin/menu">Menu</Link>
-        <Link href="/admin/customers">Customers</Link>
-        <Link href="/admin/monitoring">Monitoring</Link>
-        <button className="admin-nav-button" onClick={logout}>Logout</button>
-      </aside>
-      <section className="admin-content">
-        <header className="admin-header">
-          <h1>{title}</h1>
+    <div className="admin-layout">
+      <div className="admin-desktop-sidebar">{sidebar}</div>
+      {isDrawerOpen && (
+        <button
+          aria-label="Close admin navigation"
+          className="admin-drawer-scrim"
+          onClick={() => setIsDrawerOpen(false)}
+          type="button"
+        />
+      )}
+      <div className={`admin-mobile-drawer${isDrawerOpen ? " is-open" : ""}`}>{sidebar}</div>
+      <div className="admin-main-shell">
+        <header className="admin-topbar">
+          <button
+            aria-expanded={isDrawerOpen}
+            aria-label="Open admin navigation"
+            className="admin-menu-button"
+            onClick={() => setIsDrawerOpen(true)}
+            type="button"
+          >
+            <AdminIcon name="menuToggle" />
+          </button>
+          <div className="admin-topbar-title">
+            <span className="admin-live-badge">
+              <span aria-hidden="true" />
+              Operations Console
+            </span>
+            <h1>{title}</h1>
+            {subtitle && <p>{subtitle}</p>}
+          </div>
+          {actions && <div className="admin-topbar-actions">{actions}</div>}
         </header>
-        {children}
-      </section>
-    </main>
+        <main className="admin-content">{children}</main>
+      </div>
+    </div>
   );
 }
 
 export function money(value?: number, currency = "PKR") {
-  return `${currency} ${value ?? 0}`;
+  const safeValue = value ?? 0;
+  try {
+    return new Intl.NumberFormat("en-PK", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: Number.isInteger(safeValue) ? 0 : 2,
+    }).format(safeValue);
+  } catch {
+    return `${currency} ${safeValue}`;
+  }
 }
