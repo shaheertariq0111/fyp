@@ -197,16 +197,9 @@ def get_active_cart() -> dict:
 
 @tool
 def get_order_status(order_id: str | None = None) -> dict:
-    """Read order status for genuine tracking/status requests."""
+    """Read one authorized order or the current user's active orders from DynamoDB."""
     context = get_request_context()
     return _result("get_order_status", lambda: get_services().orders.get_order_status(context.user_id, order_id))
-
-
-@tool
-def check_active_orders() -> dict:
-    """Read active-order routing state before starting a new order."""
-    context = get_request_context()
-    return _result("check_active_orders", lambda: get_services().orders.check_active_orders(context.user_id))
 
 
 @tool
@@ -268,7 +261,6 @@ MVP_TOOLS = [
     create_pending_order_from_cart,
     update_order_flow,
     get_active_cart,
-    check_active_orders,
     get_order_status,
     get_customer_profile,
     update_customer_profile,

@@ -18,19 +18,6 @@ ORDER_TRANSITIONS = {
 }
 
 TERMINAL_STATUSES = {"delivered", "completed", "rejected", "cancelled", "failed"}
-UNFINISHED_ORDER_STATUSES = {
-    "awaiting_fulfillment_method",
-    "awaiting_delivery_address",
-    "pending_confirmation",
-}
-PLACED_ACTIVE_ORDER_STATUSES = {
-    "submitted_to_restaurant",
-    "accepted",
-    "preparing",
-    "ready_for_pickup",
-    "out_for_delivery",
-}
-ACTIVE_ORDER_STATUSES = UNFINISHED_ORDER_STATUSES | PLACED_ACTIVE_ORDER_STATUSES
 ADMIN_ORDER_TRANSITIONS = {
     ("submitted_to_restaurant", "accept"): "accepted",
     ("submitted_to_restaurant", "reject"): "rejected",
@@ -172,49 +159,6 @@ class OrderService:
             }
         return ToolResponse.ok(data=data, user_message="Here is the current order status.",
                                next_action="present_order_status", agent=agent)
-
-    def check_active_orders(self, user_id: str) -> ToolResponse:
-        active_orders = [
-            self._active_order_summary(order)
-            for order in self.orders.list_active(user_id, TERMINAL_STATUSES)
-            if order.get("status") in ACTIVE_ORDER_STATUSES
-        ]
-        unfinished_orders = [
-            order for order in active_orders
-            if order.get("status") in UNFINISHED_ORDER_STATUSES
-        ]
-        placed_orders = [
-            order for order in active_orders
-            if order.get("status") in PLACED_ACTIVE_ORDER_STATUSES
-        ]
-        routing_guidance = self._active_order_routing_guidance(
-            unfinished_orders,
-            placed_orders,
-        )
-        data = {
-            "has_active_orders": bool(active_orders),
-            "active_order_count": len(active_orders),
-            "unfinished_orders": unfinished_orders,
-            "placed_orders": placed_orders,
-            "routing_guidance": routing_guidance,
-        }
-        agent = {
-            "entity": "active_orders_check",
-            **data,
-            "valid_next_actions": [
-                "get_order_status",
-                "update_order_flow",
-                "search_menu",
-                "create_menu_session_link",
-            ],
-            "instruction": routing_guidance["instruction"],
-        }
-        return ToolResponse.ok(
-            data=data,
-            user_message="Active order check completed.",
-            next_action=routing_guidance["next_action"],
-            agent=agent,
-        )
 
     def admin_list_orders(self, status: str | None = None, limit: int = 50) -> dict:
         orders = [self._public(order) for order in self.orders.list_all()]
@@ -396,82 +340,6 @@ class OrderService:
             "awaiting_delivery_address": ["update_order_flow:save_address", "update_order_flow:cancel"],
             "submitted_to_restaurant": ["get_order_status"],
         }.get(status, [])
-
-    @classmethod
-    def _active_order_summary(cls, order):
-        return {
-            "order_id": order.get("order_id"),
-            "status": order.get("status"),
-            "next_action": cls._next_action(order.get("status")),
-            "required_input": cls._required_input(order.get("status")),
-            "item_count": len(order.get("items", [])),
-            "subtotal": order.get("subtotal"),
-            "total": order.get("total"),
-            "currency": order.get("currency"),
-            "fulfillment_method": order.get("fulfillment_method"),
-            "updated_at": order.get("updated_at"),
-        }
-
-    @staticmethod
-    def _active_order_routing_guidance(unfinished_orders, placed_orders):
-        if unfinished_orders:
-            return {
-                "route": "resolve_unfinished_order_choice",
-                "next_action": "ask_unfinished_order_choice",
-                "customer_message": (
-                    "You have an unfinished order. Would you like to continue it, "
-                    "cancel it, or start a separate order?"
-                ),
-                "instruction": (
-                    "Tell the customer there is an unfinished pre-submission order. "
-                    "Offer to continue it, cancel it, or start a separate order. "
-                    "Do not silently resume, overwrite, merge, or modify any placed order. "
-                    "If the customer chooses continue or cancel, use the returned order_id "
-                    "with the proper order tool. If they choose a separate order, begin "
-                    "menu browsing without repeating this active-order check immediately."
-                ),
-            }
-        if len(placed_orders) == 1:
-            return {
-                "route": "resolve_placed_active_order_choice",
-                "next_action": "ask_active_order_choice",
-                "customer_message": (
-                    "You already have an active order. Changes cannot be made once an order "
-                    "has been placed, but you can check its status or start a separate order. "
-                    "Which would you like to do?"
-                ),
-                "instruction": (
-                    "Tell the customer they already have an active placed order and use the "
-                    "customer_message wording. Do not modify that placed order. If they choose "
-                    "status, call get_order_status. If they choose a separate order, begin menu "
-                    "browsing without repeating this active-order check immediately."
-                ),
-            }
-        if len(placed_orders) > 1:
-            return {
-                "route": "resolve_placed_active_order_choice",
-                "next_action": "ask_active_order_choice",
-                "customer_message": (
-                    "You already have active orders. Changes cannot be made once orders have "
-                    "been placed, but you can check their status or start a separate order. "
-                    "Which would you like to do?"
-                ),
-                "instruction": (
-                    "Tell the customer they already have multiple active placed orders and use "
-                    "plural wording. Do not modify, merge, or overwrite those orders. If they "
-                    "choose status, call get_order_status. If they choose a separate order, "
-                    "begin menu browsing without repeating this active-order check immediately."
-                ),
-            }
-        return {
-            "route": "begin_new_order",
-            "next_action": "begin_menu_browsing",
-            "customer_message": "No active orders were found. Begin menu or chat ordering normally.",
-            "instruction": (
-                "No active orders were found for this customer. Begin menu browsing or chat "
-                "ordering normally. Offer the menu website or ask what item/category they want."
-            ),
-        }
 
     @staticmethod
     def _admin_allowed_actions(order):
