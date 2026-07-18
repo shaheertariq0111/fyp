@@ -361,10 +361,19 @@ def test_chat_order_start_help_text_is_not_false_success(monkeypatch):
         SimpleNamespace(
             message={"content": [{"text": text}]},
             tool_calls=[{
-                "tool_name": "get_order_status",
+                "tool_name": "check_active_orders",
                 "success": True,
                 "is_write": False,
-                "result": {"success": True, "data": {"orders": []}, "user_message": "ok"},
+                "result": {
+                    "success": True,
+                    "data": {
+                        "has_active_orders": False,
+                        "active_order_count": 0,
+                        "unfinished_orders": [],
+                        "placed_orders": [],
+                    },
+                    "user_message": "ok",
+                },
                 "error_code": None,
             }],
         ),

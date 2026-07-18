@@ -20,9 +20,18 @@ def test_system_prompt_requires_tool_grounding():
     )
     assert "STARTING OR RESUMING AN ORDER" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "broad phrases are not menu-item names" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "First call check_active_orders" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "Do not use it for broad \"I want to order\" starts" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "If the customer chooses \"check status\", call get_order_status" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
+    assert "If the customer chooses \"start a separate order\"" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
+    assert "Multiple active orders are allowed" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "Do not say the item is added unless this tool succeeds" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "fulfillment details" in RESTAURANT_AGENT_SYSTEM_PROMPT
-    assert "Confirm submits" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "A successful confirm submits the order" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "Never say \"confirmed\", \"cancelled\", or \"updated\"" in (
         RESTAURANT_AGENT_SYSTEM_PROMPT
     )
@@ -36,9 +45,7 @@ def test_system_prompt_requires_tool_grounding():
     assert "Do not answer cart contents from memory" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "get_active_cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "A cart_id is never an order_id" in RESTAURANT_AGENT_SYSTEM_PROMPT
-    assert "get_active_cart returns no cart but includes active orders" in (
-        RESTAURANT_AGENT_SYSTEM_PROMPT
-    )
+    assert "get_active_cart returns no cart but includes active orders" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "update_customer_profile" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "save_customer_address" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "Customer name and phone number must come from trusted request context" in (
