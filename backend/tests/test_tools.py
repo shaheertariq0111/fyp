@@ -27,14 +27,6 @@ class CartStub:
         )
 
 
-class OrderStub:
-    def check_active_orders(self, user_id):
-        return ToolResponse.ok(
-            data={"has_active_orders": False, "checked_user_id": user_id},
-            user_message="active orders",
-        )
-
-
 class CustomerStub:
     def get_profile(self, customer_id):
         return ToolResponse.ok(data={"customer": {"customer_id": customer_id}}, user_message="ok")
@@ -50,10 +42,8 @@ class CustomerStub:
 
 
 def test_mvp_tools_include_active_cart_lookup():
-    assert len(tools.MVP_TOOLS) == 16
+    assert len(tools.MVP_TOOLS) == 15
     assert tools.get_active_cart in tools.MVP_TOOLS
-    assert tools.check_active_orders in tools.MVP_TOOLS
-    assert "check_active_orders" not in tools.WRITE_TOOLS
     assert tools.get_customer_profile in tools.MVP_TOOLS
     assert tools.update_customer_profile in tools.MVP_TOOLS
     assert tools.save_customer_address in tools.MVP_TOOLS
@@ -87,17 +77,6 @@ def test_get_active_cart_uses_trusted_user_and_session(monkeypatch):
     assert result["data"]["cart"] == {
         "user_id": "trusted-user",
         "session_id": "trusted-session",
-    }
-
-
-def test_check_active_orders_uses_trusted_user_context(monkeypatch):
-    container = SimpleNamespace(orders=OrderStub())
-    monkeypatch.setattr(tools, "get_services", lambda: container)
-    with request_context(AgentRequestContext("trusted-user", "trusted-session")):
-        result = tools.check_active_orders()
-    assert result["data"] == {
-        "has_active_orders": False,
-        "checked_user_id": "trusted-user",
     }
 
 
