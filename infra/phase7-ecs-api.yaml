@@ -126,6 +126,10 @@ Parameters:
     Type: String
     Default: ""
     Description: Exact ARN of the AgentCore Memory used by the runtime.
+  AgentCoreGuardrailId:
+    Type: String
+    Default: ""
+    Description: Exact Amazon Bedrock Guardrail ID used by the AgentCore runtime.
   AgentCoreSessionTokenSecretArn:
     Type: String
     Default: ""
@@ -157,6 +161,7 @@ Conditions:
   HasSessionTokenSecret: !Not [!Equals [!Ref SessionTokenSecretArn, ""]]
   HasAdminPasswordSecret: !Not [!Equals [!Ref AdminPasswordSecretArn, ""]]
   HasAdminSessionSecret: !Not [!Equals [!Ref AdminSessionSecretArn, ""]]
+  HasAgentCoreGuardrailId: !Not [!Equals [!Ref AgentCoreGuardrailId, ""]]
 
 Resources:
   BackendRepository:
@@ -516,6 +521,25 @@ Resources:
               StringEquals:
                 bedrock:InferenceProfileArn: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-pro-v1:0
 
+  AgentCoreExecutionGuardrailPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAgentCoreGuardrailId
+    Properties:
+      PolicyName: !Sub ${ProjectName}-agentcore-guardrail-cfn
+      Roles:
+        - !Ref AgentCoreExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ApplyConfiguredRestaurantGuardrail
+            Effect: Allow
+            Action:
+              - bedrock:ApplyGuardrail
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${AgentCoreGuardrailId}
+              - !Sub arn:${AWS::Partition}:bedrock:us-east-1:${AWS::AccountId}:guardrail-profile/us.guardrail.v1:0
+              - !Sub arn:${AWS::Partition}:bedrock:us-east-2:${AWS::AccountId}:guardrail-profile/us.guardrail.v1:0
+              - !Sub arn:${AWS::Partition}:bedrock:us-west-2:${AWS::AccountId}:guardrail-profile/us.guardrail.v1:0
   AgentCoreExecutionMemoryPolicy:
     Type: AWS::IAM::Policy
     Condition: HasAgentCoreMemoryArn
