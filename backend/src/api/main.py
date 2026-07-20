@@ -157,7 +157,11 @@ def _raise_if_error(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_calls_from_result(result: Any) -> list[ToolCallResult]:
-    raw_calls = getattr(result, "tool_calls", []) or []
+    if isinstance(result, dict):
+        raw_calls = result.get("tool_calls", []) or []
+    else:
+        raw_calls = getattr(result, "tool_calls", []) or []
+
     calls: list[ToolCallResult] = []
     for call in raw_calls:
         if isinstance(call, ToolCallResult):
