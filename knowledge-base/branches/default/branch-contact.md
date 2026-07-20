@@ -1,10 +1,8 @@
 # Default Branch Contact Information
 
-## Contacting the branch
+## Getting support
 
-Customers may request assistance through the restaurant's ordering assistant.
-
-The ordering assistant can help with:
+Customers may request assistance through the restaurant's ordering service for:
 
 * General restaurant questions
 * Delivery and takeaway policies
@@ -12,50 +10,47 @@ The ordering assistant can help with:
 * Complaints
 * Refund and cancellation requests
 * Allergy and dietary questions
-* Requests for human support
+* Human support requests
 
-Some requests may require review by authorized restaurant staff.
+Some requests require review and confirmation from restaurant staff.
 
 ## Phone and email contact
 
-A verified public phone number and email address are not currently included in the approved restaurant information.
+A public branch phone number and customer-support email address are not currently available through this service.
 
-The ordering assistant must not invent or guess:
+Customers should use contact details displayed by the live ordering system or provided directly by restaurant staff.
 
-* A branch phone number
-* A customer-support number
-* An email address
-* A staff member's personal contact details
-
-Phone or email details may be provided only when they are available through an approved live system or authorized restaurant information.
+Private staff contact information is not provided.
 
 ## Branch address
 
-The physical collection address for the default branch must come from the live ordering system or approved branch information.
+The default branch's physical collection address must be obtained from the live ordering system or directly from restaurant staff.
 
-Customers should confirm the selected collection branch and address before completing a takeaway order.
+Customers should confirm the selected collection branch and its displayed address before completing a takeaway order.
 
-The ordering assistant must not invent a street address, postcode, landmark or map location.
+A street address, postcode, landmark or map location should not be relied upon unless it is displayed by the ordering system or confirmed by restaurant staff.
 
 ## Support availability
 
-Customer support is normally available during the branch's approved operating hours.
+Customer support is normally available during the branch's operating hours.
 
 Requests submitted outside operating hours may not receive an immediate response.
 
-The standard operating hours do not guarantee that human support is currently available.
+The branch's standard opening hours do not guarantee that a staff member is immediately available.
 
 ## Order-specific support
 
-Customers requesting help with an existing order should provide the order reference when available.
+Customers requesting assistance with an existing order should provide the order reference when available.
 
-Restaurant staff may also request reasonable information to verify the customer or order.
+Restaurant staff may request reasonable information to verify the customer and locate the order.
 
-The ordering assistant must not disclose order information when the requester cannot be reasonably associated with the order.
+Order information can be provided only when the requester can be reasonably associated with that order.
+
+Another customer's order or contact information will not be disclosed.
 
 ## Human support requests
 
-Customers may ask for their issue to be reviewed by authorized restaurant staff.
+Customers may ask for an issue to be reviewed by restaurant staff.
 
 Human review may be required when:
 
@@ -65,26 +60,28 @@ Human review may be required when:
 * A complaint requires investigation
 * A food-safety concern is reported
 * An allergy concern requires confirmation
-* The customer disputes an order or payment record
-* The ordering assistant cannot resolve the issue
+* A customer disputes an order or payment record
+* The ordering service cannot resolve the issue
 
-Requesting human support does not guarantee a particular outcome.
+Requesting human support does not guarantee a particular decision or outcome.
+
+An issue should be described as escalated only after the support request has been successfully recorded or confirmed.
 
 ## Complaint acknowledgement
 
 The restaurant aims to acknowledge submitted complaints within four hours.
 
-This is a service target, not a guaranteed resolution time.
+This is a service target and not a guaranteed resolution time.
 
 Complex complaints may require additional investigation.
 
 ## Emergency situations
 
-The ordering assistant and restaurant support are not emergency services.
+The restaurant's ordering and support services are not emergency services.
 
-Customers experiencing a medical emergency, serious allergic reaction, immediate danger or other urgent emergency should contact local emergency services.
+Customers experiencing a medical emergency, serious allergic reaction, immediate danger or another urgent emergency should contact local emergency services immediately.
 
-Restaurant support may provide relevant order information but cannot diagnose or treat a medical condition.
+Restaurant support may provide relevant order or ingredient information but cannot diagnose or treat a medical condition.
 
 ## Protecting customer information
 
@@ -94,20 +91,19 @@ Customers should not provide:
 * One-time passwords
 * Banking credentials
 * Card information
-* AWS credentials
+* Account recovery codes
 * Private authentication tokens
+* Unrelated personal information
 
-Only information reasonably required to locate an order or investigate an issue should be requested.
+Only information reasonably required to locate an order or investigate an issue should be shared.
 
-## Unsupported contact claims
+## Contact and support limitations
 
-The ordering assistant must not:
+The restaurant cannot guarantee:
 
-* Invent a phone number or email address
-* Invent a physical branch address
-* Disclose a staff member's private contact information
-* Guarantee immediate human support
-* Claim that an issue has been escalated without confirmation
-* Guarantee resolution within four hours
-* Treat restaurant support as an emergency service
-* Disclose another customer's order or contact information
+* Immediate human support
+* Complaint resolution within four hours
+* A particular refund, cancellation or complaint outcome
+* Escalation before a support request has been recorded
+* Availability of a public branch phone number or email address through this service
+* Availability of a physical branch address unless it is displayed or confirmed

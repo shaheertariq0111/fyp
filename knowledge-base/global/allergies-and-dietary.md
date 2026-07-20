@@ -25,25 +25,27 @@ Pizza and related restaurant items may contain or come into contact with common 
 * Shellfish
 * Mustard
 
-This list is not guaranteed to be complete.
+This list may not include every possible allergen.
 
-Ingredient formulations and suppliers may change. The ordering assistant must not assume that an item is free from an allergen unless approved information explicitly confirms it.
+Ingredients and suppliers may change. An item should not be treated as free from an allergen unless current restaurant information clearly confirms it.
 
 ## Severe allergies
 
-Customers with severe or life-threatening allergies should not rely only on the ordering assistant.
+Customers with severe or life-threatening allergies should contact restaurant staff directly before ordering and explain the allergy clearly.
 
-They should contact restaurant staff directly before ordering and explain the allergy clearly.
+The ordering chat should not be used as the only source of safety information for a severe allergy.
 
-If restaurant staff cannot confirm whether an item is suitable, the safest response is that suitability cannot be guaranteed.
+When restaurant staff cannot confirm whether an item is suitable, its safety cannot be guaranteed.
 
-The ordering assistant must not tell a customer with a severe allergy that an item is safe.
+No menu item should be treated as safe for a severe allergy unless suitability has been confirmed directly by restaurant staff.
 
 ## Ingredient information
 
-Current ingredients, menu options and supported customizations must come from approved restaurant data.
+Current ingredient details, menu options and supported customizations are provided through the restaurant's current menu and restaurant information.
 
-The ordering assistant must not invent:
+When ingredient or allergen information is unavailable or uncertain, suitability cannot be confirmed.
+
+Customers should not rely on assumptions about:
 
 * Ingredients
 * Preparation methods
@@ -51,8 +53,6 @@ The ordering assistant must not invent:
 * Ingredient substitutions
 * Dietary certifications
 * Cross-contact controls
-
-When ingredient information is unavailable or uncertain, the assistant must say that it cannot confirm suitability.
 
 ## Ingredient removal
 
@@ -64,15 +64,15 @@ The same principle applies to gluten, nuts, eggs, soy, sesame and other allergen
 
 ## Gluten-free requests
 
-The restaurant does not guarantee that an item is gluten-free unless it is explicitly identified as such in approved restaurant information.
+An item should be treated as gluten-free only when current restaurant information explicitly identifies it as gluten-free.
 
-Even when a gluten-free ingredient or base is available, cross-contact with wheat or gluten may still occur in shared preparation and cooking areas.
+Even when a gluten-free ingredient or base is available, cross-contact with wheat or gluten may occur in shared preparation and cooking areas.
 
-The ordering assistant must not describe an item as suitable for coeliac disease unless approved restaurant information explicitly supports that claim.
+Suitability for coeliac disease cannot be guaranteed unless the restaurant has explicitly confirmed it.
 
 ## Dairy-free requests
 
-An item must not be described as dairy-free unless approved restaurant information explicitly confirms it.
+An item should be treated as dairy-free only when current restaurant information explicitly identifies it as dairy-free.
 
 Removing cheese does not automatically make a pizza dairy-free because dough, sauces, toppings or shared preparation areas may contain or come into contact with dairy.
 
@@ -86,15 +86,15 @@ Customers with severe nut allergies should contact restaurant staff directly bef
 
 ## Vegetarian items
 
-An item may be described as vegetarian only when the live menu or approved restaurant information explicitly identifies it as vegetarian.
+An item should be described as vegetarian only when the current menu or restaurant information identifies it as vegetarian.
 
-The ordering assistant must not infer that an item is vegetarian only because no meat is visible in its name or description.
+The absence of meat from an item's name or description does not confirm that it is vegetarian.
 
 Shared preparation areas may involve contact with non-vegetarian ingredients.
 
 ## Vegan items
 
-An item may be described as vegan only when approved restaurant information explicitly identifies it as vegan.
+An item should be described as vegan only when current restaurant information identifies it as vegan.
 
 Removing cheese or meat does not automatically make an item vegan.
 
@@ -104,13 +104,11 @@ Dough, sauces, seasonings, toppings or preparation processes may contain or invo
 
 All menu items served by the restaurant are halal.
 
-All menu items are prepared in accordance with halal standards, as confirmed by the restaurant. The ordering assistant may state this when customers ask about halal status.
+The restaurant confirms that all menu items are prepared according to halal standards.
 
-The ordering assistant may confirm halal status when customers ask.
+The restaurant does not currently provide a specific third-party halal certificate, certification authority or certificate number through this service.
 
-The restaurant does not currently claim a specific third-party halal certificate, certification authority, or certificate number through this Knowledge Base.
-
-The ordering assistant does not need to perform a per-item certification lookup before confirming the restaurant-approved halal status.
+Halal preparation may therefore be confirmed, but formal third-party certification should not be claimed without separate documentary evidence.
 
 ## Other dietary requirements
 
@@ -125,13 +123,13 @@ Customers may ask about dietary requirements such as:
 * Ingredient avoidance
 * Pregnancy-related food concerns
 
-The ordering assistant may provide only approved restaurant information.
+Only current restaurant information can confirm ingredients or suitability.
 
-It must not provide medical, nutritional or religious rulings.
+Restaurant information should not be treated as medical, nutritional or religious advice.
 
-## Customer instructions
+## Customer responsibilities
 
-Customers should clearly state any allergy or dietary requirement before confirming the order.
+Customers should clearly state any allergy or dietary requirement before confirming an order.
 
 Providing a note or customization request does not guarantee that the restaurant can safely accommodate it.
 
@@ -141,28 +139,26 @@ The restaurant may refuse a request when safe preparation cannot be confirmed.
 
 Recipes, ingredients, packaging and suppliers may change.
 
-The latest approved restaurant and live menu information should be used when answering ingredient or allergen questions.
+Customers should rely on the latest available restaurant and menu information when asking about ingredients or allergens.
 
-The ordering assistant must not rely on assumptions based on previous orders or similar menu items.
+Information from a previous order or from a similar menu item may no longer be accurate.
 
 ## Medical emergencies
 
-The ordering assistant does not provide medical advice.
+The ordering service does not provide medical advice or emergency treatment.
 
-If a customer believes they are experiencing a serious allergic reaction or medical emergency, they should contact local emergency services immediately.
+A customer experiencing a serious allergic reaction or medical emergency should contact local emergency services immediately.
 
-Restaurant support may assist with order information, but it cannot diagnose or treat a medical condition.
+Restaurant support may assist with order or ingredient information but cannot diagnose or treat a medical condition.
 
-## Unsupported allergy and dietary claims
+## Important limitations
 
-The ordering assistant must not:
+The restaurant cannot guarantee:
 
-* Guarantee that any item is allergen-free
-* Guarantee that cross-contact cannot occur
-* Tell a customer with a severe allergy that an item is safe
-* Infer ingredients that are not in approved data
-* Describe an item as vegan, vegetarian, gluten-free, dairy-free or nut-free without approved evidence
-* Claim formal third-party halal certification, name a certification authority, provide a certificate number, or claim documentary certification unless separate approved evidence exists
-* Treat ingredient removal as proof that an allergen has been eliminated
-* Provide medical advice
-* Invent a dietary certification
+* That any item is completely allergen-free
+* That cross-contact cannot occur
+* That an item is safe for a severe allergy
+* That removing an ingredient eliminates an allergen
+* That an item is vegan, vegetarian, gluten-free, dairy-free or nut-free without current supporting information
+* Formal third-party halal certification without separate documentary evidence
+* Medical or nutritional suitability

@@ -1,12 +1,12 @@
 # Payment Policy
 
-## Supported payment method
+## Accepted payment method
 
 The restaurant currently accepts cash only.
 
-For delivery orders, customers must pay using Cash on Delivery.
+For delivery orders, payment is made using Cash on Delivery.
 
-For takeaway orders, customers must pay using cash when collecting the order.
+For takeaway orders, payment is made in cash when the order is collected.
 
 No online payment method is currently supported.
 
@@ -25,51 +25,47 @@ The restaurant does not currently accept:
 * Split payments
 * Buy-now-pay-later services
 
-The ordering assistant must not claim that any unsupported payment method is available.
+Customers should not send card details, banking credentials or payment passwords through the ordering chat.
 
-## Payment timing for delivery orders
+## Payment for delivery orders
 
-For delivery orders, payment is collected when the order is delivered.
+Payment for a delivery order is collected when the order arrives.
 
-The customer should prepare the required cash amount before the delivery arrives.
+Customers should prepare the required cash amount before delivery.
 
-The final payable amount must come from the live ordering system.
+The final amount payable is the amount confirmed by the live ordering system.
 
-The ordering assistant must not calculate, reduce or manually change the amount due.
+## Payment for takeaway orders
 
-## Payment timing for takeaway orders
+Payment for a takeaway order is collected at the selected branch when the customer collects the order.
 
-For takeaway orders, payment is collected when the customer collects the order from the selected branch.
+Customers should provide the order reference when requested and pay the amount confirmed by the live ordering system.
 
-The customer should provide the order reference and pay the amount confirmed by the live ordering system.
+A takeaway order is not considered paid until the cash payment has been collected and confirmed.
 
-The order must not be treated as paid before cash collection is confirmed.
-
-## Exact change
+## Preparing the correct amount
 
 Customers should prepare the correct cash amount where possible.
 
 The restaurant cannot guarantee that the delivery driver or branch staff will always have sufficient change.
 
-The ordering assistant must not promise exact change unless the live operational system explicitly confirms it.
-
 ## Payment confirmation
 
-A cash payment is considered completed only when the restaurant system or authorized staff confirms that the cash was collected.
+A cash payment is considered completed only after the restaurant system or authorized staff confirms that the cash was collected.
 
-The following do not prove that payment was completed:
+The following do not confirm payment:
 
-* The customer stating that payment was made
-* A cart showing a total
+* A customer stating that payment was made
+* A cart displaying a total
 * An unconfirmed order
-* An order awaiting delivery
-* An order awaiting collection
+* An order waiting for delivery
+* An order waiting for collection
 
-The ordering assistant must not mark an order as paid without confirmation from the live system.
+Customers should rely on the latest confirmed payment status shown by the ordering system or provided by restaurant staff.
 
 ## Final payable amount
 
-The live ordering system is the source of truth for:
+The live ordering system provides the final payable amount, including any applicable:
 
 * Item prices
 * Cart totals
@@ -77,52 +73,46 @@ The live ordering system is the source of truth for:
 * Discounts
 * Taxes
 * Service charges
-* Final payable amount
 
-The Knowledge Base and ordering assistant must not invent or manually calculate these values.
+Customers should review the displayed total before confirming the order.
 
-Customers should review the final amount before confirming the order.
+Any adjustment to the amount must be reflected in the live ordering system or confirmed by authorized restaurant staff.
 
-## Delivery payment issues
+## Delivery payment problems
 
-If the customer cannot provide the required cash when the order arrives, the delivery may not be completed.
+When a customer cannot provide the required cash at delivery, the restaurant may be unable to complete the handover.
 
-The restaurant may return or cancel the order according to its operational and refund policies.
+The order may be returned or cancelled according to the restaurant's operational, cancellation and refund policies.
 
-A refund is not applicable when no payment was collected.
+When no payment was collected, there is no payment to refund.
 
-The ordering assistant must not promise redelivery or delayed payment without restaurant confirmation.
+Any redelivery or alternative payment arrangement requires confirmation from restaurant support.
 
-## Takeaway payment issues
+## Takeaway payment problems
 
-If the customer cannot provide the required cash when collecting the order, the restaurant may refuse to release the order.
+When a customer cannot provide the required cash at collection, the restaurant may refuse to release the order.
 
-The restaurant is not required to provide the order before payment is completed.
-
-Any cancellation, remake or later collection arrangement must be confirmed by restaurant support.
+Any cancellation, remake or later collection arrangement requires confirmation from restaurant support.
 
 ## Receipts
 
-A receipt may be provided by the restaurant or ordering system when supported.
+A receipt may be provided by the restaurant or ordering system when that option is supported.
 
-The ordering assistant must not create a false receipt, payment reference or payment confirmation.
+Only a receipt or payment confirmation issued by the restaurant or ordering system should be treated as valid.
 
 ## Refunds
 
-Any approved cash refund must follow the restaurant's refund and cancellation policy.
+Any approved cash refund follows the restaurant's refund and cancellation policy.
 
-The ordering assistant must not promise:
+A refund is not automatically immediate and requires review and confirmation.
 
-* An immediate refund
-* A cash refund without review
-* A refund for an unpaid order
-* A refund amount that has not been confirmed
+The restaurant does not provide a refund for an order when no payment was collected.
 
-## Payment information in chat
+The refund amount, method and timing must be confirmed by authorized restaurant staff.
 
-Customers should not send sensitive financial information through the ordering chat.
+## Protecting payment information
 
-The restaurant does not require:
+The restaurant does not require customers to provide the following information through the ordering chat:
 
 * Card numbers
 * Card security codes
@@ -130,18 +120,6 @@ The restaurant does not require:
 * One-time passwords
 * Digital wallet passwords
 * Bank account credentials
+* Private authentication codes
 
-The ordering assistant must not request, store or repeat this information.
-
-## Unsupported payment claims
-
-The ordering assistant must not:
-
-* Claim that online payment is available
-* Accept card or banking information in chat
-* Promise card, wallet or bank-transfer payment
-* Mark an order as paid without confirmation
-* Invent or change the final payable amount
-* Promise that exact change will be available
-* Promise that an order will be released without payment
-* Create a false payment receipt
+Customers should never send this information through the ordering chat.

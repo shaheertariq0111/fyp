@@ -6,63 +6,63 @@ A cart or pending checkout is not a confirmed order.
 
 Before confirmation, customers may add, remove or change items using the options supported by the live ordering system.
 
-Leaving or clearing an unconfirmed cart does not require a cancellation or refund because no confirmed order exists.
+Leaving or clearing an unconfirmed cart does not require cancellation or a refund because no confirmed order exists.
 
 ## Requesting cancellation after confirmation
 
-After an order is confirmed, the customer may request cancellation through the ordering assistant or restaurant support.
+After an order is confirmed, customers may request cancellation through the ordering service or restaurant support.
 
 A cancellation request is not the same as an approved cancellation.
 
-The restaurant must check:
+Before approving a cancellation, the restaurant may check:
 
 * Whether preparation has started
 * Whether the order has left the branch
-* Whether the order is awaiting collection
+* Whether the order is waiting for collection
 * Whether payment has already been collected
 * Whether the cancellation can still be processed
 
-The ordering assistant must not confirm cancellation until the live system or authorized restaurant staff confirms it.
+An order is cancelled only after the live ordering system or restaurant staff confirms the cancellation.
 
 ## Cancellation before preparation
 
-When preparation has not started, the restaurant may approve the cancellation.
+When preparation has not started, the restaurant may approve cancellation.
 
-Approval is not automatic because order status and operational conditions must first be verified.
+Approval is not automatic because the current order status and operational conditions must first be checked.
 
-If no cash payment was collected, no refund is required.
+When no cash payment was collected, there is no payment to refund.
 
 ## Cancellation after preparation starts
 
-Cancellation is normally not accepted once preparation has started.
+Cancellation is normally not accepted after preparation has started.
 
 Food is prepared specifically for the confirmed order and may not be suitable for resale.
 
-The restaurant may still review exceptional circumstances, but the ordering assistant must not promise cancellation, replacement, credit or refund.
+The restaurant may review exceptional circumstances, but cancellation, replacement, account credit or a refund is not guaranteed.
 
 ## Delivery orders
 
 For delivery orders, payment is normally collected when the order arrives.
 
-If a delivery order is cancelled or cannot be completed before cash is collected, there is no payment to refund.
+When a delivery order is cancelled or cannot be completed before cash is collected, there is no payment to refund.
 
 The restaurant may refuse cancellation when:
 
 * Preparation has started
 * The order has left the branch
-* The driver is already completing the delivery
+* The driver is completing the delivery
 * The customer cannot be contacted
 * The customer provided an incorrect or inaccessible address
 
-A failed delivery does not automatically qualify the customer for free redelivery, replacement or compensation.
+A failed delivery does not automatically qualify for free redelivery, replacement or compensation.
 
 ## Takeaway orders
 
-For takeaway orders, payment is normally collected when the customer collects the order.
+For takeaway orders, payment is normally collected when the order is collected.
 
-If the customer does not collect the order and no cash was paid, there is no payment to refund.
+When a takeaway order is not collected and no cash was paid, there is no payment to refund.
 
-The restaurant may discard an uncollected order according to the approved takeaway policy.
+The restaurant may dispose of an uncollected order according to the takeaway policy.
 
 A remake, later collection or account credit is not automatic.
 
@@ -73,11 +73,11 @@ The restaurant may consider a full refund, partial refund, replacement or accoun
 * A paid item was missing
 * An incorrect item was supplied
 * Food was damaged or visibly tampered with before handover
-* The order could not be fulfilled after payment was collected
-* The customer was charged more cash than the confirmed payable amount
+* An order could not be fulfilled after payment was collected
+* The customer paid more cash than the confirmed payable amount
 * The restaurant approved cancellation after collecting payment
 
-The available resolution depends on the issue and the evidence provided.
+The available resolution depends on the issue, order records and supporting evidence.
 
 ## Situations that normally do not qualify for a refund
 
@@ -90,7 +90,7 @@ A refund is normally not provided when:
 * The customer failed to collect a takeaway order
 * The customer arrived late and the food quality declined
 * The customer expected an unsupported customization
-* The delivery was later than estimated but the order was completed
+* Delivery was later than estimated but the order was completed
 * The customer disliked an item that was prepared correctly
 
 Restaurant support may still review exceptional cases.
@@ -99,22 +99,22 @@ Restaurant support may still review exceptional cases.
 
 Customers should report a refund-related issue as soon as reasonably possible.
 
-The customer may be asked to provide:
+The restaurant may request:
 
 * The order reference
 * The affected item
 * A clear description of the problem
 * The amount paid
-* The time of delivery or collection
+* The delivery or collection time
 * Supporting photographs where appropriate
 
-Customers must not provide passwords, card details, banking credentials or one-time authentication codes.
+Customers should not provide passwords, card details, banking credentials or one-time authentication codes.
 
 ## Missing or incorrect items
 
-A missing or incorrect item must be verified against the confirmed order.
+A missing or incorrect item must be checked against the confirmed order record.
 
-The live order record is the source of truth for what the customer ordered and paid for.
+The confirmed order record determines what the customer ordered and the amount due.
 
 Depending on the circumstances, the restaurant may offer:
 
@@ -124,70 +124,71 @@ Depending on the circumstances, the restaurant may offer:
 * Account credit
 * No refund when the claim cannot be verified
 
-The ordering assistant must not choose or guarantee a resolution before review.
+A resolution is provided only after the issue has been reviewed.
 
 ## Late delivery
 
 Delivery times are estimates and are not guaranteed.
 
-A late delivery does not automatically qualify for a refund.
+A late delivery does not automatically qualify for a refund or compensation.
 
-The restaurant may review severe or exceptional delays through the complaint process.
+Severe or exceptional delays may be reviewed through the complaint process.
 
-The ordering assistant must not promise compensation based only on an estimated delivery time being exceeded.
+The final resolution depends on the order history, delivery circumstances and investigation.
 
 ## Cash refunds
 
-Because the restaurant currently accepts cash only, an approved refund may require arrangement through restaurant support.
+Because the restaurant currently accepts cash only, an approved refund may require an arrangement through restaurant support.
 
-The refund method, amount, collection process and timing must be confirmed by authorized restaurant staff.
+Restaurant staff must confirm:
 
-The ordering assistant must not promise:
+* The approved refund amount
+* The refund method
+* The collection or handover process
+* The expected timing
+* Any verification required
 
-* An immediate cash refund
-* A specific refund location
-* A specific refund date
-* A specific refund amount
-* A refund method that has not been approved
+An immediate cash refund, specific refund location or specific refund date is not guaranteed.
 
 ## Refund timing
 
 Refunds are not guaranteed to be immediate.
 
-The time required may depend on:
+Processing time may depend on:
 
 * Verification of the order
 * Review of the complaint
-* Branch authorization
-* Availability of the approved refund method
-* Customer coordination
+* Availability of supporting evidence
+* Approval by restaurant staff
+* Arrangements for returning cash
+* Branch operating hours
 
-The customer should rely on the final instructions provided by restaurant support.
+The restaurant will provide updated information after the refund arrangement has been reviewed.
 
 ## Refund status
 
-The ordering assistant must not state that a refund has been approved, issued or completed unless the live system or authorized restaurant staff confirms it.
+A refund may have a status such as:
 
-A refund request may be:
-
-* Submitted
+* Requested
 * Under review
 * Approved
 * Rejected
+* Arranged
 * Completed
 
-These statuses must not be invented.
+A refund should be treated as approved, arranged or completed only when that status is confirmed by the live ordering system or restaurant staff.
 
-## Unsupported refund and cancellation claims
+A customer request or complaint submission alone does not confirm refund approval.
 
-The ordering assistant must not:
+## Refund and cancellation limitations
 
-* Cancel a confirmed order without system or staff confirmation
-* Promise cancellation after preparation starts
-* Promise an automatic refund
-* Invent a refund amount
-* Invent a refund status
-* Guarantee immediate cash repayment
-* Promise free redelivery or replacement
-* Treat an unpaid order as refunded
-* Approve compensation without restaurant review
+The restaurant cannot guarantee:
+
+* Cancellation after preparation has started
+* Cancellation after an order has left the branch
+* A refund when no payment was collected
+* Automatic replacement, redelivery or account credit
+* Compensation for every delay
+* An immediate cash refund
+* A particular refund amount, method, date or location before review
+* A refund or cancellation before confirmation from the ordering system or restaurant staff

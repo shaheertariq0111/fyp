@@ -2,119 +2,82 @@
 
 ## Standard opening hours
 
-The default branch operates during the following hours:
+The default branch is open every day from 11:00 AM to 11:00 PM.
 
-| Day       | Opening time | Closing time |
-| --------- | -----------: | -----------: |
-| Monday    |     11:00 AM |     11:00 PM |
-| Tuesday   |     11:00 AM |     11:00 PM |
-| Wednesday |     11:00 AM |     11:00 PM |
-| Thursday  |     11:00 AM |     11:00 PM |
-| Friday    |     11:00 AM |     11:00 PM |
-| Saturday  |     11:00 AM |     11:00 PM |
-| Sunday    |     11:00 AM |     11:00 PM |
-
-All times are based on the branch's local time.
+These times use the branch's local time.
 
 ## Last order time
 
-The normal last order time for both delivery and takeaway is 10:30 PM.
+The last order time is 10:30 PM each day.
 
-Orders submitted near the cutoff may be rejected when:
+Customers should complete and confirm their order before 10:30 PM.
 
-* The branch is at capacity
-* Delivery is temporarily unavailable
-* Required items are unavailable
-* The delivery address cannot be served
-* The branch has stopped accepting new orders
-* Temporary operational conditions prevent fulfilment
+An order started before 10:30 PM is not guaranteed to be accepted unless it is successfully confirmed before the cutoff.
 
-The ordering assistant must not guarantee acceptance merely because an order was submitted before 10:30 PM.
+## Orders after the cutoff
 
-## Delivery hours
+New orders submitted after 10:30 PM may not be accepted.
 
-Delivery is normally offered during branch operating hours, subject to the last order time.
+At 11:00 PM, the branch closes.
 
-A branch being open does not guarantee that delivery is currently available.
+At any time after 11:00 PM, including 11:30 PM, the branch is closed. The next standard opening time is 11:00 AM the following day.
 
-Delivery availability may also depend on:
+## Delivery and takeaway availability
 
-* The customer's address
-* The approved delivery area
-* Driver availability
-* Order volume
-* Weather or traffic conditions
+Delivery and takeaway are normally available during branch operating hours.
+
+Availability may stop earlier because of:
+
+* The 10:30 PM last-order cutoff
 * Temporary operational restrictions
+* The customer's address or delivery area
+* Driver availability or order volume
+* Item availability
+* Branch closure
+* Weather, traffic or safety conditions
 
-The live ordering system must confirm current delivery availability.
+The live ordering system provides the current availability of delivery, takeaway and ordering.
 
-## Takeaway hours
+## Orders placed near closing time
 
-Takeaway is normally offered during branch operating hours, subject to the last order time.
+Orders confirmed close to the last-order cutoff may have limited preparation, delivery or collection options.
 
-The live ordering system must confirm that takeaway is currently available before the order is confirmed.
+A confirmed order may still be prepared or completed after 11:00 PM when the restaurant has already accepted it.
 
-Customers collecting an order near closing time should follow the latest collection instructions provided by the restaurant.
+This does not mean the branch remains open for new orders after closing time.
 
-## Orders already in progress
+## Temporary schedule changes
 
-The branch may continue preparing or completing orders that were accepted before the last order time.
+Opening hours may change temporarily because of:
 
-The stated closing time does not mean that every accepted delivery or collection will be completed before 11:00 PM.
+* Public or religious holidays
+* Maintenance or private events
+* Staff availability
+* Equipment or utility failures
+* Severe weather or safety concerns
+* Emergency closures or local restrictions
+* Other operational disruptions
 
-Customers should rely on the latest live order status or instructions.
+When a temporary schedule is displayed by the live ordering system or confirmed by restaurant staff, that schedule takes priority over the standard hours.
 
-## Public holidays and special dates
+## Support availability
 
-Opening hours may change on:
+Restaurant support is normally available during operating hours.
 
-* Public holidays
-* Religious holidays
-* Special events
-* Maintenance days
-* Emergency closure days
+Immediate support is not guaranteed, especially near closing time or during busy periods.
 
-The standard opening hours must not be treated as confirmation of special-date availability.
+Requests submitted outside operating hours may be reviewed when the branch reopens.
 
-Where temporary operating information is unavailable, the ordering assistant should advise the customer to contact restaurant support.
+## Important timing distinctions
 
-## Temporary closures
+The standard daily times are:
 
-The branch may temporarily close or stop accepting orders because of:
+* Opening time: 11:00 AM
+* Last order time: 10:30 PM
+* Closing time: 11:00 PM
 
-* Equipment failure
-* Safety concerns
-* Staffing limitations
-* Severe weather
-* Utility disruption
-* Maintenance
-* Other operational problems
+The last-order time and closing time are not the same.
 
-The ordering assistant must not invent a closure reason or reopening time.
+The standard schedule can be used for general opening-hours questions. Current operating status may differ because of temporary closures or schedule changes.
 
-Temporary operating status must come from the live system or authorized restaurant staff.
-
-## Determining whether the branch is open
-
-The standard schedule may be used to answer general questions about normal opening hours.
-
-To determine whether the branch is open at the current moment, the system should also consider:
-
-* Current branch-local date and time
-* Public holiday changes
-* Temporary closures
-* Current ordering availability
-
-The ordering assistant must distinguish between standard hours and verified current operating status.
-
-## Unsupported opening-hours claims
-
-The ordering assistant must not:
-
-* Guarantee that the branch is currently open based only on standard hours
-* Guarantee that an order will be accepted before the cutoff
-* Claim delivery is available only because the branch is open
-* Invent holiday opening hours
-* Invent temporary closure information
-* Invent a reopening time
-* Guarantee completion before closing time
+Customers should rely on the current availability shown by the live ordering system when placing an order.

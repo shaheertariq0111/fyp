@@ -97,6 +97,28 @@ PLACEHOLDER_MARKERS = [
     "REPLACE_ME",
 ]
 
+FORBIDDEN_KB_PHRASES = [
+    "ordering assistant",
+    "assistant must",
+    "must not invent",
+    "must not claim",
+    "approved restaurant information",
+    "approved branch information",
+    "approved live system",
+    "authorized live system",
+    "approved backend tools",
+    "backend tools",
+    "hidden instructions",
+    "knowledge base",
+]
+
+ENCODING_CORRUPTION_MARKERS = [
+    ("U+00E2", "\u00e2"),
+    ("U+00C3", "\u00c3"),
+    ("U+00C2", "\u00c2"),
+]
+
+
 SECRET_PATTERNS = [
     ("AWS access key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     (
@@ -399,6 +421,58 @@ def main() -> int:
     else:
         v.pass_section("secret pattern list", "none")
 
+    internal_wording_findings: list[str] = []
+    encoding_corruption_findings: list[str] = []
+
+    for path in sorted(expected_abs):
+        if not path.exists():
+            continue
+
+        text = read_text(path)
+        normalized = normalize_text(text)
+
+        for phrase in FORBIDDEN_KB_PHRASES:
+            if phrase in normalized:
+                internal_wording_findings.append(
+                    f"{path.relative_to(ROOT)} contains {phrase!r}"
+                )
+
+        for label, marker in ENCODING_CORRUPTION_MARKERS:
+            if marker in text:
+                encoding_corruption_findings.append(
+                    f"{path.relative_to(ROOT)} contains {label}"
+                )
+
+    v.require(
+        "indexed Markdown contains no internal implementation wording",
+        not internal_wording_findings,
+    )
+    if internal_wording_findings:
+        v.fail_section(
+            "internal implementation wording list",
+            "; ".join(internal_wording_findings),
+        )
+    else:
+        v.pass_section(
+            "internal implementation wording list",
+            "none",
+        )
+
+    v.require(
+        "indexed Markdown contains no common UTF-8 encoding corruption",
+        not encoding_corruption_findings,
+    )
+    if encoding_corruption_findings:
+        v.fail_section(
+            "encoding corruption marker list",
+            "; ".join(encoding_corruption_findings),
+        )
+    else:
+        v.pass_section(
+            "encoding corruption marker list",
+            "none",
+        )
+
     complaints_text = read_text(KB_DIR / "global/complaints-and-support.md") if (KB_DIR / "global/complaints-and-support.md").exists() else ""
     branch_contact_text = read_text(KB_DIR / "branches/default/branch-contact.md") if (KB_DIR / "branches/default/branch-contact.md").exists() else ""
     complaint_docs_text = "\n".join([complaints_text, branch_contact_text]).lower()
@@ -413,7 +487,11 @@ def main() -> int:
         "payments.md states required cash payment facts",
         "cash only" in payments_lower
         and "cash on delivery" in payments_lower
-        and ("cash on collection" in payments_lower or "cash when collecting" in payments_lower),
+        and (
+            "cash on collection" in payments_lower
+            or "cash when collecting" in payments_lower
+            or "cash when the order is collected" in payments_lower
+        ),
     )
 
     opening_text = read_text(KB_DIR / "branches/default/opening-hours.md") if (KB_DIR / "branches/default/opening-hours.md").exists() else ""
@@ -432,8 +510,8 @@ def main() -> int:
     normalized_allergies = normalize_text(allergies_text)
     approved_halal_statements = [
         "all menu items served by the restaurant are halal",
-        "all menu items are prepared in accordance with halal standards, as confirmed by the restaurant",
-        "the ordering assistant may confirm halal status when customers ask",
+        "the restaurant confirms that all menu items are prepared according to halal standards",
+        "formal third-party certification should not be claimed without separate documentary evidence",
     ]
     v.require(
         "allergies-and-dietary.md contains approved halal policy",
