@@ -80,3 +80,36 @@ jobs:
             infra/phase11-monitoring.yaml \
             infra/phase13-github-oidc.yaml \
             infra/phase14-knowledge-base.yaml
+
+      - name: Validate Phase 14 Bedrock metadata configuration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          class CloudFormationLoader(yaml.SafeLoader):
+              pass
+
+          def cloudformation_tag(loader, tag_suffix, node):
+              if isinstance(node, yaml.ScalarNode):
+                  return loader.construct_scalar(node)
+              if isinstance(node, yaml.SequenceNode):
+                  return loader.construct_sequence(node)
+              if isinstance(node, yaml.MappingNode):
+                  return loader.construct_mapping(node)
+              return None
+
+          CloudFormationLoader.add_multi_constructor("!", cloudformation_tag)
+
+          template = yaml.load(
+              Path("infra/phase14-knowledge-base.yaml").read_text(encoding="utf-8"),
+              Loader=CloudFormationLoader,
+          )
+          index = template["Resources"]["RestaurantKnowledgeVectorIndex"]["Properties"]
+          keys = index.get("MetadataConfiguration", {}).get("NonFilterableMetadataKeys", [])
+          required = {"AMAZON_BEDROCK_TEXT", "AMAZON_BEDROCK_METADATA"}
+          missing = sorted(required - set(keys))
+          if missing:
+              raise SystemExit(f"Missing required non-filterable metadata keys: {missing}")
+          print("Phase 14 Bedrock metadata configuration OK")
+          PY
