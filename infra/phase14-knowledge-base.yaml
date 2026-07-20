@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Phase 14 Amazon Bedrock Knowledge Base with S3 document source and Amazon S3 Vectors storage.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: fyp-dev
+    MinLength: 2
+    MaxLength: 20
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{1,19}$"
+    Description: Lowercase project prefix used for development Knowledge Base resources.
+
+Resources:
+  KnowledgeDocumentsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${ProjectName}-knowledge-documents-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  KnowledgeDocumentsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref KnowledgeDocumentsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt KnowledgeDocumentsBucket.Arn
+              - !Sub ${KnowledgeDocumentsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  RestaurantKnowledgeVectorBucket:
+    Type: AWS::S3Vectors::VectorBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VectorBucketName: !Sub ${ProjectName}-knowledge-vectors-${AWS::AccountId}-${AWS::Region}
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  RestaurantKnowledgeVectorIndex:
+    Type: AWS::S3Vectors::Index
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VectorBucketArn: !GetAtt RestaurantKnowledgeVectorBucket.VectorBucketArn
+      IndexName: restaurant-knowledge-index
+      DataType: float32
+      Dimension: 512
+      DistanceMetric: cosine
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  KnowledgeBaseServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-bedrock-kb-service
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  KnowledgeBaseServiceRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-bedrock-kb-service
+      Roles:
+        - !Ref KnowledgeBaseServiceRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: InvokeTitanEmbeddingsV2
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+            Resource: arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0
+          - Sid: ListApprovedKnowledgeDocuments
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !GetAtt KnowledgeDocumentsBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix:
+                  - approved/
+                  - approved/*
+          - Sid: ReadApprovedKnowledgeDocuments
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !Sub ${KnowledgeDocumentsBucket.Arn}/approved/*
+          - Sid: UseRestaurantKnowledgeVectorIndex
+            Effect: Allow
+            Action:
+              - s3vectors:PutVectors
+              - s3vectors:GetVectors
+              - s3vectors:DeleteVectors
+              - s3vectors:QueryVectors
+              - s3vectors:GetIndex
+            Resource: !GetAtt RestaurantKnowledgeVectorIndex.IndexArn
+
+  RestaurantKnowledgeVectorBucketPolicy:
+    Type: AWS::S3Vectors::VectorBucketPolicy
+    Properties:
+      VectorBucketArn: !GetAtt RestaurantKnowledgeVectorBucket.VectorBucketArn
+      Policy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowBedrockKnowledgeBaseServiceRoleVectorIndexAccess
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt KnowledgeBaseServiceRole.Arn
+            Action:
+              - s3vectors:PutVectors
+              - s3vectors:GetVectors
+              - s3vectors:DeleteVectors
+              - s3vectors:QueryVectors
+              - s3vectors:GetIndex
+            Resource: !GetAtt RestaurantKnowledgeVectorIndex.IndexArn
+
+  RestaurantKnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
+    DependsOn:
+      - KnowledgeBaseServiceRolePolicy
+      - RestaurantKnowledgeVectorBucketPolicy
+    Properties:
+      Name: fyp_dev_restaurant_knowledge
+      RoleArn: !GetAtt KnowledgeBaseServiceRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0
+          EmbeddingModelConfiguration:
+            BedrockEmbeddingModelConfiguration:
+              Dimensions: 512
+              EmbeddingDataType: FLOAT32
+      StorageConfiguration:
+        Type: S3_VECTORS
+        S3VectorsConfiguration:
+          IndexArn: !GetAtt RestaurantKnowledgeVectorIndex.IndexArn
+
+  RestaurantKnowledgeDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      Name: fyp_dev_restaurant_documents
+      KnowledgeBaseId: !Ref RestaurantKnowledgeBase
+      DataDeletionPolicy: RETAIN
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !GetAtt KnowledgeDocumentsBucket.Arn
+          InclusionPrefixes:
+            - approved/
+
+Outputs:
+  KnowledgeBaseId:
+    Description: Amazon Bedrock Knowledge Base ID.
+    Value: !Ref RestaurantKnowledgeBase
+  KnowledgeBaseArn:
+    Description: Amazon Bedrock Knowledge Base ARN.
+    Value: !GetAtt RestaurantKnowledgeBase.KnowledgeBaseArn
+  DataSourceId:
+    Description: Amazon Bedrock Knowledge Base data source ID.
+    Value: !GetAtt RestaurantKnowledgeDataSource.DataSourceId
+  KnowledgeDocumentsBucketName:
+    Description: S3 bucket name for approved Knowledge Base documents.
+    Value: !Ref KnowledgeDocumentsBucket
+  VectorBucketArn:
+    Description: Amazon S3 Vectors bucket ARN.
+    Value: !GetAtt RestaurantKnowledgeVectorBucket.VectorBucketArn
+  VectorIndexArn:
+    Description: Amazon S3 Vectors index ARN.
+    Value: !GetAtt RestaurantKnowledgeVectorIndex.IndexArn
+  KnowledgeBaseServiceRoleArn:
+    Description: IAM role ARN used by Amazon Bedrock Knowledge Base.
+    Value: !GetAtt KnowledgeBaseServiceRole.Arn
