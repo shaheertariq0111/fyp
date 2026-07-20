@@ -69,10 +69,14 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       VectorBucketArn: !GetAtt RestaurantKnowledgeVectorBucket.VectorBucketArn
-      IndexName: restaurant-knowledge-index
+      IndexName: restaurant-knowledge-index-v2
       DataType: float32
       Dimension: 512
       DistanceMetric: cosine
+      MetadataConfiguration:
+        NonFilterableMetadataKeys:
+          - AMAZON_BEDROCK_TEXT
+          - AMAZON_BEDROCK_METADATA
       Tags:
         - Key: Project
           Value: !Ref ProjectName

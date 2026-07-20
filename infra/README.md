@@ -139,6 +139,8 @@ Do not commit actual bucket names, Knowledge Base IDs, data source IDs, ARNs or 
 
 The documents bucket, S3 Vectors bucket and S3 Vectors index use `Retain` lifecycle policies. The Bedrock data source uses `DataDeletionPolicy: RETAIN`. Deleting the CloudFormation stack will not remove all retained data resources. Retained resources require deliberate manual cleanup, and S3 buckets may need to be emptied before deletion. This prevents accidental loss of the approved corpus and vector data.
 
+S3 Vectors indexes used by Bedrock Knowledge Bases must configure `AMAZON_BEDROCK_TEXT` and `AMAZON_BEDROCK_METADATA` as non-filterable metadata. `MetadataConfiguration` is immutable and requires index replacement. The `restaurant-knowledge-index-v2` index name exists because the original empty index was created without this required configuration. The retained old index must only be removed manually after the replacement stack update and ingestion are verified.
+
 Phase 14 does not:
 
 - Set the backend `KnowledgeBaseId` parameter
