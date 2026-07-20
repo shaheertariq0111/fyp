@@ -106,10 +106,24 @@ jobs:
               Loader=CloudFormationLoader,
           )
           index = template["Resources"]["RestaurantKnowledgeVectorIndex"]["Properties"]
+          knowledge_base = template["Resources"]["RestaurantKnowledgeBase"]["Properties"]
+          data_source = template["Resources"]["RestaurantKnowledgeDataSource"]["Properties"]
           keys = index.get("MetadataConfiguration", {}).get("NonFilterableMetadataKeys", [])
           required = {"AMAZON_BEDROCK_TEXT", "AMAZON_BEDROCK_METADATA"}
           missing = sorted(required - set(keys))
           if missing:
               raise SystemExit(f"Missing required non-filterable metadata keys: {missing}")
+          expected_names = {
+              "RestaurantKnowledgeVectorIndex IndexName": (index.get("IndexName"), "restaurant-knowledge-index-v2"),
+              "RestaurantKnowledgeBase Name": (knowledge_base.get("Name"), "fyp_dev_restaurant_knowledge_v2"),
+              "RestaurantKnowledgeDataSource Name": (data_source.get("Name"), "fyp_dev_restaurant_documents_v2"),
+          }
+          mismatches = [
+              f"{label} is {actual!r}, expected {expected!r}"
+              for label, (actual, expected) in expected_names.items()
+              if actual != expected
+          ]
+          if mismatches:
+              raise SystemExit("; ".join(mismatches))
           print("Phase 14 Bedrock metadata configuration OK")
           PY

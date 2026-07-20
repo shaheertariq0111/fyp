@@ -165,7 +165,7 @@ Resources:
       - KnowledgeBaseServiceRolePolicy
       - RestaurantKnowledgeVectorBucketPolicy
     Properties:
-      Name: fyp_dev_restaurant_knowledge
+      Name: fyp_dev_restaurant_knowledge_v2
       RoleArn: !GetAtt KnowledgeBaseServiceRole.Arn
       KnowledgeBaseConfiguration:
         Type: VECTOR
@@ -183,7 +183,7 @@ Resources:
   RestaurantKnowledgeDataSource:
     Type: AWS::Bedrock::DataSource
     Properties:
-      Name: fyp_dev_restaurant_documents
+      Name: fyp_dev_restaurant_documents_v2
       KnowledgeBaseId: !Ref RestaurantKnowledgeBase
       DataDeletionPolicy: RETAIN
       DataSourceConfiguration:

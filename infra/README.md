@@ -141,6 +141,8 @@ The documents bucket, S3 Vectors bucket and S3 Vectors index use `Retain` lifecy
 
 S3 Vectors indexes used by Bedrock Knowledge Bases must configure `AMAZON_BEDROCK_TEXT` and `AMAZON_BEDROCK_METADATA` as non-filterable metadata. `MetadataConfiguration` is immutable and requires index replacement. The `restaurant-knowledge-index-v2` index name exists because the original empty index was created without this required configuration. The retained old index must only be removed manually after the replacement stack update and ingestion are verified.
 
+The replacement Knowledge Base and data source use the `fyp_dev_restaurant_knowledge_v2` and `fyp_dev_restaurant_documents_v2` names because CloudFormation is replacing custom-named resources. The original Knowledge Base and data source are expected to be removed by CloudFormation after successful replacement. Stack outputs will provide the new `KnowledgeBaseId` and `DataSourceId` after deployment.
+
 Phase 14 does not:
 
 - Set the backend `KnowledgeBaseId` parameter
