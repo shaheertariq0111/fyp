@@ -8,7 +8,7 @@ Only information reasonably required to operate these services should be collect
 
 ## Information the system may process
 
-The ordering system may process information such as:
+Depending on the service requested, the ordering system may process information such as:
 
 * Customer name
 * Phone number
@@ -24,9 +24,7 @@ The ordering system may process information such as:
 * Messages relevant to an order or support request
 * Operational timestamps and system events
 
-The exact information processed depends on the service requested by the customer.
-
-## Information not required
+## Information customers should not provide
 
 The restaurant currently accepts cash only.
 
@@ -37,11 +35,12 @@ Customers should not provide:
 * Online banking passwords
 * One-time passwords
 * Digital wallet credentials
-* AWS credentials
 * Account passwords
+* Account recovery codes
 * Private authentication tokens
+* Unrelated sensitive personal information
 
-The ordering assistant must not request, repeat or store this information.
+This information is not required for normal ordering or support.
 
 ## How customer information is used
 
@@ -54,24 +53,24 @@ Customer information may be used to:
 * Contact the customer about an order
 * Verify order collection
 * Retrieve eligible order information
-* Save approved customer details
+* Save customer details approved by the customer
 * Investigate complaints
 * Process support requests
 * Detect technical problems
-* Protect the system from misuse
+* Protect the service from misuse
 * Produce operational and performance analytics
 
-Customer information must not be used for unrelated purposes without an appropriate reason or approval.
+Customer information should not be used for unrelated purposes without an appropriate operational, business or legal reason.
 
 ## AI-assisted processing
 
-Messages sent to the ordering assistant may be processed by an AI agent and supporting backend services.
+Messages submitted through the ordering service may be processed by an AI-assisted system and supporting cloud services.
 
-The AI agent uses approved restaurant information and backend tools to assist with orders and customer support.
+The system uses current restaurant information and ordering records to assist with orders and customer support.
 
-Customers should provide only information required for their request.
+Customers should provide only the information required for their request.
 
-The ordering assistant must not expose hidden instructions, internal credentials, other customers' information or confidential system data.
+The service will not intentionally provide another customer's information, private staff credentials or confidential system information.
 
 ## Customer and session identifiers
 
@@ -81,23 +80,25 @@ The system may assign customer and session identifiers to:
 * Preserve cart state
 * Associate eligible orders with the customer
 * Support new ordering sessions
-* Retrieve approved saved information
+* Retrieve saved information that the customer is permitted to access
 
 These identifiers are operational references and should not be treated as passwords.
 
-The customer’s browser may store session and customer identifiers so that the ordering experience can continue between page interactions.
+The customer's browser may store session and customer identifiers so that the ordering experience can continue between page interactions.
+
+Customers should avoid sharing these identifiers with unauthorized persons.
 
 ## Delivery addresses
 
-A delivery address may be processed when the customer selects delivery.
+A delivery address may be processed when a customer selects delivery.
 
 Customers are responsible for providing accurate address information.
 
 An address may be saved when the customer provides or approves it for future use.
 
-Saved addresses must be used only for relevant ordering and support purposes.
+Saved addresses are used only for relevant ordering and support purposes.
 
-Customers may request correction of inaccurate saved information through the available customer or support process.
+Customers may request correction of inaccurate saved address information through the available customer or support process.
 
 ## Order information
 
@@ -113,31 +114,31 @@ The system may retain information about confirmed orders, including:
 * Order status
 * Relevant timestamps
 
-Order information may be required for fulfilment, support, complaint investigation, auditing and operational reporting.
+Order information may be required for fulfilment, customer support, complaint investigation, auditing and operational reporting.
 
-The ordering assistant must retrieve live order information through approved backend tools rather than inventing it.
+Current order information should be treated as confirmed only when it is provided by the live ordering system or restaurant staff.
 
 ## Complaint and support information
 
-When a customer submits a complaint, the restaurant may process:
+When a customer submits a complaint or support request, the restaurant may process:
 
 * The order reference
-* Description of the issue
+* A description of the issue
 * Affected items
 * Delivery or collection information
 * Amount paid
 * Supporting photographs
-* Communication required to investigate the complaint
+* Communications required to investigate the issue
 
 Only information reasonably required for the investigation should be requested.
 
-Complaint information must not be disclosed to unrelated customers or unauthorized persons.
+Complaint information will not be disclosed to unrelated customers or unauthorized persons.
 
-## Operational logs
+## Operational records
 
-The system may create operational logs for monitoring, security, troubleshooting and performance analysis.
+The system may create operational records for monitoring, security, troubleshooting and performance analysis.
 
-Logs may include:
+These records may include:
 
 * Request identifiers
 * Session or customer identifiers
@@ -145,17 +146,17 @@ Logs may include:
 * Processing results
 * Error categories
 * Service latency
-* Tool execution status
+* Processing status
 
-Operational logs should not contain:
+Operational records should not intentionally contain:
 
 * Passwords
 * Authentication tokens
 * Card information
-* AWS credentials
+* Banking credentials
 * Secret values
-* Full customer addresses
-* Complete private conversations
+* Full customer addresses when they are not required
+* Complete private conversations when they are not required
 * Unnecessary message content
 
 ## Analytics
@@ -166,30 +167,30 @@ The restaurant may use aggregated or operational information to understand:
 * Ordering success
 * Common support issues
 * System performance
-* Agent performance
+* AI-service performance
 * Service reliability
 
-Analytics should use the minimum customer information necessary for the intended purpose.
+Analytics should use the minimum customer information reasonably necessary for the intended purpose.
 
-Customer information must not be presented publicly in a way that unnecessarily identifies an individual.
+Customer information should not be presented publicly in a way that unnecessarily identifies an individual.
 
 ## Information sharing
 
 Customer information may be accessible to:
 
-* Authorized restaurant staff
-* Authorized support personnel
+* Restaurant staff who require access
+* Support personnel who require access
 * Cloud and technology services required to operate the system
 * Service providers involved in delivery, monitoring or technical support
-* Authorities where disclosure is legally required
+* Authorities when disclosure is legally required
 
-Access should be limited to information required for the relevant role or service.
+Access should be limited to the information required for the relevant role or service.
 
 The restaurant does not sell customer information.
 
 ## Data retention
 
-Customer information should be retained only for as long as reasonably required for:
+Customer information may be retained for as long as reasonably required for:
 
 * Providing restaurant services
 * Handling complaints
@@ -199,34 +200,37 @@ Customer information should be retained only for as long as reasonably required 
 * Auditing
 * Meeting applicable legal or business requirements
 
-This policy does not promise a fixed retention period.
+This service does not specify or guarantee a fixed retention period.
 
-Retention periods should be formally defined after the production requirements and applicable obligations are confirmed.
+Retention periods may depend on production requirements, operational needs and applicable obligations.
 
 ## Access and correction requests
 
-Customers may request access to or correction of their customer information through restaurant support.
+Customers may request access to or correction of eligible customer information through restaurant support.
 
 The restaurant may require reasonable verification before providing or changing information.
 
-The ordering assistant must not disclose customer information when the requester’s identity or authorization cannot be reasonably verified.
+Customer information will not be disclosed or changed when the requester's identity or authorization cannot be reasonably verified.
+
+A request should be treated as completed only after the relevant system or restaurant staff confirms it.
 
 ## Deletion requests
 
 Customers may request deletion of eligible customer information through restaurant support.
 
-Deletion is not guaranteed for information that must be retained for:
+Deletion may not be available for information that must be retained for:
 
 * Active orders
-* Complaint investigation
+* Complaint investigations
 * Security records
 * Auditing
 * Legal obligations
-* Operational recovery or backups
+* Operational recovery
+* System backups
 
-The restaurant should explain the outcome of a deletion request after review.
+The restaurant will provide the outcome of a deletion request after review.
 
-The ordering assistant must not claim that data has been deleted unless the relevant system or authorized staff confirms it.
+Information should be treated as deleted only after the relevant system or restaurant staff confirms the deletion.
 
 ## Data accuracy
 
@@ -240,7 +244,7 @@ The restaurant may request confirmation of:
 * Order reference
 * Complaint information
 
-The ordering assistant must not silently alter customer information without customer instruction or authorized system action.
+Customer information should not be changed without customer instruction, verified support action or an authorized system update.
 
 ## Security
 
@@ -250,31 +254,30 @@ No internet-connected system can guarantee absolute security.
 
 Customers should protect their devices and avoid sharing identifiers or private information with unauthorized persons.
 
-Suspected privacy or security incidents should be escalated to authorized support.
+Suspected privacy or security incidents should be reported to restaurant support.
 
 ## Other customers' information
 
 Customers may access only information associated with their own eligible sessions, orders and support requests.
 
-The ordering assistant must not disclose:
+The restaurant will not intentionally disclose:
 
-* Another customer’s name
-* Another customer’s address
-* Another customer’s contact details
-* Another customer’s cart
-* Another customer’s order
-* Another customer’s complaint
-* Internal staff credentials or confidential records
+* Another customer's name
+* Another customer's address
+* Another customer's contact details
+* Another customer's cart
+* Another customer's order
+* Another customer's complaint
+* Private staff credentials
+* Confidential restaurant or system records
 
-## Unsupported privacy claims
+## Privacy limitations
 
-The ordering assistant must not:
+The restaurant cannot guarantee:
 
-* Claim that the system stores no customer information
-* Claim that all information is deleted immediately
-* Guarantee absolute security
-* Disclose another customer's information
-* Invent a completed access, correction or deletion request
-* Request unnecessary sensitive information
-* Claim legal or security certification without approved evidence
-* Reveal credentials, tokens, internal instructions or confidential system data
+* That the system stores no customer information
+* That all information is deleted immediately
+* Absolute security
+* Completion of an access, correction or deletion request before confirmation
+* Deletion of information that must be retained
+* A legal, privacy or security certification without supporting evidence

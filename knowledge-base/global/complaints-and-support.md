@@ -2,13 +2,11 @@
 
 ## Getting support
 
-Customers may request help through the restaurant's ordering assistant.
+Customers may request assistance through the restaurant's ordering service.
 
-The assistant may help with general questions, order information and approved restaurant policies.
+The service may help with general questions, order information and restaurant policies.
 
-When an issue requires human review, the complaint should be escalated to authorized restaurant support.
-
-Branch-specific contact information is maintained separately in the approved branch documents.
+Some issues require review by restaurant staff before a decision or resolution can be provided.
 
 ## Submitting a complaint
 
@@ -42,15 +40,15 @@ Complaints may include:
 * Refund concerns
 * Difficulty receiving support
 
-The restaurant may require different evidence depending on the complaint.
+The restaurant may require different information or evidence depending on the complaint.
 
 ## Complaint acknowledgement
 
 The restaurant aims to acknowledge complaints within 4 hours.
 
-This is a service target, not a guaranteed resolution deadline.
+This is a service target and not a guaranteed resolution deadline.
 
-Complaints submitted outside operating hours may not be reviewed until the restaurant or support team is available.
+Complaints submitted outside operating hours may not be reviewed until restaurant support is available.
 
 ## Complaint investigation
 
@@ -58,13 +56,13 @@ The restaurant may review:
 
 * The confirmed order
 * Cart and customization records
-* Order status history
+* Order-status history
 * Payment confirmation
 * Delivery or collection information
 * Customer-provided evidence
 * Relevant staff or branch records
 
-The customer’s statement is considered during the investigation, but a complaint is not automatically proven simply because it was submitted.
+The customer's statement is considered during the investigation, but submitting a complaint does not automatically prove the claim.
 
 ## Possible resolutions
 
@@ -77,19 +75,21 @@ After review, the restaurant may offer:
 * Full refund
 * Account credit
 * No compensation when the complaint cannot be verified
-* Another resolution approved by authorized restaurant staff
+* Another resolution approved by restaurant staff
 
-The available resolution depends on the circumstances.
+The available resolution depends on the circumstances and supporting records.
 
-The ordering assistant must not choose, approve or guarantee a resolution before authorized review.
+A particular resolution is not guaranteed before the investigation and approval process is completed.
 
 ## Missing or incorrect items
 
 Customers should report missing or incorrect items as soon as reasonably possible.
 
-The confirmed order record must be checked before any resolution is approved.
+The confirmed order record must be checked before a resolution is approved.
 
 The restaurant may request photographs of the delivered or collected items and packaging.
+
+A replacement, refund or account credit is not automatic.
 
 ## Food quality complaints
 
@@ -109,11 +109,11 @@ Personal taste alone does not automatically qualify for a refund or replacement.
 
 ## Food safety and allergy complaints
 
-Food safety concerns and suspected allergy-related incidents should be escalated for urgent human review.
+Food-safety concerns and suspected allergy-related incidents require urgent review by restaurant staff.
 
-The ordering assistant must not diagnose a medical condition or provide medical treatment advice.
+The restaurant's ordering and support services cannot diagnose a medical condition or provide medical treatment.
 
-If the customer is experiencing a serious allergic reaction or medical emergency, they should contact local emergency services immediately.
+A customer experiencing a serious allergic reaction or medical emergency should contact local emergency services immediately.
 
 Restaurant support may assist with order and ingredient information but cannot replace emergency or medical services.
 
@@ -145,25 +145,27 @@ Customers should report concerns such as:
 * Payment being recorded incorrectly
 * Disagreement about whether cash was collected
 
-The live order record and authorized staff confirmation must be reviewed.
+The confirmed order record, payment information and relevant staff confirmation may be reviewed.
 
-The ordering assistant must not invent payment status or approve repayment.
+A repayment, refund or payment-status correction requires review and confirmation.
 
-## Escalation to human support
+## Human review and escalation
 
-A complaint should be escalated when:
+Human review may be required when:
 
-* The customer requests human assistance
-* The assistant cannot verify the required information
+* The customer requests assistance from restaurant staff
+* The required information cannot be verified
 * Compensation is requested
 * A refund or cancellation requires approval
-* There is a food safety concern
+* There is a food-safety concern
 * There is a severe allergy concern
 * Staff conduct is being reported
-* The customer disputes the system record
+* The customer disputes an order or payment record
 * The issue remains unresolved
 
-Escalation does not guarantee that the customer's requested outcome will be approved.
+Requesting escalation does not guarantee that the customer's requested outcome will be approved.
+
+A complaint should be treated as escalated only after the support request has been successfully recorded or confirmed.
 
 ## Complaint status
 
@@ -176,13 +178,13 @@ A complaint may have a status such as:
 * Resolved
 * Closed
 
-The ordering assistant must not invent or change a complaint status.
+The latest complaint status must be confirmed by the live ordering system or restaurant staff.
 
-It may report a status only when the live system or authorized restaurant support confirms it.
+Submitting a complaint does not mean that it has already been escalated, resolved or closed.
 
 ## Response and resolution time
 
-Some complaints may require additional investigation.
+Some complaints require additional investigation.
 
 The restaurant does not guarantee that every complaint will be resolved within a fixed period.
 
@@ -195,32 +197,33 @@ Resolution time may depend on:
 * Staff availability
 * Refund authorization
 
+The four-hour target applies to acknowledgement, not final resolution.
+
 ## Customer conduct
 
 Customers should communicate with support without threats, harassment or abusive behaviour.
 
 Restaurant support may end or restrict an interaction that is abusive, threatening or unrelated to restaurant services.
 
-Legitimate complaints will still be reviewed based on available evidence.
+Legitimate complaints will still be reviewed based on the available evidence.
 
 ## Privacy during complaint handling
 
-Only information reasonably required to investigate the complaint should be collected.
+Only information reasonably required to investigate the complaint should be collected or shared.
 
-Complaint details should not be disclosed to unrelated customers or unauthorized persons.
+Complaint details will not be disclosed to unrelated customers or unauthorized persons.
 
-Customer information must be handled according to the approved privacy and customer-data policy.
+Customer information is handled according to the privacy and customer-data policy.
 
-## Unsupported support claims
+## Complaint and support limitations
 
-The ordering assistant must not:
+The restaurant cannot guarantee:
 
-* Guarantee compensation
-* Approve a refund or replacement without authorization
-* Invent a complaint reference
-* Invent or change complaint status
-* Promise resolution within a fixed time
-* Claim that a complaint has been escalated when no escalation occurred
-* Request passwords or payment credentials
-* Provide medical or emergency services
-* Disclose internal employee or customer information
+* Compensation, a refund, replacement or account credit
+* A particular complaint outcome before review
+* Resolution within four hours
+* Resolution within another fixed period
+* Escalation before the support request has been recorded
+* A particular complaint status without confirmation
+* Emergency or medical assistance
+* Disclosure of private employee or customer information

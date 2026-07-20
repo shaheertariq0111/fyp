@@ -2,40 +2,52 @@
 
 ## Delivery availability
 
-Delivery is available only when the live ordering system presents delivery as an available fulfilment option.
+Delivery is available only when the live ordering system presents it as an available fulfilment option.
 
 Delivery availability may depend on:
 
 * The selected restaurant branch
 * The delivery address
-* The branch's approved delivery area
+* The branch's supported delivery area
 * Current operating hours
-* Restaurant capacity
+* Restaurant and driver capacity
 * Temporary operational conditions
 
-The ordering assistant must not promise delivery when the live ordering system does not confirm that delivery is available.
+A branch being open does not guarantee that delivery is currently available.
+
+Customers should rely on the current delivery availability displayed by the live ordering system.
 
 ## Delivery area
 
-Orders may only be delivered to addresses inside the approved delivery area of the selected branch.
+Orders can be delivered only to addresses supported by the selected branch.
 
-The customer must provide a complete and accurate delivery address, including any relevant unit number, building name, access instructions or landmark.
+Customers should provide a complete and accurate delivery address, including any relevant:
 
-The live ordering system determines whether the submitted address is eligible for delivery. Branch-specific delivery information is maintained separately.
+* Unit or apartment number
+* Building name
+* Street information
+* Access instructions
+* Nearby landmark
+
+The live ordering system determines whether an address is eligible for delivery.
+
+The restaurant does not guarantee a fixed delivery distance or radius. Eligibility may vary by branch and current operational conditions.
 
 ## Delivery charges
 
-Any delivery fee must be shown by the live ordering system before the customer confirms the order.
+Any delivery fee is displayed by the live ordering system before the customer confirms the order.
 
-The ordering assistant must not invent, waive, reduce or manually change a delivery fee.
+A delivery fee may vary because of the selected branch, delivery address or current ordering conditions.
 
-A minimum order value applies only when the live ordering system explicitly displays one.
+The fee cannot be waived, reduced or changed unless the updated amount is displayed by the live ordering system or confirmed by restaurant staff.
+
+A minimum order value applies only when it is displayed during checkout.
 
 ## Estimated delivery time
 
-The typical delivery estimate for the demonstration restaurant is 30 to 45 minutes after order confirmation.
+The typical delivery estimate is 30 to 45 minutes after order confirmation.
 
-This is an estimate, not a guarantee.
+This is an estimate and not a guaranteed arrival time.
 
 Actual delivery time may vary because of:
 
@@ -45,32 +57,34 @@ Actual delivery time may vary because of:
 * Weather
 * Distance from the branch
 * Difficulty locating or accessing the delivery address
-* Temporary restaurant or delivery-service disruption
+* Temporary restaurant or delivery-service disruptions
 
-The customer should rely on the latest order information provided by the live ordering system.
+Customers should rely on the latest order-status information provided by the live ordering system.
 
 ## Delivery delays
 
-If an order is delayed, the customer may request assistance through the ordering assistant or restaurant support.
+Customers may request assistance through the ordering service or restaurant support when an order is delayed.
 
-A delayed delivery does not automatically qualify for a refund. Refunds, credits or other resolutions must follow the approved refund and complaint policies.
+A delayed delivery does not automatically qualify for a refund, account credit or compensation.
 
-The ordering assistant must not guarantee compensation for a delay.
+Any refund, credit, replacement or other resolution requires review under the complaint and refund policies.
 
 ## Delivery address changes
 
-The customer may change the delivery address before the order is confirmed.
+Customers may change the delivery address before confirming the order.
 
 After confirmation, an address change is not guaranteed because preparation or delivery may already have started.
 
-The customer should contact restaurant support immediately. The restaurant must confirm whether:
+Customers should contact restaurant support immediately.
 
-* The new address is inside the approved delivery area
-* The delivery charge needs to change
-* The order has already left the branch
-* The address change can still be accepted
+Before accepting a change, the restaurant may need to confirm:
 
-The ordering assistant must not claim that the address has been changed until the live system or restaurant support confirms it.
+* Whether the new address is supported by the selected branch
+* Whether the delivery fee must change
+* Whether the order has already left the branch
+* Whether the change can still be completed safely and operationally
+
+An address should be treated as changed only after the live ordering system or restaurant staff confirms it.
 
 ## Delivery instructions
 
@@ -82,53 +96,61 @@ Customers may provide reasonable delivery instructions, such as:
 * A request to call on arrival
 * A request for contactless delivery
 
-Delivery instructions must not require the driver to enter an unsafe, restricted or inaccessible location.
+Delivery instructions cannot require the driver to enter an unsafe, restricted or inaccessible location.
 
 A contactless delivery request may be followed when operationally possible, but it is not guaranteed.
 
 ## Customer availability
 
-The customer should remain reachable through the contact details provided with the order.
+Customers should remain reachable through the contact information provided with the order.
 
-If the restaurant or delivery driver cannot contact the customer or safely complete the delivery, the order may be delayed, returned to the branch or cancelled.
+When the restaurant or delivery driver cannot contact the customer or safely complete the delivery, the order may be delayed, returned to the branch or cancelled.
 
-Redelivery and refunds are not automatic and must be reviewed according to the approved restaurant policies.
+Redelivery, replacement and refunds are not automatic and require review under the applicable restaurant policies.
 
 ## Incorrect or incomplete addresses
 
-The restaurant is not responsible for delays caused by an incorrect, incomplete or inaccessible delivery address provided by the customer.
+Customers should review the delivery address before confirming an order.
 
-The customer should verify the address before confirming the order.
+An incorrect, incomplete or inaccessible address may delay delivery or prevent the delivery from being completed.
 
-Any additional delivery attempt, address correction or refund must be reviewed by restaurant support.
+Any address correction, additional delivery attempt, cancellation or refund requires review by restaurant support.
+
+The restaurant cannot guarantee redelivery when the original address was incorrect or incomplete.
 
 ## Leaving an order unattended
 
-An order should not be left unattended unless the customer has clearly requested this through the delivery instructions and the request can be completed safely.
+An order should not be left unattended unless the customer clearly requests this through the delivery instructions and the request can be completed safely.
 
 The restaurant cannot guarantee the condition or security of an order after it has been left at the customer's requested location.
 
+A request to leave an order unattended may be refused when the location is unsafe, inaccessible or unsuitable.
+
 ## Missing, incorrect or damaged items
 
-Customers should report missing, incorrect, damaged or visibly tampered items as soon as reasonably possible through the ordering assistant or restaurant support.
+Customers should report missing, incorrect, damaged or visibly tampered items as soon as reasonably possible through the ordering service or restaurant support.
 
-The customer may be asked to provide:
+The restaurant may request:
 
 * The order reference
 * A description of the issue
 * The affected item
 * Supporting photographs where appropriate
 
-A replacement, refund or account credit is not automatic. The restaurant will review the issue according to the complaint and refund policies.
+A replacement, refund, redelivery or account credit is not automatic.
 
-## Unsupported delivery requests
+The restaurant will review the issue under the complaint and refund policies.
 
-The ordering assistant must not promise:
+## Delivery limitations
 
-* Delivery outside an approved delivery area
-* Delivery at an exact guaranteed time
-* Free delivery unless shown by the live system
-* Automatic redelivery
-* Automatic refunds
+The restaurant cannot guarantee:
+
+* Delivery outside an address supported by the selected branch
+* Delivery at an exact time
+* Delivery within a fixed distance or radius
+* Free delivery unless it is displayed by the live ordering system
+* Automatic redelivery, replacement or refund
 * Delivery to an address rejected by the live ordering system
-* An address change that has not been confirmed
+* An address change before it has been confirmed
+* Contactless or unattended delivery when it cannot be completed safely
+* Compensation solely because an estimated delivery time was exceeded
