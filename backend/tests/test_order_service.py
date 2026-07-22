@@ -365,3 +365,176 @@ def test_price_change_requires_customer_reconfirmation_before_submission():
     assert submitted.data["status"] == "submitted_to_restaurant"
     assert submitted.data["total"] == 1200
     assert repository.get_by_order_id(order_id)["status"] == "submitted_to_restaurant"
+def _build_customer_tracking_service():
+    menu = MemoryMenuRepository(
+        [
+            {
+                "product_id": "item",
+                "name": "Item",
+                "available": True,
+                "starting_price": 1000,
+                "customization_group_ids": [],
+            }
+        ],
+        [],
+    )
+    repository = MemoryOrderRepository()
+    service = OrderService(repository, menu)
+
+    def create_order(
+        user_id="user",
+        session_id="session",
+        cart_id="cart",
+    ):
+        return service.create_pending_from_cart(
+            {
+                "user_id": user_id,
+                "agent_session_id": session_id,
+                "restaurant_id": "restaurant",
+                "branch_id": "branch",
+                "cart_id": cart_id,
+                "subtotal": 1000,
+                "currency": "PKR",
+                "items": [
+                    {
+                        "item_id": "item",
+                        "name": "Item",
+                        "quantity": 1,
+                        "selected_options": {},
+                        "current_price": 1000,
+                    }
+                ],
+            }
+        ).data["order_id"]
+
+    return service, repository, create_order
+
+
+def test_successful_confirmation_returns_customer_order_tracking_message():
+    service, _, create_order = _build_customer_tracking_service()
+    order_id = create_order()
+
+    service.update_order_flow(order_id, "set_takeaway")
+    response = service.update_order_flow(
+        order_id,
+        "confirm",
+        idempotency_key="confirm-key",
+    )
+
+    expected = (
+        "Your order has been confirmed and sent to the restaurant.\n"
+        "\n"
+        f"Order ID: {order_id}\n"
+        "Status: Submitted to restaurant\n"
+        "\n"
+        "Please keep this Order ID for tracking."
+    )
+
+    assert response.success
+    assert response.data["status"] == "submitted_to_restaurant"
+    assert response.user_message == expected
+    assert response.agent["submission_confirmation"] == expected
+    assert response.agent["status_message"] == (
+        f"Order ID: {order_id}\n"
+        "Status: Submitted to restaurant"
+    )
+
+
+def test_duplicate_confirmation_repeats_customer_tracking_message():
+    service, _, create_order = _build_customer_tracking_service()
+    order_id = create_order()
+
+    service.update_order_flow(order_id, "set_takeaway")
+
+    submitted = service.update_order_flow(
+        order_id,
+        "confirm",
+        idempotency_key="confirm-key",
+    )
+    duplicate = service.update_order_flow(
+        order_id,
+        "confirm",
+        idempotency_key="confirm-key",
+    )
+
+    assert duplicate.success
+    assert duplicate.user_message == submitted.user_message
+    assert duplicate.agent["submission_confirmation"] == (
+        submitted.agent["submission_confirmation"]
+    )
+    assert order_id in duplicate.user_message
+
+
+def test_single_active_order_is_selected_without_requesting_order_id():
+    service, _, create_order = _build_customer_tracking_service()
+    order_id = create_order()
+
+    response = service.get_order_status("user")
+
+    assert response.success
+    assert response.agent["tracking_state"] == "single_active_order"
+    assert response.agent["selected_order_id"] == order_id
+    assert response.agent["requires_order_id"] is False
+    assert response.user_message == (
+        f"Order ID: {order_id}\n"
+        "Status: Awaiting fulfillment method"
+    )
+    assert response.agent["status_message"] == response.user_message
+
+
+def test_multiple_active_orders_require_customer_to_choose_order_id():
+    service, _, create_order = _build_customer_tracking_service()
+
+    first_order_id = create_order(
+        session_id="session-1",
+        cart_id="cart-1",
+    )
+    second_order_id = create_order(
+        session_id="session-2",
+        cart_id="cart-2",
+    )
+
+    response = service.get_order_status("user")
+
+    assert response.success
+    assert response.agent["tracking_state"] == "multiple_active_orders"
+    assert response.agent["requires_order_id"] is True
+    assert response.agent["required_input"] == "order_id"
+    assert first_order_id in response.user_message
+    assert second_order_id in response.user_message
+    assert "Please provide the Order ID" in response.user_message
+
+
+def test_explicit_older_order_id_returns_status_for_owner():
+    service, repository, create_order = _build_customer_tracking_service()
+    order_id = create_order()
+
+    repository.data[order_id]["status"] = "completed"
+
+    response = service.get_order_status(
+        "user",
+        order_id,
+    )
+
+    assert response.success
+    assert response.agent["tracking_state"] == "specific_order"
+    assert response.agent["selected_order_id"] == order_id
+    assert response.user_message == (
+        f"Order ID: {order_id}\n"
+        "Status: Completed"
+    )
+    assert response.agent["status_message"] == response.user_message
+
+
+def test_explicit_order_id_does_not_reveal_another_customers_order():
+    service, _, create_order = _build_customer_tracking_service()
+    order_id = create_order(user_id="customer-a")
+
+    response = service.get_order_status(
+        "customer-b",
+        order_id,
+    )
+
+    assert not response.success
+    assert response.error_code == "ORDER_NOT_FOUND"
+    assert response.user_message == "I couldn't find that order."

@@ -83,14 +83,32 @@ class OrderService:
         if not order:
             return ToolResponse.error(error_code="ORDER_NOT_FOUND", user_message="I couldn't find that order.")
         if idempotency_key and idempotency_key in order.get("idempotency_keys", []):
-            return ToolResponse.ok(data=self._public(order),
-                                   user_message="That order action was already processed.",
-                                   next_action=self._next_action(order["status"]),
-                                   agent=self._order_agent(
-                                       order,
-                                       self._next_action(order["status"]),
-                                       instruction="Tell the customer this order action was already processed and continue from the current order status.",
-                                   ))
+            next_action = self._next_action(order["status"])
+            submitted = order.get("status") == "submitted_to_restaurant"
+            user_message = (
+                self._submission_confirmation(order)
+                if submitted
+                else "That order action was already processed."
+            )
+            instruction = (
+                "Present submission_confirmation exactly, including the Order ID "
+                "and current status."
+                if submitted
+                else (
+                    "Tell the customer this order action was already processed "
+                    "and continue from the current order status."
+                )
+            )
+            return ToolResponse.ok(
+                data=self._public(order),
+                user_message=user_message,
+                next_action=next_action,
+                agent=self._order_agent(
+                    order,
+                    next_action,
+                    instruction=instruction,
+                ),
+            )
         next_status = ORDER_TRANSITIONS.get((order["status"], action))
         if not next_status:
             return ToolResponse.error(error_code="INVALID_ORDER_STATE",
@@ -143,11 +161,12 @@ class OrderService:
         self.orders.save(order, version)
         order["version"] = version + 1
         next_action = self._next_action(next_status)
-        user_message = (
-            self._confirmation_summary(order)
-            if next_status == "pending_confirmation"
-            else "The order was updated successfully."
-        )
+        if next_status == "pending_confirmation":
+            user_message = self._confirmation_summary(order)
+        elif next_status == "submitted_to_restaurant":
+            user_message = self._submission_confirmation(order)
+        else:
+            user_message = "The order was updated successfully."
         return ToolResponse.ok(data=self._public(order), user_message=user_message,
                                next_action=next_action,
                                agent=self._order_agent(
@@ -157,39 +176,163 @@ class OrderService:
                                    instruction=self._instruction(next_status),
                                ))
 
-    def get_order_status(self, user_id: str, order_id: str | None = None) -> ToolResponse:
+    def get_order_status(self, user_id: str,
+                         order_id: str | None = None) -> ToolResponse:
         if order_id:
             order = self.orders.get_by_order_id(order_id)
             if not order or order.get("user_id") != user_id:
-                return ToolResponse.error(error_code="ORDER_NOT_FOUND",
-                                          user_message="I couldn't find that order.")
-            data = {"order": self._public(order)}
+                return ToolResponse.error(
+                    error_code="ORDER_NOT_FOUND",
+                    user_message="I couldn't find that order.",
+                )
+
+            public_order = self._public(order)
+            status_message = self._status_message(order)
             agent = self._order_agent(
                 order,
                 self._next_action(order["status"]),
                 required_input=self._required_input(order["status"]),
-                instruction="Present this order status and continue from the returned next_action if the customer wants to act.",
+                instruction=(
+                    "Present status_message exactly. Continue from the returned "
+                    "next_action only when the customer requests another action."
+                ),
             )
-        else:
-            orders = [self._public(order)
-                      for order in self.orders.list_active(user_id, TERMINAL_STATUSES)]
-            data = {"orders": orders}
+            agent.update({
+                "tracking_state": "specific_order",
+                "selected_order_id": order["order_id"],
+                "requires_order_id": False,
+            })
+
+            return ToolResponse.ok(
+                data={"order": public_order},
+                user_message=status_message,
+                next_action="present_order_status",
+                agent=agent,
+            )
+
+        orders = [
+            self._public(order)
+            for order in self.orders.list_active(
+                user_id,
+                TERMINAL_STATUSES,
+            )
+        ]
+        data = {"orders": orders}
+
+        if len(orders) == 1:
+            order = orders[0]
+            status_message = self._status_message(order)
+            agent = self._order_agent(
+                order,
+                self._next_action(order["status"]),
+                required_input=self._required_input(order["status"]),
+                instruction=(
+                    "Exactly one active order was found. Present status_message "
+                    "without asking the customer for an Order ID."
+                ),
+            )
+            agent.update({
+                "entity": "orders",
+                "orders": [
+                    {
+                        "order_id": order.get("order_id"),
+                        "status": order.get("status"),
+                        "next_action": self._next_action(
+                            order.get("status")
+                        ),
+                        "required_input": self._required_input(
+                            order.get("status")
+                        ),
+                    }
+                ],
+                "tracking_state": "single_active_order",
+                "selected_order_id": order["order_id"],
+                "requires_order_id": False,
+            })
+
+            return ToolResponse.ok(
+                data=data,
+                user_message=status_message,
+                next_action="present_order_status",
+                agent=agent,
+            )
+
+        if len(orders) > 1:
+            lines = ["I found multiple active orders:"]
+
+            for order in orders:
+                lines.append(
+                    f"- {order['order_id']}: "
+                    f"{self._status_label(order.get('status'))}"
+                )
+
+            lines.extend([
+                "",
+                "Please provide the Order ID you want to check.",
+            ])
+            user_message = "\n".join(lines)
+
             agent = {
                 "entity": "orders",
                 "orders": [
                     {
                         "order_id": order.get("order_id"),
                         "status": order.get("status"),
-                        "next_action": self._next_action(order.get("status")),
-                        "required_input": self._required_input(order.get("status")),
+                        "next_action": self._next_action(
+                            order.get("status")
+                        ),
+                        "required_input": self._required_input(
+                            order.get("status")
+                        ),
                     }
                     for order in orders
                 ],
-                "valid_next_actions": ["update_order_flow", "search_menu", "create_menu_session_link"],
-                "instruction": "Use these active backend orders to choose the next order step. If multiple orders match an action, ask which order_id the customer means.",
+                "tracking_state": "multiple_active_orders",
+                "selected_order_id": None,
+                "requires_order_id": True,
+                "required_input": "order_id",
+                "valid_next_actions": ["get_order_status"],
+                "instruction": (
+                    "Present the listed Order IDs and statuses, then ask the "
+                    "customer which Order ID they want to check."
+                ),
             }
-        return ToolResponse.ok(data=data, user_message="Here is the current order status.",
-                               next_action="present_order_status", agent=agent)
+
+            return ToolResponse.ok(
+                data=data,
+                user_message=user_message,
+                next_action="request_order_id",
+                agent=agent,
+            )
+
+        user_message = (
+            "I couldn't find an active order. "
+            "Please provide the Order ID you want to check."
+        )
+        agent = {
+            "entity": "orders",
+            "orders": [],
+            "tracking_state": "no_active_order",
+            "selected_order_id": None,
+            "requires_order_id": True,
+            "required_input": "order_id",
+            "valid_next_actions": [
+                "get_order_status",
+                "search_menu",
+                "create_menu_session_link",
+            ],
+            "instruction": (
+                "No active order was found. Ask the customer for an Order ID "
+                "if they want to check an older order."
+            ),
+        }
+
+        return ToolResponse.ok(
+            data=data,
+            user_message=user_message,
+            next_action="request_order_id",
+            agent=agent,
+        )
 
     def admin_list_orders(self, status: str | None = None, limit: int = 50) -> dict:
         orders = [self._public(order) for order in self.orders.list_all()]
@@ -391,6 +534,28 @@ class OrderService:
         return "\n".join(lines)
 
     @staticmethod
+    def _status_label(status):
+        return str(status or "unknown").replace("_", " ").capitalize()
+
+    @classmethod
+    def _status_message(cls, order):
+        return (
+            f"Order ID: {order.get('order_id')}\n"
+            f"Status: {cls._status_label(order.get('status'))}"
+        )
+
+    @classmethod
+    def _submission_confirmation(cls, order):
+        return (
+            "Your order has been confirmed and sent to the restaurant.\n"
+            "\n"
+            f"Order ID: {order.get('order_id')}\n"
+            "Status: Submitted to restaurant\n"
+            "\n"
+            "Please keep this Order ID for tracking."
+        )
+
+    @staticmethod
     def _next_action(status):
         return {
             "pending_confirmation": "confirm_or_cancel",
@@ -413,7 +578,10 @@ class OrderService:
             "pending_confirmation": "Summarize the complete order, fulfillment details, and total. Ask the customer to confirm or cancel. Confirm submits the order.",
             "awaiting_fulfillment_method": "Ask the customer to choose delivery or takeaway.",
             "awaiting_delivery_address": "Ask the customer for a delivery address.",
-            "submitted_to_restaurant": "Tell the customer the order was submitted and await restaurant updates.",
+            "submitted_to_restaurant": (
+                "Present submission_confirmation exactly, including the "
+                "customer-facing Order ID and current status."
+            ),
         }.get(status, "Present the returned order status.")
 
     @classmethod
@@ -435,9 +603,12 @@ class OrderService:
                 "delivery_address": order.get("delivery_address"),
             },
             "instruction": instruction or cls._instruction(order.get("status")),
+            "status_message": cls._status_message(order),
         }
         if order.get("status") == "pending_confirmation":
             agent["confirmation_summary"] = cls._confirmation_summary(order)
+        if order.get("status") == "submitted_to_restaurant":
+            agent["submission_confirmation"] = cls._submission_confirmation(order)
         return agent
 
     @staticmethod

@@ -299,3 +299,34 @@ def test_sanitize_agent_text_removes_thinking_blocks():
     assert restaurant_agent.sanitize_agent_text(
         "Before <thinking>hidden</thinking> After"
     ) == "Before After"
+def test_system_prompt_defines_customer_order_tracking_policy():
+    normalized_prompt = " ".join(
+        RESTAURANT_AGENT_SYSTEM_PROMPT.split()
+    )
+
+    assert (
+        "If the agent object contains submission_confirmation, "
+        "present that exact text."
+        in normalized_prompt
+    )
+    assert (
+        "When exactly one active order is returned, use it "
+        "automatically and do not ask for an Order ID."
+        in normalized_prompt
+    )
+    assert (
+        "Ask for an Order ID only when multiple active orders "
+        "are returned, the conversation has lost order context, "
+        "or the customer asks about an older order."
+        in normalized_prompt
+    )
+    assert (
+        "Never reveal an order status when the backend returns "
+        "ORDER_NOT_FOUND."
+        in normalized_prompt
+    )
+    assert (
+        "Backend-returned ORD- order IDs are customer-facing "
+        "tracking references, not hidden internal IDs."
+        in normalized_prompt
+    )
