@@ -105,10 +105,36 @@ class OrderService:
         elif action == "set_takeaway":
             order["fulfillment_method"] = "takeaway"
             order["delivery_address"] = None
+        if next_status == "pending_confirmation":
+            invalid = self._recalculate_order_totals(order)
+            if invalid:
+                return invalid
         elif action == "confirm":
+            previous_pricing = self._pricing_snapshot(order)
             invalid = self._validate_submission(order)
             if invalid:
                 return invalid
+            if self._pricing_snapshot(order) != previous_pricing:
+                order["updated_at"] = self._now()
+                version = order["version"]
+                self.orders.save(order, version)
+                order["version"] = version + 1
+                return ToolResponse.ok(
+                    data=self._public(order),
+                    user_message=self._confirmation_summary(order),
+                    next_action="confirm_or_cancel",
+                    agent=self._order_agent(
+                        order,
+                        "confirm_or_cancel",
+                        required_input="confirm_or_cancel",
+                        instruction=(
+                            "The authoritative price changed after the previous "
+                            "summary. Present the updated confirmation_summary "
+                            "and ask the customer to confirm or cancel again. "
+                            "Do not submit the order yet."
+                        ),
+                    ),
+                )
         order["status"] = next_status
         order["updated_at"] = self._now()
         if idempotency_key:
@@ -117,7 +143,12 @@ class OrderService:
         self.orders.save(order, version)
         order["version"] = version + 1
         next_action = self._next_action(next_status)
-        return ToolResponse.ok(data=self._public(order), user_message="The order was updated successfully.",
+        user_message = (
+            self._confirmation_summary(order)
+            if next_status == "pending_confirmation"
+            else "The order was updated successfully."
+        )
+        return ToolResponse.ok(data=self._public(order), user_message=user_message,
                                next_action=next_action,
                                agent=self._order_agent(
                                    order,
@@ -246,14 +277,7 @@ class OrderService:
         ]
         return {"orders": orders[:limit], "next_cursor": None}
 
-    def _validate_submission(self, order):
-        method = order.get("fulfillment_method")
-        if method not in {"delivery", "takeaway"}:
-            return ToolResponse.error(error_code="FULFILLMENT_METHOD_REQUIRED",
-                                      user_message="Choose delivery or takeaway first.")
-        if method == "delivery" and not order.get("delivery_address"):
-            return ToolResponse.error(error_code="ADDRESS_REQUIRED",
-                                      user_message="A delivery address is required.")
+    def _recalculate_order_totals(self, order):
         total = 0
         for item in order["items"]:
             source = self.menu.get_item(item["item_id"])
@@ -280,6 +304,91 @@ class OrderService:
         order["subtotal"] = total
         order["total"] = total + (order.get("delivery_fee") or 0)
         return None
+
+    def _validate_submission(self, order):
+        method = order.get("fulfillment_method")
+        if method not in {"delivery", "takeaway"}:
+            return ToolResponse.error(error_code="FULFILLMENT_METHOD_REQUIRED",
+                                      user_message="Choose delivery or takeaway first.")
+        if method == "delivery" and not order.get("delivery_address"):
+            return ToolResponse.error(error_code="ADDRESS_REQUIRED",
+                                      user_message="A delivery address is required.")
+        return self._recalculate_order_totals(order)
+
+    @staticmethod
+    def _pricing_snapshot(order):
+        return {
+            "items": [
+                {
+                    "item_id": item.get("item_id"),
+                    "quantity": item.get("quantity"),
+                    "unit_price": item.get("unit_price"),
+                    "line_total": item.get("line_total"),
+                }
+                for item in order.get("items", [])
+            ],
+            "subtotal": order.get("subtotal"),
+            "delivery_fee": order.get("delivery_fee"),
+            "total": order.get("total"),
+        }
+
+    @staticmethod
+    def _format_money(value, currency):
+        amount = float(value or 0)
+        currency_label = "Rs" if str(currency or "").upper() == "PKR" else str(currency or "")
+        return f"{currency_label} {amount:,.2f}".strip()
+
+    @classmethod
+    def _confirmation_summary(cls, order):
+        currency = order.get("currency")
+        lines = [
+            "Alright,",
+            "",
+            "Here is your order summary:",
+            "",
+        ]
+
+        for index, item in enumerate(order.get("items", []), start=1):
+            quantity = item.get("quantity") or 1
+            lines.extend([
+                f"{index}) {item.get('name') or 'Item'}",
+                f"Quantity: {quantity}",
+                f"Unit price: {cls._format_money(item.get('unit_price'), currency)}",
+                f"Item total: {cls._format_money(item.get('line_total'), currency)}",
+                "",
+            ])
+
+        lines.extend([
+            "------------------------------",
+            f"Subtotal: {cls._format_money(order.get('subtotal'), currency)}",
+        ])
+
+        if order.get("delivery_fee") is not None:
+            lines.append(
+                f"Delivery fee: {cls._format_money(order.get('delivery_fee'), currency)}"
+            )
+
+        lines.extend([
+            f"Grand total: {cls._format_money(order.get('total'), currency)}",
+            "------------------------------",
+        ])
+
+        fulfillment_method = order.get("fulfillment_method")
+        if fulfillment_method:
+            lines.extend([
+                "",
+                f"Fulfilment: {str(fulfillment_method).replace('_', ' ').title()}",
+            ])
+
+        if fulfillment_method == "delivery" and order.get("delivery_address"):
+            lines.append(f"Delivery address: {order['delivery_address']}")
+
+        lines.extend([
+            "",
+            "Should I confirm this order?",
+        ])
+
+        return "\n".join(lines)
 
     @staticmethod
     def _next_action(status):
@@ -309,7 +418,7 @@ class OrderService:
 
     @classmethod
     def _order_agent(cls, order, next_action, *, required_input=None, instruction=None):
-        return {
+        agent = {
             "entity": "order",
             "order_id": order.get("order_id"),
             "order_status": order.get("status"),
@@ -327,6 +436,9 @@ class OrderService:
             },
             "instruction": instruction or cls._instruction(order.get("status")),
         }
+        if order.get("status") == "pending_confirmation":
+            agent["confirmation_summary"] = cls._confirmation_summary(order)
+        return agent
 
     @staticmethod
     def _order_valid_next_actions(status):

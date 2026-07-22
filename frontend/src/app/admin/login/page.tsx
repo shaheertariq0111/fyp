@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { FormEvent, useRef, useState } from "react";
 import { adminPost } from "@/lib/adminApi";
 
@@ -158,7 +159,7 @@ export default function AdminLoginPage() {
             <small>Restaurant Control Center</small>
           </span>
         </div>
-        <div>
+        <div className="admin-login-brand-content">
           <span className="admin-live-badge">
             <span aria-hidden="true" />
             Operations Console
@@ -167,12 +168,22 @@ export default function AdminLoginPage() {
           <p>Secure administrative access for restaurant order, menu, customer, and monitoring workflows.</p>
         </div>
         <p className="admin-login-note"><LoginIcon name="lock" /> Authorised staff access only.</p>
+        <div className="admin-login-brand-overlay" aria-hidden="true" />
+        <div className="admin-login-art" aria-hidden="true">
+          <Image
+            alt=""
+            className="admin-login-brand-image"
+            fill
+            sizes="(max-width: 620px) 0px, (max-width: 1100px) 80vw, 55vw"
+            src="/images/admin-login/pizza-kitchen.png"
+          />
+        </div>
       </section>
 
       <section className="admin-login-panel" aria-labelledby="admin-login-heading">
         <div>
-          <h2 id="admin-login-heading">Admin sign in</h2>
-          <p>Use your authorised administrator account to continue.</p>
+          <h2 id="admin-login-heading">Welcome back</h2>
+          <p>Sign in to your operations console</p>
         </div>
         {serverError && (
           <div className="admin-error-panel" role="alert" aria-live="polite">
