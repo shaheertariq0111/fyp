@@ -18,11 +18,31 @@ def build_services():
             {"product_id": "addon-configurable", "name": "Configurable Add-on", "category": "addon",
              "currency": "CUR", "available": True, "starting_price": 5,
              "customization_group_ids": ["dynamic-choice"], "upsell_group_ids": []},
+            {"product_id": "priced-pizza", "name": "Priced Pizza", "category": "pizza",
+             "currency": "PKR", "available": True, "starting_price": 850,
+             "base_prices": {"small": 850, "medium": 1700, "large": 2400},
+             "customization_group_ids": ["pizza-size", "pizza-crust"],
+             "upsell_group_ids": []},
         ],
-        groups=[{"option_group_id": "dynamic-choice", "name": "Dynamic", "type": "single_select",
-                 "required": True, "question": "Choose dynamically", "options": [
-                    {"option_id": "choice-a", "label": "Choice A", "price_key": "option-a"}
-                 ]}],
+        groups=[
+            {"option_group_id": "dynamic-choice", "name": "Dynamic", "type": "single_select",
+             "required": True, "question": "Choose dynamically", "options": [
+                {"option_id": "choice-a", "label": "Choice A", "price_key": "option-a"}
+             ]},
+            {"option_group_id": "pizza-size", "name": "Pizza Size", "type": "single_select",
+             "required": True, "question": "Which pizza size would you like?", "options": [
+                {"option_id": "small", "name": "Small", "price_key": "small"},
+                {"option_id": "medium", "name": "Medium", "price_key": "medium"},
+                {"option_id": "large", "name": "Large", "price_key": "large"},
+             ]},
+            {"option_group_id": "pizza-crust", "name": "Pizza Crust", "type": "single_select",
+             "required": True, "question": "Choose a crust.", "options": [
+                {"option_id": "regular", "name": "Regular Crust", "price_delta": 0},
+                {"option_id": "thin", "name": "Crunchy Thin Crust", "price_delta": 0},
+                {"option_id": "stuffed", "name": "Mozzarella Stuffed Crust", "price_delta": 350},
+                {"option_id": "cheese-burst", "name": "Cheese Burst Crust", "price_delta": 500},
+             ]},
+        ],
         upsells=[{"upsell_group_id": "dynamic-upsell", "question": "Add?",
                   "items": ["addon", "addon-configurable"]}],
     )
@@ -187,3 +207,114 @@ def test_cart_tool_response_includes_agent_next_step_packet():
     assert response.agent["required_input"] == "customization_choice"
     assert response.agent["active_choice"]["cart_item_id"] == response.data["cart_item_id"]
     assert response.agent["valid_next_actions"] == ["save_customization_choice"]
+
+def test_start_item_customization_does_not_create_second_active_cart():
+    service, carts, _ = build_services()
+
+    first = service.start_item_customization(
+        "user",
+        "session",
+        "configurable",
+    )
+    second = service.start_item_customization(
+        "user",
+        "session",
+        "addon",
+    )
+
+    assert len(carts.data) == 1
+    assert second.data["cart_id"] == first.data["cart_id"]
+    assert second.data["items"][0]["item_id"] == "configurable"
+    assert second.agent["active_choice"]["field_name"] == "dynamic-choice"
+
+
+def test_size_choice_includes_authoritative_prices():
+    service, _, _ = build_services()
+
+    response = service.start_item_customization(
+        "user",
+        "session",
+        "priced-pizza",
+    )
+
+    active_choice = response.agent["active_choice"]
+
+    assert active_choice["options"][0]["display_label"] == "Small - PKR 850"
+    assert active_choice["options"][1]["display_label"] == "Medium - PKR 1,700"
+    assert active_choice["options"][2]["display_label"] == "Large - PKR 2,400"
+    assert active_choice["choice_prompt"] == (
+        "Which pizza size would you like?\n"
+        "\n"
+        "1. Small - PKR 850\n"
+        "2. Medium - PKR 1,700\n"
+        "3. Large - PKR 2,400"
+    )
+    assert response.user_message == active_choice["choice_prompt"]
+
+
+def test_crust_choice_includes_authoritative_price_deltas():
+    service, _, _ = build_services()
+
+    started = service.start_item_customization(
+        "user",
+        "session",
+        "priced-pizza",
+    )
+
+    response = service.save_choice(
+        started.data["cart_item_id"],
+        "pizza-size",
+        "medium",
+    )
+
+    active_choice = response.agent["active_choice"]
+
+    assert active_choice["options"][0]["display_label"] == (
+        "Regular Crust - No additional charge"
+    )
+    assert active_choice["options"][1]["display_label"] == (
+        "Crunchy Thin Crust - No additional charge"
+    )
+    assert active_choice["options"][2]["display_label"] == (
+        "Mozzarella Stuffed Crust - Additional PKR 350"
+    )
+    assert active_choice["options"][3]["display_label"] == (
+        "Cheese Burst Crust - Additional PKR 500"
+    )
+    assert response.user_message == active_choice["choice_prompt"]
+
+
+def test_upsell_prompt_lists_backend_items_and_prices():
+    service, _, _ = build_services()
+
+    started = service.start_item_customization(
+        "user",
+        "session",
+        "configurable",
+    )
+    ready = service.save_choice(
+        started.data["cart_item_id"],
+        "dynamic-choice",
+        "choice-a",
+    )
+
+    response = service.handle_upsell(
+        ready.data["cart_id"],
+        "get_options",
+    )
+
+    assert response.agent["upsell_items"][0]["display_label"] == (
+        "Configured Add-on - CUR 4"
+    )
+    assert response.agent["upsell_items"][1]["display_label"] == (
+        "Configurable Add-on - From CUR 5"
+    )
+    assert response.agent["upsell_prompt"] == (
+        "Would you like to add anything?\n"
+        "\n"
+        "1. Configured Add-on - CUR 4\n"
+        "2. Configurable Add-on - From CUR 5\n"
+        "\n"
+        "You can choose one add-on or proceed to checkout."
+    )
+    assert response.user_message == response.agent["upsell_prompt"]

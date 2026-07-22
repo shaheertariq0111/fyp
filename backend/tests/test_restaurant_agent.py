@@ -74,6 +74,34 @@ def test_system_prompt_requires_tool_grounding():
         in normalized_prompt
     )
     assert (
+        "If the agent object contains active_choice.choice_prompt, present that exact text."
+        in normalized_prompt
+    )
+    assert (
+        "Preserve all line breaks, option names, prices, price differences, and numbering."
+        in normalized_prompt
+    )
+    assert (
+        "If the agent object contains upsell_prompt, present that exact text."
+        in normalized_prompt
+    )
+    assert (
+        "Do not replace it with a generic question about add-ons."
+        in normalized_prompt
+    )
+    assert (
+        "call get_active_cart before starting a new chat cart"
+        in normalized_prompt
+    )
+    assert (
+        "Do not call start_cart_item_customization for a second cart."
+        in normalized_prompt
+    )
+    assert (
+        "preserve the backend-returned display_label values"
+        in normalized_prompt
+    )
+    assert (
         "as reference material, not as customer-ready wording"
         in normalized_prompt
     )
