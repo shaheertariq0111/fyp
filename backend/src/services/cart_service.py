@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 import re
 
 from src.models.tool_responses import ToolResponse
@@ -40,13 +39,6 @@ class CartService:
         if quantity < 1:
             return ToolResponse.error(error_code="INVALID_QUANTITY",
                                       user_message="Quantity must be at least one.")
-        active_cart = self.carts.find_active_by_session(
-            user_id,
-            session_id,
-            TERMINAL_CART_STATUSES,
-        )
-        if active_cart:
-            return self._resume_active_cart(active_cart)
         menu_item = self.menu.get_item(item_id)
         if not menu_item:
             return ToolResponse.error(error_code="ITEM_NOT_FOUND",
@@ -201,27 +193,16 @@ class CartService:
         if action == "get_options":
             self._save(cart)
             upsell_items = list(allowed.values())
-            upsell_prompt = self._upsell_prompt(upsell_items)
-            return ToolResponse.ok(
-                data={
-                    **self._cart_data(cart),
-                    "upsell_items": upsell_items,
-                    "upsell_prompt": upsell_prompt,
-                },
-                user_message=upsell_prompt,
-                next_action="choose_upsell",
-                agent=self._cart_agent(
-                    cart,
-                    "choose_upsell",
-                    required_input="upsell_decision",
-                    upsell_items=upsell_items,
-                    upsell_prompt=upsell_prompt,
-                    instruction=(
-                        "Present upsell_prompt exactly. If the customer declines, "
-                        "call handle_cart_upsell with action skip."
-                    ),
-                ),
-            )
+            return ToolResponse.ok(data={**self._cart_data(cart), "upsell_items": upsell_items},
+                                   user_message="Here are the currently available add-ons.",
+                                   next_action="choose_upsell",
+                                   agent=self._cart_agent(
+                                       cart,
+                                       "choose_upsell",
+                                       required_input="upsell_decision",
+                                       upsell_items=upsell_items,
+                                       instruction="Offer only these upsell_items. If the customer declines, call handle_cart_upsell with action skip.",
+                                   ))
         if action == "add_item":
             if quantity < 1 or not item_id or item_id not in allowed:
                 return ToolResponse.error(error_code="INVALID_UPSELL_ITEM",
@@ -582,359 +563,62 @@ class CartService:
         self.carts.save(cart, version)
         cart["version"] = version + 1
 
-    def _resume_active_cart(self, cart):
-        status = cart.get("status")
-
-        if status == "cart_created":
-            cart_id = cart["cart_id"]
-            return ToolResponse.ok(
-                data=self._cart_data(cart),
-                user_message=(
-                    "Should these items use the same customization "
-                    "or be customized separately?"
-                ),
-                next_action="set_customization_mode",
-                agent=self._cart_agent(
-                    cart,
-                    "set_customization_mode",
-                    required_input="customization_mode",
-                    choices=[
-                        {"label": "Same", "value": "same"},
-                        {"label": "Customize separately", "value": "separate"},
-                    ],
-                    instruction=(
-                        "Resume this existing cart. Ask whether these items "
-                        "should use the same customization or be customized separately."
-                    ),
-                ),
-                buttons=[
-                    {
-                        "label": "Same",
-                        "action": "set_customization_mode",
-                        "metadata": {"cart_id": cart_id, "mode": "same"},
-                    },
-                    {
-                        "label": "Customize separately",
-                        "action": "set_customization_mode",
-                        "metadata": {"cart_id": cart_id, "mode": "separate"},
-                    },
-                ],
-            )
-
-        if status == "customizing_item" and cart.get("active_cart_item_id"):
-            return self._next_choice_response(cart)
-
-        if status == "awaiting_upsell_decision":
-            upsell_items = list(self._upsell_items(cart).values())
-            upsell_prompt = self._upsell_prompt(upsell_items)
-            return ToolResponse.ok(
-                data={
-                    **self._cart_data(cart),
-                    "upsell_items": upsell_items,
-                    "upsell_prompt": upsell_prompt,
-                },
-                user_message=upsell_prompt,
-                next_action="choose_upsell",
-                agent=self._cart_agent(
-                    cart,
-                    "choose_upsell",
-                    required_input="upsell_decision",
-                    upsell_items=upsell_items,
-                    upsell_prompt=upsell_prompt,
-                    instruction=(
-                        "Resume this existing cart and present "
-                        "upsell_prompt exactly."
-                    ),
-                ),
-            )
-
-        if status == "item_ready":
-            return ToolResponse.ok(
-                data=self._cart_data(cart),
-                user_message=(
-                    "You already have an active cart ready for "
-                    "add-ons or checkout."
-                ),
-                next_action="offer_upsell",
-                agent=self._cart_agent(
-                    cart,
-                    "offer_upsell",
-                    instruction=(
-                        "Resume this existing cart. Offer backend "
-                        "upsells or proceed to checkout."
-                    ),
-                ),
-            )
-
-        if status == "cart_ready":
-            return ToolResponse.ok(
-                data=self._cart_data(cart),
-                user_message="Your existing cart is ready for checkout.",
-                next_action="create_pending_order",
-                agent=self._cart_agent(
-                    cart,
-                    "create_pending_order",
-                    instruction=(
-                        "Resume this existing cart and proceed to "
-                        "checkout when the customer is ready."
-                    ),
-                ),
-            )
-
-        return ToolResponse.ok(
-            data=self._cart_data(cart),
-            user_message="You already have an active cart.",
-            next_action="present_cart_status",
-            agent=self._cart_agent(
-                cart,
-                "present_cart_status",
-                instruction=(
-                    "Resume this existing cart instead of creating another cart."
-                ),
-            ),
-        )
-
     def _next_choice_response(self, cart):
-        item = next(
-            entry for entry in cart["items"]
-            if entry["cart_item_id"] == cart["active_cart_item_id"]
-        )
+        item = next(entry for entry in cart["items"]
+                    if entry["cart_item_id"] == cart["active_cart_item_id"])
         menu_item = self.menu.get_item(item["item_id"])
-        group = next(
-            group for group in self._groups(menu_item)
-            if group["option_group_id"] == item["current_step"]
-        )
-        active_choice = self._choice_payload(item, menu_item, group)
-
+        group = next(group for group in self._groups(menu_item)
+                     if group["option_group_id"] == item["current_step"])
         return ToolResponse.ok(
-            data={
-                **self._cart_data(cart),
-                **active_choice,
-            },
-            user_message=active_choice["choice_prompt"],
+            data={**self._cart_data(cart), "cart_item_id": item["cart_item_id"],
+                  "label": item["label"], "field_name": group["option_group_id"],
+                  "question": group["question"], "options": group["options"]},
+            user_message=f"{item['label']}: {group['question']}",
             next_action="ask_customization_choice",
             agent=self._cart_agent(
                 cart,
                 "ask_customization_choice",
-                active_choice=active_choice,
+                active_choice={
+                    "cart_item_id": item["cart_item_id"],
+                    "label": item["label"],
+                    "field_name": group["option_group_id"],
+                    "question": group["question"],
+                    "options": group["options"],
+                },
                 required_input="customization_choice",
-                instruction=(
-                    "Present active_choice.choice_prompt exactly and save "
-                    "one of the returned option IDs with "
-                    "save_customization_choice."
-                ),
+                instruction="Ask this exact question and save one of these option IDs with save_customization_choice.",
             ),
         )
 
     def _active_choice_data(self, cart):
-        item = next(
-            entry for entry in cart["items"]
-            if entry["cart_item_id"] == cart["active_cart_item_id"]
-        )
+        item = next(entry for entry in cart["items"]
+                    if entry["cart_item_id"] == cart["active_cart_item_id"])
         menu_item = self.menu.get_item(item["item_id"])
-        group = next(
-            group for group in self._groups(menu_item)
-            if group["option_group_id"] == item["current_step"]
-        )
-        return self._choice_payload(item, menu_item, group)
-
-    def _choice_payload(self, item, menu_item, group):
-        options = self._choice_options(menu_item, group)
-        question = group["question"]
-        heading = (
-            question
-            if item.get("label") == "Item 1"
-            else f"{item.get('label')}: {question}"
-        )
-        option_lines = [
-            f"{index}. {option['display_label']}"
-            for index, option in enumerate(options, start=1)
-        ]
-        choice_prompt = "\n".join(
-            [heading, "", *option_lines]
-        )
-
+        group = next(group for group in self._groups(menu_item)
+                     if group["option_group_id"] == item["current_step"])
         return {
             "cart_item_id": item["cart_item_id"],
             "label": item["label"],
             "field_name": group["option_group_id"],
-            "question": question,
-            "options": options,
-            "choice_prompt": choice_prompt,
+            "question": group["question"],
+            "options": group["options"],
         }
-
-    def _choice_options(self, menu_item, group):
-        options = []
-
-        for source_option in group.get("options", []):
-            if not source_option.get("available", True):
-                continue
-
-            option = deepcopy(source_option)
-            option["display_label"] = self._option_display_label(
-                menu_item,
-                option,
-            )
-            options.append(option)
-
-        return options
-
-    def _option_display_label(self, menu_item, option):
-        name = (
-            option.get("name")
-            or option.get("label")
-            or option.get("option_id")
-            or "Option"
-        )
-        currency = menu_item.get("currency") or ""
-        base_prices = menu_item.get("base_prices") or {}
-        price_key = option.get("price_key")
-
-        if price_key is not None and price_key in base_prices:
-            price = self._decimal(base_prices.get(price_key))
-
-            if price is not None:
-                delta = self._decimal(option.get("price_delta", 0))
-
-                if delta is not None:
-                    price += delta
-
-                return (
-                    f"{name} - "
-                    f"{self._money_text(currency, price)}"
-                )
-
-        if "price_delta" in option:
-            delta = self._decimal(option.get("price_delta"))
-
-            if delta == Decimal("0"):
-                return f"{name} - No additional charge"
-
-            if delta is not None and delta > 0:
-                return (
-                    f"{name} - Additional "
-                    f"{self._money_text(currency, delta)}"
-                )
-
-            if delta is not None and delta < 0:
-                return (
-                    f"{name} - Discount "
-                    f"{self._money_text(currency, abs(delta))}"
-                )
-
-        return name
 
     def _upsell_items(self, cart):
         result = {}
-
         for cart_item in cart["items"]:
             if cart_item.get("is_upsell"):
                 continue
-
             source = self.menu.get_item(cart_item["item_id"])
-
             for group_id in source.get("upsell_group_ids", []):
                 group = self.menu.get_upsell_group(group_id) or {}
-
                 for item_id in group.get("items", []):
                     item = self.menu.get_item(item_id)
-
-                    if not item or not item.get("available"):
-                        continue
-
-                    public_item = {
-                        key: item.get(key)
-                        for key in (
-                            "product_id",
-                            "name",
-                            "price",
-                            "starting_price",
-                            "base_prices",
-                            "currency",
-                            "requires_customization",
-                            "customization_group_ids",
-                        )
-                    }
-
-                    public_item["display_label"] = (
-                        self._upsell_display_label(public_item)
-                    )
-                    result[item_id] = public_item
-
+                    if item and item.get("available"):
+                        result[item_id] = {key: item.get(key) for key in
+                                           ("product_id", "name", "starting_price", "currency",
+                                            "requires_customization", "customization_group_ids")}
         return result
-
-    def _upsell_display_label(self, item):
-        name = item.get("name") or item.get("product_id") or "Add-on"
-        currency = item.get("currency") or ""
-        price = item.get("starting_price")
-
-        if price is None:
-            price = item.get("price")
-
-        if price is None:
-            base_prices = item.get("base_prices") or {}
-
-            if base_prices:
-                price = min(base_prices.values())
-
-        amount = self._decimal(price)
-
-        if amount is None:
-            return name
-
-        requires_customization = bool(
-            item.get("requires_customization")
-            or item.get("customization_group_ids")
-        )
-        prefix = "From " if requires_customization else ""
-
-        return (
-            f"{name} - {prefix}"
-            f"{self._money_text(currency, amount)}"
-        )
-
-    @staticmethod
-    def _upsell_prompt(upsell_items):
-        if not upsell_items:
-            return (
-                "There are no available add-ons right now. "
-                "You can proceed to checkout."
-            )
-
-        lines = [
-            f"{index}. {item['display_label']}"
-            for index, item in enumerate(upsell_items, start=1)
-        ]
-
-        return "\n".join([
-            "Would you like to add anything?",
-            "",
-            *lines,
-            "",
-            "You can choose one add-on or proceed to checkout.",
-        ])
-
-    @staticmethod
-    def _decimal(value):
-        if value is None:
-            return None
-
-        try:
-            return Decimal(str(value))
-        except (InvalidOperation, TypeError, ValueError):
-            return None
-
-    @classmethod
-    def _money_text(cls, currency, amount):
-        formatted = cls._format_amount(amount)
-        return f"{currency} {formatted}".strip()
-
-    @staticmethod
-    def _format_amount(amount):
-        if amount == amount.to_integral():
-            return f"{int(amount):,}"
-
-        return f"{amount:,.2f}".rstrip("0").rstrip(".")
 
     def _validate_and_reprice(self, cart):
         for item in cart["items"]:
@@ -963,7 +647,6 @@ class CartService:
         active_choice=None,
         choices=None,
         upsell_items=None,
-        upsell_prompt=None,
         required_input=None,
         instruction=None,
     ):
@@ -1000,8 +683,6 @@ class CartService:
             payload["choices"] = choices
         if upsell_items is not None:
             payload["upsell_items"] = upsell_items
-        if upsell_prompt is not None:
-            payload["upsell_prompt"] = upsell_prompt
         if instruction:
             payload["instruction"] = instruction
         return payload

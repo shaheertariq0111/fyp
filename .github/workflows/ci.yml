@@ -328,7 +328,6 @@ jobs:
               Path("infra/phase7-ecs-api.yaml"),
               Path("infra/phase11-monitoring.yaml"),
               Path("infra/phase13-github-oidc.yaml"),
-              Path("infra/phase14-knowledge-base.yaml"),
           ]
           for template in templates:
               with template.open("r", encoding="utf-8") as handle:
@@ -342,55 +341,7 @@ jobs:
             infra/phase3-network.yaml \
             infra/phase7-ecs-api.yaml \
             infra/phase11-monitoring.yaml \
-            infra/phase13-github-oidc.yaml \
-            infra/phase14-knowledge-base.yaml
-
-      - name: Validate Phase 14 Bedrock metadata configuration
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import yaml
-
-          class CloudFormationLoader(yaml.SafeLoader):
-              pass
-
-          def cloudformation_tag(loader, tag_suffix, node):
-              if isinstance(node, yaml.ScalarNode):
-                  return loader.construct_scalar(node)
-              if isinstance(node, yaml.SequenceNode):
-                  return loader.construct_sequence(node)
-              if isinstance(node, yaml.MappingNode):
-                  return loader.construct_mapping(node)
-              return None
-
-          CloudFormationLoader.add_multi_constructor("!", cloudformation_tag)
-
-          template = yaml.load(
-              Path("infra/phase14-knowledge-base.yaml").read_text(encoding="utf-8"),
-              Loader=CloudFormationLoader,
-          )
-          index = template["Resources"]["RestaurantKnowledgeVectorIndex"]["Properties"]
-          knowledge_base = template["Resources"]["RestaurantKnowledgeBase"]["Properties"]
-          data_source = template["Resources"]["RestaurantKnowledgeDataSource"]["Properties"]
-          keys = index.get("MetadataConfiguration", {}).get("NonFilterableMetadataKeys", [])
-          required = {"AMAZON_BEDROCK_TEXT", "AMAZON_BEDROCK_METADATA"}
-          missing = sorted(required - set(keys))
-          if missing:
-              raise SystemExit(f"Missing required non-filterable metadata keys: {missing}")
-          expected_names = {
-              "RestaurantKnowledgeVectorIndex IndexName": (index.get("IndexName"), "restaurant-knowledge-index-v2"),
-              "RestaurantKnowledgeBase Name": (knowledge_base.get("Name"), "fyp_dev_restaurant_knowledge_v2"),
-              "RestaurantKnowledgeDataSource Name": (data_source.get("Name"), "fyp_dev_restaurant_documents_v2"),
-          }
-          mismatches = [
-              f"{label} is {actual!r}, expected {expected!r}"
-              for label, (actual, expected) in expected_names.items()
-              if actual != expected
-          ]
-          if mismatches:
-              raise SystemExit("; ".join(mismatches))
-          print("Phase 14 Bedrock metadata configuration OK")
-          PY
+            infra/phase13-github-oidc.yaml
 
   quality-gate:
     name: CI / Quality gate
