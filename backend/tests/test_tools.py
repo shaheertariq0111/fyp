@@ -111,3 +111,198 @@ def test_tool_converts_service_exception_to_safe_error_and_logs(monkeypatch, cap
     assert "table" not in result["user_message"]
     assert "get_menu_item" in caplog.text
     assert "RuntimeError" in caplog.text
+
+def test_save_customization_choice_fetches_upsells_after_final_required_choice(
+    monkeypatch,
+):
+    calls = []
+    upsell_prompt = (
+        "Would you like to add anything?\n"
+        "\n"
+        "1. Ranch Dip - PKR 100\n"
+        "2. Lava Cake - 1 Pc - PKR 450\n"
+        "\n"
+        "You can choose one add-on or proceed to checkout."
+    )
+    upsell_items = [
+        {
+            "product_id": "ranch-dip",
+            "name": "Ranch Dip",
+            "display_label": "Ranch Dip - PKR 100",
+        },
+        {
+            "product_id": "lava-cake",
+            "name": "Lava Cake - 1 Pc",
+            "display_label": "Lava Cake - 1 Pc - PKR 450",
+        },
+    ]
+
+    class CartStub:
+        def save_choice(
+            self,
+            cart_item_id,
+            field_name,
+            selected_option_id,
+        ):
+            calls.append(
+                (
+                    "save_choice",
+                    cart_item_id,
+                    field_name,
+                    selected_option_id,
+                )
+            )
+            return ToolResponse.ok(
+                data={
+                    "cart_id": "CART-1",
+                    "status": "item_ready",
+                },
+                user_message=(
+                    "All required item choices are complete."
+                ),
+                next_action="offer_upsell",
+                agent={
+                    "entity": "cart",
+                    "cart_id": "CART-1",
+                    "cart_status": "item_ready",
+                    "next_action": "offer_upsell",
+                },
+            )
+
+        def handle_upsell(
+            self,
+            cart_id,
+            action,
+            item_id=None,
+            quantity=1,
+        ):
+            calls.append(
+                (
+                    "handle_upsell",
+                    cart_id,
+                    action,
+                    item_id,
+                    quantity,
+                )
+            )
+            return ToolResponse.ok(
+                data={
+                    "cart_id": cart_id,
+                    "status": "awaiting_upsell_decision",
+                    "upsell_items": upsell_items,
+                    "upsell_prompt": upsell_prompt,
+                },
+                user_message=upsell_prompt,
+                next_action="choose_upsell",
+                agent={
+                    "entity": "cart",
+                    "cart_id": cart_id,
+                    "cart_status": "awaiting_upsell_decision",
+                    "next_action": "choose_upsell",
+                    "upsell_items": upsell_items,
+                    "upsell_prompt": upsell_prompt,
+                },
+            )
+
+    container = SimpleNamespace(carts=CartStub())
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: container,
+    )
+
+    with request_context(
+        AgentRequestContext(
+            "trusted-user",
+            "trusted-session",
+        )
+    ):
+        result = tools.save_customization_choice(
+            cart_item_id="CARTITEM-1",
+            field_name="pizza-crust",
+            selected_option_id="regular",
+        )
+
+    assert calls == [
+        (
+            "save_choice",
+            "CARTITEM-1",
+            "pizza-crust",
+            "regular",
+        ),
+        (
+            "handle_upsell",
+            "CART-1",
+            "get_options",
+            None,
+            1,
+        ),
+    ]
+    assert result["success"] is True
+    assert result["next_action"] == "choose_upsell"
+    assert result["user_message"] == upsell_prompt
+    assert result["data"]["upsell_prompt"] == upsell_prompt
+    assert result["agent"]["upsell_prompt"] == upsell_prompt
+    assert result["agent"]["upsell_items"] == upsell_items
+
+
+def test_save_customization_choice_preserves_non_upsell_response(
+    monkeypatch,
+):
+    class CartStub:
+        def save_choice(
+            self,
+            cart_item_id,
+            field_name,
+            selected_option_id,
+        ):
+            return ToolResponse.ok(
+                data={
+                    "cart_id": "CART-1",
+                    "cart_item_id": cart_item_id,
+                    "field_name": "pizza-crust",
+                },
+                user_message="Choose a crust.",
+                next_action="ask_customization_choice",
+                agent={
+                    "entity": "cart",
+                    "cart_id": "CART-1",
+                    "next_action": "ask_customization_choice",
+                    "active_choice": {
+                        "field_name": "pizza-crust",
+                    },
+                },
+            )
+
+        def handle_upsell(self, *args, **kwargs):
+            raise AssertionError(
+                "Upsells must not be fetched before "
+                "required choices are complete."
+            )
+
+    container = SimpleNamespace(carts=CartStub())
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: container,
+    )
+
+    with request_context(
+        AgentRequestContext(
+            "trusted-user",
+            "trusted-session",
+        )
+    ):
+        result = tools.save_customization_choice(
+            cart_item_id="CARTITEM-1",
+            field_name="pizza-size",
+            selected_option_id="medium",
+        )
+
+    assert result["success"] is True
+    assert result["next_action"] == "ask_customization_choice"
+    assert result["user_message"] == "Choose a crust."
+    assert (
+        result["agent"]["active_choice"]["field_name"]
+        == "pizza-crust"
+    )
