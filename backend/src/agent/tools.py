@@ -155,36 +155,10 @@ def set_customization_mode(cart_id: str, mode: str) -> dict:
 @tool
 def save_customization_choice(cart_item_id: str, field_name: str,
                               selected_option_id: str) -> dict:
-    """Save one customization choice and deterministically fetch final-step upsells."""
-
-    def save_and_fetch_upsells() -> ToolResponse:
-        services = get_services()
-        response = services.carts.save_choice(
-            cart_item_id,
-            field_name,
-            selected_option_id,
-        )
-
-        if not response.success or response.next_action != "offer_upsell":
-            return response
-
-        cart_id = (response.data or {}).get("cart_id")
-        if not cart_id and response.agent:
-            cart_id = response.agent.get("cart_id")
-
-        if not cart_id:
-            return response
-
-        return services.carts.handle_upsell(
-            cart_id,
-            "get_options",
-        )
-
-    return _result(
-        "save_customization_choice",
-        save_and_fetch_upsells,
-        is_write=True,
-    )
+    """Save one backend-returned customization option and receive the next cart step."""
+    return _result("save_customization_choice", lambda: get_services().carts.save_choice(
+        cart_item_id, field_name, selected_option_id
+    ), is_write=True)
 
 
 @tool
