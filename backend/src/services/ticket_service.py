@@ -397,6 +397,24 @@ class TicketService:
             "ticket": self._admin_ticket_detail(ticket, linked_order)
         }
 
+    def validate_admin_cursor_state(
+        self,
+        cursor_state: dict | None,
+        *,
+        status: str | None = None,
+        ticket_type: str | None = None,
+        priority: str | None = None,
+    ) -> dict:
+        filters = self._admin_list_filters(
+            status,
+            ticket_type,
+            priority,
+        )
+        return self._validated_admin_cursor_state(
+            cursor_state,
+            filters,
+        )
+
     def list_admin_tickets(
         self,
         *,
@@ -406,18 +424,10 @@ class TicketService:
         limit: int = 25,
         cursor_state: dict | None = None,
     ) -> dict:
-        statuses = self._admin_list_statuses(status)
-        self._validate_admin_list_filter(
-            "ticket_type",
+        filters = self._admin_list_filters(
+            status,
             ticket_type,
-            TICKET_TYPES,
-            "INVALID_TICKET_TYPE",
-        )
-        self._validate_admin_list_filter(
-            "priority",
             priority,
-            TICKET_PRIORITIES,
-            "INVALID_TICKET_PRIORITY",
         )
         if (
             isinstance(limit, bool)
@@ -428,15 +438,12 @@ class TicketService:
                 "INVALID_TICKET_LIMIT",
                 "The ticket list limit is invalid.",
             )
-        filters = {
-            "statuses": list(statuses),
-            "ticket_type": ticket_type,
-            "priority": priority,
-        }
-        positions = self._admin_cursor_positions(
+        validated_cursor = self._validated_admin_cursor_state(
             cursor_state,
             filters,
         )
+        statuses = tuple(filters["statuses"])
+        positions = validated_cursor["positions"]
         traversal = {
             current_status: {
                 "after": deepcopy(position["after"]),
@@ -1180,6 +1187,47 @@ class TicketService:
                 error_code,
                 f"The ticket {field.replace('_', ' ')} is invalid.",
             )
+
+    def _admin_list_filters(
+        self,
+        status: str | None,
+        ticket_type: str | None,
+        priority: str | None,
+    ) -> dict:
+        statuses = self._admin_list_statuses(status)
+        self._validate_admin_list_filter(
+            "ticket_type",
+            ticket_type,
+            TICKET_TYPES,
+            "INVALID_TICKET_TYPE",
+        )
+        self._validate_admin_list_filter(
+            "priority",
+            priority,
+            TICKET_PRIORITIES,
+            "INVALID_TICKET_PRIORITY",
+        )
+        return {
+            "statuses": list(statuses),
+            "ticket_type": ticket_type,
+            "priority": priority,
+        }
+
+    def _validated_admin_cursor_state(
+        self,
+        cursor_state: dict | None,
+        filters: dict,
+    ) -> dict:
+        positions = self._admin_cursor_positions(
+            cursor_state,
+            filters,
+        )
+        return {
+            "v": 1,
+            "kind": "admin_ticket_list",
+            "filters": deepcopy(filters),
+            "positions": deepcopy(positions),
+        }
 
     def _admin_cursor_positions(
         self,

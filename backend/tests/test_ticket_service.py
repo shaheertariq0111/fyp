@@ -2783,6 +2783,21 @@ def valid_admin_cursor_state():
     }
 
 
+def test_admin_cursor_state_validator_is_query_free():
+    service, tickets, _ = build_service()
+    state = valid_admin_cursor_state()
+
+    validated = service.validate_admin_cursor_state(
+        state,
+        status="open",
+    )
+
+    assert validated == state
+    assert validated is not state
+    assert validated["positions"] is not state["positions"]
+    assert tickets.query_status_calls == []
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
