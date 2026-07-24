@@ -254,6 +254,10 @@ class MemoryTicketRepository:
         self.save_error = None
         self.customer_pages = None
         self.save_calls = []
+        self.query_status_calls = []
+        self.query_status_error = None
+        self.query_status_responses = None
+        self.query_page_size_override = None
 
     @staticmethod
     def _marker_hash(marker):
@@ -380,16 +384,80 @@ class MemoryTicketRepository:
         ]
         return sorted(tickets, key=lambda ticket: ticket["GSI1SK"])
 
-    def list_by_status(self, status, limit=50, exclusive_start_key=None):
+    @staticmethod
+    def _ticket_cursor(ticket):
+        return {
+            "PK": ticket["PK"],
+            "SK": ticket["SK"],
+            "GSI2PK": ticket["GSI2PK"],
+            "GSI2SK": ticket["GSI2SK"],
+        }
+
+    def query_status_page(self, status, *, limit, exclusive_start_key=None):
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise ValueError("query limit must be between 1 and 100")
+        self.query_status_calls.append({
+            "status": status,
+            "limit": limit,
+            "exclusive_start_key": deepcopy(exclusive_start_key),
+        })
+        if self.query_status_error:
+            raise self.query_status_error
+        if self.query_status_responses is not None:
+            if not self.query_status_responses:
+                raise AssertionError("no fake status-query response remains")
+            return deepcopy(self.query_status_responses.pop(0))
         tickets = sorted(
             (
                 deepcopy(ticket)
                 for ticket in self.data.values()
-                if ticket["status"] == status
+                if ticket["GSI2PK"] == f"STATUS#{status}"
             ),
             key=lambda ticket: ticket["GSI2SK"],
+            reverse=True,
         )
-        return {"items": tickets[:limit], "next_cursor": None}
+        start = 0
+        if exclusive_start_key is not None:
+            if set(exclusive_start_key) != {
+                "PK",
+                "SK",
+                "GSI2PK",
+                "GSI2SK",
+            } or any(
+                not isinstance(value, str) or not value
+                for value in exclusive_start_key.values()
+            ):
+                raise ValueError("invalid exclusive start key")
+            if (
+                exclusive_start_key["SK"] != "METADATA"
+                or exclusive_start_key["GSI2PK"] != f"STATUS#{status}"
+                or not exclusive_start_key["PK"].startswith("TICKET#")
+            ):
+                raise ValueError("invalid exclusive start key")
+            start = next(
+                (
+                    index
+                    for index, ticket in enumerate(tickets)
+                    if ticket["GSI2SK"]
+                    < exclusive_start_key["GSI2SK"]
+                ),
+                len(tickets),
+            )
+        effective_limit = self.query_page_size_override or limit
+        page = tickets[start:start + effective_limit]
+        has_more = start + len(page) < len(tickets)
+        return {
+            "items": deepcopy(page),
+            "last_evaluated_key": (
+                self._ticket_cursor(page[-1])
+                if page and has_more
+                else None
+            ),
+        }
 
     def save(self, ticket, expected_version):
         if self.save_error:

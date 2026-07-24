@@ -588,17 +588,26 @@ def test_customer_pagination_excessive_page_count_fails_safely():
     assert exc_info.value.code == "TICKET_PAGINATION_STALLED"
 
 
-def test_list_status_uses_gsi2_and_returns_pagination_cursor():
+def test_query_status_page_returns_last_evaluated_key():
     dynamo = FakeDynamo()
-    cursor = {"GSI2PK": "STATUS#open", "GSI2SK": "UPDATED#cursor"}
+    ticket = sample_ticket()
+    cursor = {
+        "PK": ticket["PK"],
+        "SK": ticket["SK"],
+        "GSI2PK": ticket["GSI2PK"],
+        "GSI2SK": ticket["GSI2SK"],
+    }
     dynamo.table.query_responses = [
-        {"Items": [sample_ticket()], "LastEvaluatedKey": cursor}
+        {"Items": [ticket], "LastEvaluatedKey": cursor}
     ]
     repository = TicketRepository(dynamo, "tickets")
 
-    result = repository.list_by_status("open", limit=25)
+    result = repository.query_status_page("open", limit=25)
 
-    assert result == {"items": [sample_ticket()], "next_cursor": cursor}
+    assert result == {
+        "items": [ticket],
+        "last_evaluated_key": cursor,
+    }
     assert dynamo.table.last_query["IndexName"] == "GSI2"
     assert dynamo.table.last_query["Limit"] == 25
     assert expression_values(
@@ -1188,3 +1197,94 @@ def test_repository_save_never_mutates_caller_input():
         assert ticket == before
         assert ticket["version"] == 1
         assert ticket["admin_notes"] == before["admin_notes"]
+
+
+def test_query_status_page_uses_only_descending_gsi2_query():
+    item = sample_ticket()
+    cursor = {
+        "PK": item["PK"],
+        "SK": item["SK"],
+        "GSI2PK": item["GSI2PK"],
+        "GSI2SK": item["GSI2SK"],
+    }
+    response = {"Items": [item], "LastEvaluatedKey": cursor}
+    dynamo = FakeDynamo()
+    dynamo.table.query_responses = [response]
+    repository = TicketRepository(dynamo, "tickets")
+
+    result = repository.query_status_page(
+        "open",
+        limit=37,
+        exclusive_start_key=cursor,
+    )
+
+    query = dynamo.table.last_query
+    assert query["IndexName"] == "GSI2"
+    assert expression_values(query["KeyConditionExpression"]) == {
+        "STATUS#open"
+    }
+    assert query["ScanIndexForward"] is False
+    assert query["Limit"] == 37
+    assert query["ExclusiveStartKey"] == cursor
+    assert "ConsistentRead" not in query
+    assert "FilterExpression" not in query
+    assert not hasattr(dynamo.table, "scan_calls")
+    assert result == {
+        "items": [item],
+        "last_evaluated_key": cursor,
+    }
+
+    result["items"][0]["status"] = "closed"
+    result["last_evaluated_key"]["GSI2PK"] = "STATUS#closed"
+    assert response["Items"][0]["status"] == "open"
+    assert response["LastEvaluatedKey"]["GSI2PK"] == "STATUS#open"
+
+
+def test_query_status_page_omits_absent_last_evaluated_key():
+    dynamo = FakeDynamo()
+    dynamo.table.query_responses = [{"Items": []}]
+    repository = TicketRepository(dynamo, "tickets")
+
+    result = repository.query_status_page("closed", limit=1)
+
+    assert result == {"items": [], "last_evaluated_key": None}
+    assert "ExclusiveStartKey" not in dynamo.table.last_query
+
+
+@pytest.mark.parametrize("limit", [0, 101, True, "25"])
+def test_query_status_page_rejects_invalid_internal_limit(limit):
+    dynamo = FakeDynamo()
+    repository = TicketRepository(dynamo, "tickets")
+
+    with pytest.raises(ValueError):
+        repository.query_status_page("open", limit=limit)
+
+    assert dynamo.table.query_responses == []
+
+
+def test_query_status_page_preserves_infrastructure_error():
+    dynamo = FakeDynamo()
+    error = ClientError(
+        {
+            "Error": {
+                "Code": "ProvisionedThroughputExceededException",
+                "Message": "busy",
+            }
+        },
+        "Query",
+    )
+
+    def fail_query(**_kwargs):
+        raise error
+
+    dynamo.table.query = fail_query
+    repository = TicketRepository(dynamo, "tickets")
+
+    with pytest.raises(ClientError) as exc_info:
+        repository.query_status_page("open", limit=25)
+
+    assert exc_info.value is error
+
+
+def test_old_list_by_status_repository_path_is_retired():
+    assert not hasattr(TicketRepository, "list_by_status")

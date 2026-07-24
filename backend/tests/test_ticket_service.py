@@ -1,6 +1,6 @@
 import re
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from botocore.exceptions import ClientError
@@ -1425,18 +1425,18 @@ def test_status_change_never_updates_linked_order():
     assert orders.get_by_order_id("ORD-1")["status"] == "accepted"
 
 
-def test_admin_get_and_paginated_status_list():
+def test_admin_get_and_status_list():
     service, _, _ = build_service()
     ticket_id = service.create_human_assistance(
         **human_kwargs()
     ).data["ticket"]["ticket_id"]
 
     detail = service.get_admin_ticket(ticket_id)
-    listing = service.list_tickets_by_status("open", limit=25)
+    listing = service.list_admin_tickets(status="open", limit=25)
 
     assert detail["ticket"]["ticket_id"] == ticket_id
-    assert listing.data["tickets"][0]["ticket_id"] == ticket_id
-    assert listing.data["next_cursor"] is None
+    assert listing["tickets"][0]["ticket_id"] == ticket_id
+    assert listing["next_cursor_state"] is None
 
 
 def test_admin_ticket_view_keeps_details_without_repository_metadata():
@@ -2062,7 +2062,7 @@ def test_repository_failure_while_loading_admin_ticket_propagates():
     assert exc_info.value is error
 
 
-def test_legacy_admin_listing_shape_does_not_expand():
+def test_admin_listing_stays_lightweight_while_detail_is_full():
     service, tickets, _ = build_service()
     ticket_id = service.create_human_assistance(
         **human_kwargs()
@@ -2087,30 +2087,14 @@ def test_legacy_admin_listing_shape_does_not_expand():
         "reason": "New detail-only field",
     }]
 
-    listing = service.list_tickets_by_status("open").data["tickets"][0]
+    listing = service.list_admin_tickets(status="open")["tickets"][0]
     detail = service.get_admin_ticket(ticket_id)["ticket"]
 
-    assert set(listing) == {
-        "ticket_id",
-        "user_id",
-        "customer_name",
-        "customer_phone",
-        "ticket_type",
-        "category",
-        "description",
-        "priority",
-        "status",
-        "source",
-        "created_at",
-        "updated_at",
-        "status_history",
-        "admin_notes",
-        "version",
-    }
+    assert set(listing) == ADMIN_LIST_KEYS
     assert "priority_history" not in listing
     assert "linked_order" not in listing
-    assert "note_id" not in listing["admin_notes"][0]
-    assert "reason" not in listing["status_history"][0]
+    assert "admin_notes" not in listing
+    assert "status_history" not in listing
     assert detail["priority_history"]
     assert detail["status_history"][0]["reason"] == "New detail-only field"
 
@@ -2444,3 +2428,789 @@ def test_current_reopen_version_keeps_reason_errors(reason, error_code):
     assert_admin_error(exc_info, error_code)
     assert tickets.get(ticket_id) == before
     assert tickets.save_calls == []
+
+
+ADMIN_LIST_KEYS = {
+    "ticket_id",
+    "user_id",
+    "customer_id",
+    "customer_name",
+    "customer_phone",
+    "ticket_type",
+    "category",
+    "priority",
+    "status",
+    "order_id",
+    "source",
+    "created_at",
+    "updated_at",
+    "version",
+}
+ADMIN_LIST_STATUSES = [
+    "open",
+    "in_review",
+    "waiting_for_customer",
+    "resolved",
+    "closed",
+]
+
+
+def admin_list_ticket(
+    ticket_id,
+    *,
+    status="open",
+    updated_at="2026-07-24T10:00:00+00:00",
+    ticket_type="human_assistance",
+    priority="normal",
+    user_id="user-1",
+):
+    ticket = {
+        "ticket_id": ticket_id,
+        "user_id": user_id,
+        "customer_name": "Ava",
+        "customer_phone": "+923001234567",
+        "session_id": "session-1",
+        "ticket_type": ticket_type,
+        "category": (
+            "order_problem"
+            if ticket_type == "order_complaint"
+            else "human_assistance"
+        ),
+        "description": (
+            "Private complaint"
+            if ticket_type == "order_complaint"
+            else "Private support request"
+        ),
+        "priority": priority,
+        "status": status,
+        "source": "web",
+        "created_at": "2026-07-24T09:00:00+00:00",
+        "updated_at": updated_at,
+        "status_history": [],
+        "priority_history": [],
+        "admin_notes": [],
+        "version": 1,
+        "PK": f"TICKET#{ticket_id}",
+        "SK": "METADATA",
+        "GSI1PK": f"CUSTOMER#{user_id}",
+        "GSI1SK": (
+            "CREATED#2026-07-24T09:00:00+00:00#"
+            f"{ticket_id}"
+        ),
+        "GSI2PK": f"STATUS#{status}",
+        "GSI2SK": f"UPDATED#{updated_at}#{ticket_id}",
+    }
+    if ticket_type == "order_complaint":
+        ticket.update({
+            "order_id": "ORD-1",
+            "order_status_snapshot": "accepted",
+        })
+    return Ticket.model_validate(ticket).model_dump(exclude_none=True)
+
+
+def put_admin_list_tickets(repository, *tickets):
+    for ticket in tickets:
+        repository.data[ticket["ticket_id"]] = deepcopy(ticket)
+
+
+def admin_ticket_cursor(ticket):
+    return {
+        key: ticket[key]
+        for key in ("PK", "SK", "GSI2PK", "GSI2SK")
+    }
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error_code"),
+    [
+        ({"status": ""}, "INVALID_TICKET_STATUS"),
+        ({"status": "OPEN"}, "INVALID_TICKET_STATUS"),
+        ({"status": 1}, "INVALID_TICKET_STATUS"),
+        ({"ticket_type": ""}, "INVALID_TICKET_TYPE"),
+        ({"ticket_type": "complaint"}, "INVALID_TICKET_TYPE"),
+        ({"ticket_type": 1}, "INVALID_TICKET_TYPE"),
+        ({"priority": ""}, "INVALID_TICKET_PRIORITY"),
+        ({"priority": "URGENT"}, "INVALID_TICKET_PRIORITY"),
+        ({"priority": 1}, "INVALID_TICKET_PRIORITY"),
+        ({"limit": 0}, "INVALID_TICKET_LIMIT"),
+        ({"limit": -1}, "INVALID_TICKET_LIMIT"),
+        ({"limit": 101}, "INVALID_TICKET_LIMIT"),
+        ({"limit": True}, "INVALID_TICKET_LIMIT"),
+        ({"limit": "25"}, "INVALID_TICKET_LIMIT"),
+    ],
+)
+def test_admin_list_rejects_invalid_filters_and_limits(kwargs, error_code):
+    service, tickets, _ = build_service()
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets(**kwargs)
+
+    assert_admin_error(exc_info, error_code)
+    assert tickets.query_status_calls == []
+
+
+@pytest.mark.parametrize("limit", [1, 25, 100])
+def test_admin_list_accepts_limit_boundaries_and_uses_canonical_statuses(limit):
+    service, tickets, _ = build_service()
+
+    result = service.list_admin_tickets(limit=limit)
+
+    assert result["tickets"] == []
+    assert result["next_cursor_state"] is None
+    assert [call["status"] for call in tickets.query_status_calls] == (
+        ADMIN_LIST_STATUSES
+    )
+    assert all(call["limit"] == 100 for call in tickets.query_status_calls)
+
+
+def test_admin_list_single_status_uses_one_partition():
+    service, tickets, _ = build_service()
+
+    service.list_admin_tickets(status="resolved")
+
+    assert [call["status"] for call in tickets.query_status_calls] == [
+        "resolved"
+    ]
+
+
+def test_admin_list_projection_is_exact_and_validates_legacy_records():
+    service, tickets, _ = build_service()
+    ticket = admin_list_ticket(
+        "TKT-20260724-A1B2C3",
+        ticket_type="order_complaint",
+        priority="high",
+    )
+    ticket.pop("priority_history")
+    ticket["admin_notes"] = [{
+        "text": "Private note",
+        "timestamp": NOW.isoformat(),
+    }]
+    put_admin_list_tickets(tickets, ticket)
+
+    result = service.list_admin_tickets(status="open")
+
+    assert len(result["tickets"]) == 1
+    projected = result["tickets"][0]
+    assert set(projected) == ADMIN_LIST_KEYS
+    assert projected["order_id"] == "ORD-1"
+    assert not {
+        "description",
+        "order_status_snapshot",
+        "status_history",
+        "priority_history",
+        "admin_notes",
+        "linked_order",
+        "PK",
+        "SK",
+        "GSI1PK",
+        "GSI1SK",
+        "GSI2PK",
+        "GSI2SK",
+        "session_id",
+    } & projected.keys()
+
+
+def test_admin_list_rejects_malformed_repository_ticket():
+    service, tickets, _ = build_service()
+    ticket = admin_list_ticket("TKT-20260724-A1B2C3")
+    ticket["GSI2SK"] = "UPDATED#bad"
+    put_admin_list_tickets(tickets, ticket)
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets(status="open")
+
+    assert_admin_error(exc_info, "TICKET_DATA_INVALID")
+    assert exc_info.value.user_message == "The ticket record is invalid."
+
+
+def test_admin_list_merges_statuses_by_updated_time_and_ticket_id():
+    service, tickets, _ = build_service()
+    put_admin_list_tickets(
+        tickets,
+        admin_list_ticket(
+            "TKT-20260724-AAAAAA",
+            status="open",
+            updated_at="2026-07-24T10:00:00+00:00",
+        ),
+        admin_list_ticket(
+            "TKT-20260724-CCCCCC",
+            status="closed",
+            updated_at="2026-07-24T11:00:00+00:00",
+        ),
+        admin_list_ticket(
+            "TKT-20260724-BBBBBB",
+            status="in_review",
+            updated_at="2026-07-24T10:00:00+00:00",
+        ),
+    )
+
+    result = service.list_admin_tickets()
+
+    assert [ticket["ticket_id"] for ticket in result["tickets"]] == [
+        "TKT-20260724-CCCCCC",
+        "TKT-20260724-BBBBBB",
+        "TKT-20260724-AAAAAA",
+    ]
+    assert len({item["ticket_id"] for item in result["tickets"]}) == 3
+
+
+@pytest.mark.parametrize(
+    ("ticket_type", "priority", "expected"),
+    [
+        ("human_assistance", None, {"TKT-20260724-AAAAAA"}),
+        (None, "urgent", {"TKT-20260724-BBBBBB"}),
+        ("order_complaint", "urgent", {"TKT-20260724-BBBBBB"}),
+        ("order_complaint", "normal", set()),
+    ],
+)
+def test_admin_list_applies_type_and_priority_filters(
+    ticket_type,
+    priority,
+    expected,
+):
+    service, tickets, _ = build_service()
+    put_admin_list_tickets(
+        tickets,
+        admin_list_ticket("TKT-20260724-AAAAAA"),
+        admin_list_ticket(
+            "TKT-20260724-BBBBBB",
+            ticket_type="order_complaint",
+            priority="urgent",
+        ),
+    )
+
+    result = service.list_admin_tickets(
+        ticket_type=ticket_type,
+        priority=priority,
+    )
+
+    assert {item["ticket_id"] for item in result["tickets"]} == expected
+    if not expected:
+        assert result["next_cursor_state"] is None
+
+
+def test_admin_list_cursor_continuation_has_no_skip_or_repeat():
+    service, tickets, _ = build_service()
+    put_admin_list_tickets(
+        tickets,
+        *[
+            admin_list_ticket(
+                f"TKT-20260724-AAAAA{suffix}",
+                updated_at=f"2026-07-24T10:0{suffix}:00+00:00",
+            )
+            for suffix in range(4)
+        ],
+    )
+
+    first = service.list_admin_tickets(status="open", limit=2)
+    second = service.list_admin_tickets(
+        status="open",
+        limit=2,
+        cursor_state=first["next_cursor_state"],
+    )
+
+    first_ids = [item["ticket_id"] for item in first["tickets"]]
+    second_ids = [item["ticket_id"] for item in second["tickets"]]
+    assert first_ids == [
+        "TKT-20260724-AAAAA3",
+        "TKT-20260724-AAAAA2",
+    ]
+    assert second_ids == [
+        "TKT-20260724-AAAAA1",
+        "TKT-20260724-AAAAA0",
+    ]
+    assert not set(first_ids) & set(second_ids)
+    assert second["next_cursor_state"] is None
+
+
+def test_filtered_items_advance_cursor_across_sparse_pages():
+    service, tickets, _ = build_service()
+    tickets.query_page_size_override = 1
+    put_admin_list_tickets(
+        tickets,
+        admin_list_ticket(
+            "TKT-20260724-AAAAA3",
+            priority="normal",
+            updated_at="2026-07-24T10:03:00+00:00",
+        ),
+        admin_list_ticket(
+            "TKT-20260724-AAAAA2",
+            priority="normal",
+            updated_at="2026-07-24T10:02:00+00:00",
+        ),
+        admin_list_ticket(
+            "TKT-20260724-AAAAA1",
+            priority="urgent",
+            updated_at="2026-07-24T10:01:00+00:00",
+        ),
+    )
+
+    result = service.list_admin_tickets(
+        status="open",
+        priority="urgent",
+        limit=1,
+    )
+
+    assert [item["ticket_id"] for item in result["tickets"]] == [
+        "TKT-20260724-AAAAA1"
+    ]
+    assert len(tickets.query_status_calls) == 3
+
+
+def valid_admin_cursor_state():
+    return {
+        "v": 1,
+        "kind": "admin_ticket_list",
+        "filters": {
+            "statuses": ["open"],
+            "ticket_type": None,
+            "priority": None,
+        },
+        "positions": {
+            "open": {
+                "after": {
+                    "PK": "TICKET#TKT-20260724-A1B2C3",
+                    "SK": "METADATA",
+                    "GSI2PK": "STATUS#open",
+                    "GSI2SK": (
+                        "UPDATED#2026-07-24T10:00:00+00:00#"
+                        "TKT-20260724-A1B2C3"
+                    ),
+                },
+                "exhausted": False,
+            }
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda state: state.update({"v": 2}),
+        lambda state: state.update({"v": True}),
+        lambda state: state.update({"kind": "other"}),
+        lambda state: state.update({"extra": True}),
+        lambda state: state["filters"].update({"statuses": ["closed"]}),
+        lambda state: state["filters"].update({"extra": True}),
+        lambda state: state.update({"positions": {}}),
+        lambda state: state["positions"]["open"].update({"extra": True}),
+        lambda state: state["positions"]["open"].update({"exhausted": 1}),
+        lambda state: state["positions"]["open"]["after"].update(
+            {"PK": "bad"}
+        ),
+        lambda state: state["positions"]["open"]["after"].update(
+            {"GSI2PK": "STATUS#closed"}
+        ),
+        lambda state: state["positions"]["open"]["after"].update(
+            {"GSI2SK": "UPDATED#bad"}
+        ),
+        lambda state: state["positions"]["open"]["after"].update(
+            {
+                "GSI2SK": (
+                    "UPDATED#2026-07-24T15:00:00+05:00#"
+                    "TKT-20260724-A1B2C3"
+                )
+            }
+        ),
+        lambda state: state["positions"]["open"]["after"].update(
+            {
+                "GSI2SK": (
+                    "UPDATED#2026-07-24T10:00:00+00:00#"
+                    "TKT-20260724-FFFFFF"
+                )
+            }
+        ),
+        lambda state: state["positions"]["open"].update(
+            {"exhausted": True}
+        ),
+        lambda state: state["positions"]["open"]["after"].update(
+            {"extra": "customer"}
+        ),
+    ],
+)
+def test_admin_list_rejects_malformed_or_mismatched_cursor(mutate):
+    service, _, _ = build_service()
+    state = valid_admin_cursor_state()
+    mutate(state)
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets(status="open", cursor_state=state)
+
+    assert_admin_error(exc_info, "INVALID_CURSOR")
+    assert "TICKET#" not in str(exc_info.value)
+
+
+def test_admin_list_cursor_state_is_exact_and_private():
+    service, tickets, _ = build_service()
+    put_admin_list_tickets(
+        tickets,
+        admin_list_ticket(
+            "TKT-20260724-AAAAA2",
+            updated_at="2026-07-24T10:02:00+00:00",
+        ),
+        admin_list_ticket(
+            "TKT-20260724-AAAAA1",
+            updated_at="2026-07-24T10:01:00+00:00",
+        ),
+    )
+
+    result = service.list_admin_tickets(status="open", limit=1)
+    cursor = result["next_cursor_state"]
+
+    assert set(cursor) == {"v", "kind", "filters", "positions"}
+    assert cursor["filters"] == {
+        "statuses": ["open"],
+        "ticket_type": None,
+        "priority": None,
+    }
+    assert set(cursor["positions"]) == {"open"}
+    assert set(cursor["positions"]["open"]) == {"after", "exhausted"}
+    serialized = repr(cursor)
+    assert "Ava" not in serialized
+    assert "+923" not in serialized
+    assert "Private" not in serialized
+
+
+def test_admin_list_stall_errors_are_sanitized_and_retryable():
+    service, tickets, _ = build_service()
+    cursor = valid_admin_cursor_state()["positions"]["open"]["after"]
+    tickets.query_status_responses = [
+        {"items": [], "last_evaluated_key": cursor}
+    ]
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets(
+            status="open",
+            cursor_state=valid_admin_cursor_state(),
+        )
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_PAGINATION_STALLED",
+        retryable=True,
+    )
+    assert exc_info.value.user_message == (
+        "Ticket pagination could not make progress. Please retry."
+    )
+
+
+@pytest.mark.parametrize("mode", ["repeated", "cyclic"])
+def test_admin_list_detects_repeated_and_cyclic_page_cursors(mode):
+    service, tickets, _ = build_service()
+    first = admin_list_ticket(
+        "TKT-20260724-AAAAA3",
+        updated_at="2026-07-24T10:03:00+00:00",
+    )
+    second = admin_list_ticket(
+        "TKT-20260724-AAAAA2",
+        updated_at="2026-07-24T10:02:00+00:00",
+    )
+    third = admin_list_ticket(
+        "TKT-20260724-AAAAA1",
+        updated_at="2026-07-24T10:01:00+00:00",
+    )
+    first_cursor = admin_ticket_cursor(first)
+    second_cursor = admin_ticket_cursor(second)
+    responses = [
+        {"items": [first], "last_evaluated_key": first_cursor},
+        {
+            "items": [second],
+            "last_evaluated_key": (
+                first_cursor if mode == "repeated" else second_cursor
+            ),
+        },
+    ]
+    if mode == "cyclic":
+        responses.append({
+            "items": [third],
+            "last_evaluated_key": first_cursor,
+        })
+    tickets.query_status_responses = responses
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets(
+            status="open",
+            priority="urgent",
+        )
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_PAGINATION_STALLED",
+        retryable=True,
+    )
+
+
+def test_admin_list_detects_same_item_no_progress():
+    service, tickets, _ = build_service()
+    ticket = admin_list_ticket("TKT-20260724-A1B2C3")
+    tickets.query_status_responses = [{
+        "items": [ticket],
+        "last_evaluated_key": None,
+    }]
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets(
+            status="open",
+            cursor_state=valid_admin_cursor_state(),
+        )
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_PAGINATION_STALLED",
+        retryable=True,
+    )
+
+
+def test_admin_list_enforces_one_hundred_query_cap_without_partial_result():
+    service, tickets, _ = build_service()
+    responses = []
+    for index in range(100):
+        ticket = admin_list_ticket(
+            f"TKT-20260724-{index:06X}",
+            updated_at=(
+                "2026-07-24T10:"
+                f"{index // 60:02d}:{index % 60:02d}+00:00"
+            ),
+        )
+        responses.append({
+            "items": [ticket],
+            "last_evaluated_key": admin_ticket_cursor(ticket),
+        })
+    tickets.query_status_responses = responses
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets(
+            status="open",
+            priority="urgent",
+        )
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_PAGINATION_STALLED",
+        retryable=True,
+    )
+    assert len(tickets.query_status_calls) == 100
+
+
+def test_admin_list_treats_status_transition_duplicate_as_pagination_stall():
+    service, tickets, _ = build_service()
+    open_ticket = admin_list_ticket(
+        "TKT-20260724-A1B2C3",
+        status="open",
+        updated_at="2026-07-24T10:00:00+00:00",
+    )
+    in_review_ticket = admin_list_ticket(
+        "TKT-20260724-A1B2C3",
+        status="in_review",
+        updated_at="2026-07-24T10:01:00+00:00",
+    )
+    tickets.query_status_responses = [
+        {"items": [open_ticket], "last_evaluated_key": None},
+        {"items": [in_review_ticket], "last_evaluated_key": None},
+        {"items": [], "last_evaluated_key": None},
+        {"items": [], "last_evaluated_key": None},
+        {"items": [], "last_evaluated_key": None},
+    ]
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets()
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_PAGINATION_STALLED",
+        retryable=True,
+    )
+    assert exc_info.value.user_message == (
+        "Ticket pagination could not make progress. Please retry."
+    )
+
+
+def test_admin_list_same_partition_duplicate_remains_data_invalid():
+    service, tickets, _ = build_service()
+    newer = admin_list_ticket(
+        "TKT-20260724-A1B2C3",
+        updated_at="2026-07-24T10:01:00+00:00",
+    )
+    older = admin_list_ticket(
+        "TKT-20260724-A1B2C3",
+        updated_at="2026-07-24T10:00:00+00:00",
+    )
+    tickets.query_status_responses = [{
+        "items": [newer, older],
+        "last_evaluated_key": None,
+    }]
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets(status="open")
+
+    assert_admin_error(exc_info, "TICKET_DATA_INVALID")
+
+
+def test_admin_list_cross_status_duplicate_returns_no_partial_result():
+    service, tickets, _ = build_service()
+    old_open = admin_list_ticket(
+        "TKT-20260724-A1B2C3",
+        status="open",
+        updated_at="2026-07-24T10:00:00+00:00",
+    )
+    newer_unrelated = admin_list_ticket(
+        "TKT-20260724-B1B2C3",
+        status="in_review",
+        updated_at="2026-07-24T10:02:00+00:00",
+    )
+    updated_in_review = admin_list_ticket(
+        "TKT-20260724-A1B2C3",
+        status="in_review",
+        updated_at="2026-07-24T10:01:00+00:00",
+    )
+    tickets.query_status_responses = [
+        {"items": [old_open], "last_evaluated_key": None},
+        {
+            "items": [newer_unrelated, updated_in_review],
+            "last_evaluated_key": None,
+        },
+        {"items": [], "last_evaluated_key": None},
+        {"items": [], "last_evaluated_key": None},
+        {"items": [], "last_evaluated_key": None},
+    ]
+
+    with pytest.raises(Exception) as exc_info:
+        service.list_admin_tickets()
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_PAGINATION_STALLED",
+        retryable=True,
+    )
+
+
+def test_admin_list_partial_hundred_item_page_resumes_after_tenth_item():
+    service, tickets, _ = build_service()
+    open_tickets = [
+        admin_list_ticket(
+            f"TKT-20260724-{index:06X}",
+            updated_at=(
+                NOW + timedelta(minutes=index)
+            ).isoformat(),
+        )
+        for index in range(100)
+    ]
+    in_review_tickets = [
+        admin_list_ticket(
+            f"TKT-20260724-{0x100000 + index:06X}",
+            status="in_review",
+            updated_at=(
+                NOW + timedelta(hours=2, minutes=index)
+            ).isoformat(),
+        )
+        for index in range(15)
+    ]
+    put_admin_list_tickets(
+        tickets,
+        *open_tickets,
+        *in_review_tickets,
+    )
+
+    first = service.list_admin_tickets(limit=25)
+    first_ids = [item["ticket_id"] for item in first["tickets"]]
+    expected_examined_open = list(reversed(open_tickets[-10:]))
+    tenth_open = expected_examined_open[-1]
+
+    assert len(first_ids) == 25
+    assert {
+        item["ticket_id"]
+        for item in expected_examined_open
+    }.issubset(first_ids)
+    assert first["next_cursor_state"]["positions"]["open"]["after"] == (
+        admin_ticket_cursor(tenth_open)
+    )
+
+    second = service.list_admin_tickets(
+        limit=100,
+        cursor_state=first["next_cursor_state"],
+    )
+    second_ids = [item["ticket_id"] for item in second["tickets"]]
+    remaining_open_ids = {
+        item["ticket_id"]
+        for item in open_tickets[:-10]
+    }
+
+    assert len(second_ids) == 90
+    assert set(second_ids) == remaining_open_ids
+    assert not set(first_ids) & set(second_ids)
+    assert second["next_cursor_state"] is None
+    open_calls = [
+        call
+        for call in tickets.query_status_calls
+        if call["status"] == "open"
+    ]
+    assert len(open_calls) == 2
+    assert open_calls[0]["limit"] == 100
+    assert open_calls[0]["exclusive_start_key"] is None
+    assert open_calls[1]["exclusive_start_key"] == (
+        admin_ticket_cursor(tenth_open)
+    )
+
+
+def test_admin_list_repository_failure_propagates():
+    service, tickets, _ = build_service()
+    error = RuntimeError("dynamodb unavailable")
+    tickets.query_status_error = error
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.list_admin_tickets(status="open")
+
+    assert exc_info.value is error
+
+
+def test_memory_status_query_matches_production_pagination_shape():
+    _, tickets, _ = build_service()
+    put_admin_list_tickets(
+        tickets,
+        admin_list_ticket(
+            "TKT-20260724-AAAAA3",
+            priority="normal",
+            updated_at="2026-07-24T10:03:00+00:00",
+        ),
+        admin_list_ticket(
+            "TKT-20260724-AAAAA2",
+            priority="urgent",
+            updated_at="2026-07-24T10:02:00+00:00",
+        ),
+        admin_list_ticket(
+            "TKT-20260724-AAAAA1",
+            priority="high",
+            updated_at="2026-07-24T10:01:00+00:00",
+        ),
+    )
+
+    first = tickets.query_status_page("open", limit=2)
+    second = tickets.query_status_page(
+        "open",
+        limit=2,
+        exclusive_start_key=first["last_evaluated_key"],
+    )
+
+    assert [item["ticket_id"] for item in first["items"]] == [
+        "TKT-20260724-AAAAA3",
+        "TKT-20260724-AAAAA2",
+    ]
+    assert {item["priority"] for item in first["items"]} == {
+        "normal",
+        "urgent",
+    }
+    assert [item["ticket_id"] for item in second["items"]] == [
+        "TKT-20260724-AAAAA1"
+    ]
+    first["items"][0]["status"] = "closed"
+    first["last_evaluated_key"]["GSI2PK"] = "STATUS#closed"
+    assert tickets.data["TKT-20260724-AAAAA3"]["status"] == "open"
+    assert tickets.query_status_calls[1]["exclusive_start_key"][
+        "GSI2PK"
+    ] == "STATUS#open"
+
+
+def test_legacy_admin_listing_method_is_retired():
+    service, _, _ = build_service()
+
+    assert not hasattr(service, "list_tickets_by_status")

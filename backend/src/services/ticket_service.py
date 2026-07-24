@@ -30,6 +30,7 @@ from src.models.ticket import (
     TICKET_TYPES,
     Ticket,
     TicketDomainValidationError,
+    canonical_dynamodb_value,
     generate_note_id,
     generate_ticket_id,
     normalize_ticket_timestamp,
@@ -40,6 +41,7 @@ from src.repositories.ticket_repository import (
     IdempotencyConflictError,
     ReusableTicketChangedError,
     TicketIdCollisionError,
+    TicketPaginationStalledError,
     TicketVersionConflictError,
     human_session_guard_key,
 )
@@ -48,6 +50,19 @@ from src.repositories.ticket_repository import (
 MAX_TICKET_ID_ATTEMPTS = 5
 MAX_HUMAN_GUARD_ATTEMPTS = 5
 MAX_NOTE_ID_ATTEMPTS = 8
+ADMIN_LIST_STATUSES = (
+    "open",
+    "in_review",
+    "waiting_for_customer",
+    "resolved",
+    "closed",
+)
+ADMIN_LIST_QUERY_PAGE_SIZE = 100
+MAX_ADMIN_LIST_QUERY_CALLS = 100
+ADMIN_CURSOR_KEYS = {"v", "kind", "filters", "positions"}
+ADMIN_CURSOR_FILTER_KEYS = {"statuses", "ticket_type", "priority"}
+ADMIN_CURSOR_POSITION_KEYS = {"after", "exhausted"}
+ADMIN_CURSOR_AFTER_KEYS = {"PK", "SK", "GSI2PK", "GSI2SK"}
 ADMIN_STATUS_TRANSITIONS = {
     "open": {
         "in_review",
@@ -73,26 +88,6 @@ LINKED_ORDER_SUMMARY_KEYS = (
     "currency",
     "created_at",
     "updated_at",
-)
-ADMIN_TICKET_VIEW_KEYS = (
-    "ticket_id",
-    "user_id",
-    "customer_id",
-    "customer_name",
-    "customer_phone",
-    "ticket_type",
-    "category",
-    "description",
-    "priority",
-    "status",
-    "order_id",
-    "order_status_snapshot",
-    "source",
-    "created_at",
-    "updated_at",
-    "status_history",
-    "admin_notes",
-    "version",
 )
 CUSTOMER_NEXT_ACTIONS = {
     "open": "await_support_contact",
@@ -402,31 +397,121 @@ class TicketService:
             "ticket": self._admin_ticket_detail(ticket, linked_order)
         }
 
-    def list_tickets_by_status(
+    def list_admin_tickets(
         self,
-        status: str,
         *,
-        limit: int = 50,
-        cursor: dict | None = None,
-    ) -> ToolResponse:
-        invalid = self.validate_domain_value("status", status)
-        if not invalid.success:
-            return invalid
-        result = self.repository.list_by_status(
-            status,
-            limit=limit,
-            exclusive_start_key=cursor,
+        status: str | None = None,
+        ticket_type: str | None = None,
+        priority: str | None = None,
+        limit: int = 25,
+        cursor_state: dict | None = None,
+    ) -> dict:
+        statuses = self._admin_list_statuses(status)
+        self._validate_admin_list_filter(
+            "ticket_type",
+            ticket_type,
+            TICKET_TYPES,
+            "INVALID_TICKET_TYPE",
         )
-        return ToolResponse.ok(
-            data={
-                "tickets": [
-                    self._admin_ticket_view(ticket)
-                    for ticket in result["items"]
-                ],
-                "next_cursor": result["next_cursor"],
-            },
-            user_message="Tickets retrieved.",
+        self._validate_admin_list_filter(
+            "priority",
+            priority,
+            TICKET_PRIORITIES,
+            "INVALID_TICKET_PRIORITY",
         )
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise AdminTicketError(
+                "INVALID_TICKET_LIMIT",
+                "The ticket list limit is invalid.",
+            )
+        filters = {
+            "statuses": list(statuses),
+            "ticket_type": ticket_type,
+            "priority": priority,
+        }
+        positions = self._admin_cursor_positions(
+            cursor_state,
+            filters,
+        )
+        traversal = {
+            current_status: {
+                "after": deepcopy(position["after"]),
+                "exhausted": position["exhausted"],
+                "items": [],
+                "index": 0,
+                "last_evaluated_key": None,
+                "page_loaded": False,
+                "seen": (
+                    {canonical_dynamodb_value(position["after"])}
+                    if position["after"] is not None
+                    else set()
+                ),
+                "examined": (
+                    {canonical_dynamodb_value(position["after"])}
+                    if position["after"] is not None
+                    else set()
+                ),
+            }
+            for current_status, position in positions.items()
+        }
+        budget = {"calls": 0}
+        candidates: dict[str, dict] = {}
+        tickets: list[dict] = []
+        observed_ticket_statuses: dict[str, str] = {}
+        while len(tickets) < limit:
+            for current_status in statuses:
+                if (
+                    current_status not in candidates
+                    and not traversal[current_status]["exhausted"]
+                ):
+                    candidate = self._next_admin_list_candidate(
+                        current_status,
+                        traversal[current_status],
+                        ticket_type=ticket_type,
+                        priority=priority,
+                        budget=budget,
+                        observed_ticket_statuses=observed_ticket_statuses,
+                    )
+                    if candidate is not None:
+                        candidates[current_status] = candidate
+            if not candidates:
+                break
+            selected_status, selected = max(
+                candidates.items(),
+                key=lambda entry: entry[1]["GSI2SK"],
+            )
+            self._consume_admin_list_item(
+                traversal[selected_status],
+                selected,
+            )
+            tickets.append(self._admin_ticket_list_item(selected))
+            del candidates[selected_status]
+
+        next_positions = {
+            current_status: {
+                "after": deepcopy(state["after"]),
+                "exhausted": state["exhausted"],
+            }
+            for current_status, state in traversal.items()
+        }
+        next_cursor_state = (
+            None
+            if all(position["exhausted"] for position in next_positions.values())
+            else {
+                "v": 1,
+                "kind": "admin_ticket_list",
+                "filters": deepcopy(filters),
+                "positions": next_positions,
+            }
+        )
+        return {
+            "tickets": tickets,
+            "next_cursor_state": next_cursor_state,
+        }
 
     def add_admin_note(
         self,
@@ -1071,34 +1156,279 @@ class TicketService:
         return projected
 
     @staticmethod
-    def _admin_ticket_view(ticket: dict) -> dict:
-        projected = {
-            key: deepcopy(ticket[key])
-            for key in ADMIN_TICKET_VIEW_KEYS
-            if key in ticket
-        }
-        projected["status_history"] = [
-            {
-                key: deepcopy(entry[key])
-                for key in (
-                    "previous_status",
-                    "new_status",
-                    "timestamp",
-                    "actor",
+    def _admin_list_statuses(status: str | None) -> tuple[str, ...]:
+        if status is None:
+            return ADMIN_LIST_STATUSES
+        if not isinstance(status, str) or status not in TICKET_STATUSES:
+            raise AdminTicketError(
+                "INVALID_TICKET_STATUS",
+                "The ticket status is invalid.",
+            )
+        return (status,)
+
+    @staticmethod
+    def _validate_admin_list_filter(
+        field: str,
+        value: str | None,
+        allowed: set[str],
+        error_code: str,
+    ) -> None:
+        if value is None:
+            return
+        if not isinstance(value, str) or value not in allowed:
+            raise AdminTicketError(
+                error_code,
+                f"The ticket {field.replace('_', ' ')} is invalid.",
+            )
+
+    def _admin_cursor_positions(
+        self,
+        cursor_state: dict | None,
+        filters: dict,
+    ) -> dict:
+        statuses = filters["statuses"]
+        if cursor_state is None:
+            return {
+                status: {"after": None, "exhausted": False}
+                for status in statuses
+            }
+        try:
+            if (
+                not isinstance(cursor_state, dict)
+                or set(cursor_state) != ADMIN_CURSOR_KEYS
+                or isinstance(cursor_state["v"], bool)
+                or not isinstance(cursor_state["v"], int)
+                or cursor_state["v"] != 1
+                or cursor_state["kind"] != "admin_ticket_list"
+            ):
+                raise ValueError
+            cursor_filters = cursor_state["filters"]
+            if (
+                not isinstance(cursor_filters, dict)
+                or set(cursor_filters) != ADMIN_CURSOR_FILTER_KEYS
+                or cursor_filters != filters
+            ):
+                raise ValueError
+            positions = cursor_state["positions"]
+            if (
+                not isinstance(positions, dict)
+                or set(positions) != set(statuses)
+            ):
+                raise ValueError
+            validated_positions = {}
+            for status in statuses:
+                position = positions[status]
+                if (
+                    not isinstance(position, dict)
+                    or set(position) != ADMIN_CURSOR_POSITION_KEYS
+                    or not isinstance(position["exhausted"], bool)
+                ):
+                    raise ValueError
+                after = position["after"]
+                if after is not None:
+                    after = self._validate_admin_cursor_key(after, status)
+                validated_positions[status] = {
+                    "after": after,
+                    "exhausted": position["exhausted"],
+                }
+            if all(
+                position["exhausted"]
+                for position in validated_positions.values()
+            ):
+                raise ValueError
+            return validated_positions
+        except (KeyError, TypeError, ValueError):
+            raise AdminTicketError(
+                "INVALID_CURSOR",
+                "The ticket list cursor is invalid.",
+            ) from None
+
+    @staticmethod
+    def _validate_admin_cursor_key(key: dict, status: str) -> dict:
+        if (
+            not isinstance(key, dict)
+            or set(key) != ADMIN_CURSOR_AFTER_KEYS
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in key.values()
+            )
+        ):
+            raise ValueError("invalid cursor key")
+        if key["SK"] != "METADATA":
+            raise ValueError("invalid cursor sort key")
+        if not key["PK"].startswith("TICKET#"):
+            raise ValueError("invalid cursor partition key")
+        ticket_id = key["PK"].removeprefix("TICKET#")
+        Ticket.validate_ticket_id(ticket_id)
+        if key["GSI2PK"] != f"STATUS#{status}":
+            raise ValueError("invalid cursor status")
+        if not key["GSI2SK"].startswith("UPDATED#"):
+            raise ValueError("invalid cursor updated key")
+        try:
+            timestamp, indexed_ticket_id = key["GSI2SK"][
+                len("UPDATED#"):
+            ].rsplit("#", 1)
+        except ValueError as exc:
+            raise ValueError("invalid cursor updated key") from exc
+        if indexed_ticket_id != ticket_id:
+            raise ValueError("cursor ticket IDs do not match")
+        Ticket.validate_ticket_id(indexed_ticket_id)
+        if normalize_ticket_timestamp(timestamp) != timestamp:
+            raise ValueError("cursor timestamp is not canonical")
+        return deepcopy(key)
+
+    def _next_admin_list_candidate(
+        self,
+        status: str,
+        state: dict,
+        *,
+        ticket_type: str | None,
+        priority: str | None,
+        budget: dict,
+        observed_ticket_statuses: dict[str, str],
+    ) -> dict | None:
+        while not state["exhausted"]:
+            if state["index"] < len(state["items"]):
+                ticket = self._validate_admin_list_ticket(
+                    state["items"][state["index"]],
+                    status,
                 )
-                if key in entry
-            }
-            for entry in ticket.get("status_history", [])
-        ]
-        projected["admin_notes"] = [
-            {
-                key: deepcopy(note[key])
-                for key in ("text", "timestamp", "actor")
-                if key in note
-            }
-            for note in ticket.get("admin_notes", [])
-        ]
-        return projected
+                fingerprint = canonical_dynamodb_value(
+                    self._admin_ticket_cursor_key(ticket)
+                )
+                observed_status = observed_ticket_statuses.get(
+                    ticket["ticket_id"]
+                )
+                if observed_status is not None:
+                    if observed_status != status:
+                        self._raise_admin_pagination_stalled()
+                    raise AdminTicketError(
+                        "TICKET_DATA_INVALID",
+                        "The ticket record is invalid.",
+                    )
+                if fingerprint in state["examined"]:
+                    self._raise_admin_pagination_stalled()
+                observed_ticket_statuses[ticket["ticket_id"]] = status
+                if (
+                    ticket_type is not None
+                    and ticket["ticket_type"] != ticket_type
+                ) or (
+                    priority is not None
+                    and ticket["priority"] != priority
+                ):
+                    self._consume_admin_list_item(state, ticket)
+                    continue
+                return ticket
+
+            if state["page_loaded"]:
+                last_evaluated_key = state["last_evaluated_key"]
+                if last_evaluated_key is None:
+                    state["exhausted"] = True
+                    return None
+                if state["after"] != last_evaluated_key:
+                    self._raise_admin_pagination_stalled()
+
+            if budget["calls"] >= MAX_ADMIN_LIST_QUERY_CALLS:
+                self._raise_admin_pagination_stalled()
+            budget["calls"] += 1
+            try:
+                page = self.repository.query_status_page(
+                    status,
+                    limit=ADMIN_LIST_QUERY_PAGE_SIZE,
+                    exclusive_start_key=state["after"],
+                )
+            except TicketPaginationStalledError:
+                self._raise_admin_pagination_stalled()
+            items = page.get("items")
+            last_evaluated_key = page.get("last_evaluated_key")
+            if not isinstance(items, list):
+                self._raise_admin_pagination_stalled()
+            if last_evaluated_key is not None:
+                try:
+                    last_evaluated_key = self._validate_admin_cursor_key(
+                        last_evaluated_key,
+                        status,
+                    )
+                except (TypeError, ValueError):
+                    self._raise_admin_pagination_stalled()
+                fingerprint = canonical_dynamodb_value(last_evaluated_key)
+                if fingerprint in state["seen"]:
+                    self._raise_admin_pagination_stalled()
+                state["seen"].add(fingerprint)
+            if not items:
+                if last_evaluated_key is not None:
+                    self._raise_admin_pagination_stalled()
+                state["exhausted"] = True
+                return None
+            state["items"] = deepcopy(items)
+            state["index"] = 0
+            state["last_evaluated_key"] = last_evaluated_key
+            state["page_loaded"] = True
+
+        return None
+
+    @staticmethod
+    def _consume_admin_list_item(state: dict, ticket: dict) -> None:
+        state["after"] = TicketService._admin_ticket_cursor_key(ticket)
+        state["examined"].add(canonical_dynamodb_value(state["after"]))
+        state["index"] += 1
+        if (
+            state["index"] >= len(state["items"])
+            and state["last_evaluated_key"] is None
+        ):
+            state["exhausted"] = True
+
+    @staticmethod
+    def _admin_ticket_cursor_key(ticket: dict) -> dict:
+        return {
+            key: ticket[key]
+            for key in ("PK", "SK", "GSI2PK", "GSI2SK")
+        }
+
+    @staticmethod
+    def _validate_admin_list_ticket(ticket: dict, status: str) -> dict:
+        try:
+            validated = Ticket.model_validate(ticket).model_dump(
+                exclude_none=True
+            )
+        except ValidationError:
+            raise AdminTicketError(
+                "TICKET_DATA_INVALID",
+                "The ticket record is invalid.",
+            ) from None
+        if validated["GSI2PK"] != f"STATUS#{status}":
+            raise AdminTicketError(
+                "TICKET_DATA_INVALID",
+                "The ticket record is invalid.",
+            )
+        return validated
+
+    @staticmethod
+    def _admin_ticket_list_item(ticket: dict) -> dict:
+        return {
+            "ticket_id": ticket["ticket_id"],
+            "user_id": ticket["user_id"],
+            "customer_id": ticket.get("customer_id"),
+            "customer_name": ticket.get("customer_name"),
+            "customer_phone": ticket.get("customer_phone"),
+            "ticket_type": ticket["ticket_type"],
+            "category": ticket["category"],
+            "priority": ticket["priority"],
+            "status": ticket["status"],
+            "order_id": ticket.get("order_id"),
+            "source": ticket["source"],
+            "created_at": ticket["created_at"],
+            "updated_at": ticket["updated_at"],
+            "version": ticket["version"],
+        }
+
+    @staticmethod
+    def _raise_admin_pagination_stalled() -> None:
+        raise AdminTicketError(
+            "TICKET_PAGINATION_STALLED",
+            "Ticket pagination could not make progress. Please retry.",
+            retryable=True,
+        )
 
     @staticmethod
     def _admin_ticket_detail(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
@@ -221,23 +223,34 @@ class TicketRepository:
             seen_cursors.add(fingerprint)
             kwargs["ExclusiveStartKey"] = cursor
 
-    def list_by_status(
+    def query_status_page(
         self,
         status: str,
-        limit: int = 50,
+        *,
+        limit: int,
         exclusive_start_key: dict | None = None,
     ) -> dict:
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise ValueError("query limit must be between 1 and 100")
+        # DynamoDB GSI queries are eventually consistent.
         kwargs = {
             "IndexName": "GSI2",
             "KeyConditionExpression": Key("GSI2PK").eq(f"STATUS#{status}"),
             "Limit": limit,
+            "ScanIndexForward": False,
         }
-        if exclusive_start_key:
-            kwargs["ExclusiveStartKey"] = exclusive_start_key
+        if exclusive_start_key is not None:
+            kwargs["ExclusiveStartKey"] = deepcopy(exclusive_start_key)
         response = self.table.query(**kwargs)
         return {
-            "items": from_dynamodb(response.get("Items", [])),
-            "next_cursor": from_dynamodb(response.get("LastEvaluatedKey")),
+            "items": deepcopy(from_dynamodb(response.get("Items", []))),
+            "last_evaluated_key": deepcopy(
+                from_dynamodb(response.get("LastEvaluatedKey"))
+            ),
         }
 
     def save(self, ticket: dict, expected_version: int) -> None:
