@@ -39,7 +39,6 @@ def _record_tool_call(tool_name: str, is_write: bool, result: dict) -> None:
             "tool_success": bool(result.get("success", False)),
             "is_write": is_write,
             "actor_id": context.user_id,
-            "agent_session_id": context.agent_session_id,
             "channel": context.channel,
             "error_code": result.get("error_code"),
         },

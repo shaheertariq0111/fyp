@@ -28,6 +28,7 @@ from src.models.ticket import (
     Ticket,
     TicketDomainValidationError,
     generate_ticket_id,
+    normalize_ticket_timestamp,
 )
 from src.models.tool_responses import ToolResponse
 from src.repositories.ticket_repository import (
@@ -42,6 +43,98 @@ from src.repositories.ticket_repository import (
 
 MAX_TICKET_ID_ATTEMPTS = 5
 MAX_HUMAN_GUARD_ATTEMPTS = 5
+ADMIN_TICKET_VIEW_KEYS = (
+    "ticket_id",
+    "user_id",
+    "customer_id",
+    "customer_name",
+    "customer_phone",
+    "ticket_type",
+    "category",
+    "description",
+    "priority",
+    "status",
+    "order_id",
+    "order_status_snapshot",
+    "source",
+    "created_at",
+    "updated_at",
+    "status_history",
+    "admin_notes",
+    "version",
+)
+CUSTOMER_NEXT_ACTIONS = {
+    "open": "await_support_contact",
+    "in_review": "await_support_contact",
+    "waiting_for_customer": "respond_to_support",
+    "resolved": "no_action_required",
+    "closed": "no_action_required",
+}
+
+
+def project_customer_ticket_view(ticket: object) -> dict:
+    if isinstance(ticket, Ticket):
+        candidate = ticket.model_dump(exclude_none=True)
+    elif isinstance(ticket, dict):
+        candidate = ticket
+    else:
+        return {}
+
+    required_fields = (
+        "ticket_id",
+        "ticket_type",
+        "status",
+        "priority",
+        "created_at",
+        "updated_at",
+    )
+    if any(
+        not isinstance(candidate.get(field), str)
+        or not candidate[field].strip()
+        for field in required_fields
+    ):
+        return {}
+
+    ticket_id = candidate["ticket_id"]
+    ticket_type = candidate["ticket_type"]
+    status = candidate["status"]
+    priority = candidate["priority"]
+    if (
+        ticket_type not in TICKET_TYPES
+        or status not in TICKET_STATUSES
+        or priority not in TICKET_PRIORITIES
+    ):
+        return {}
+
+    try:
+        Ticket.validate_ticket_id(ticket_id)
+        created_at = normalize_ticket_timestamp(candidate["created_at"])
+        updated_at = normalize_ticket_timestamp(candidate["updated_at"])
+    except (TypeError, ValueError):
+        return {}
+    if datetime.fromisoformat(updated_at) < datetime.fromisoformat(created_at):
+        return {}
+
+    order_id = candidate.get("order_id")
+    if ticket_type == "order_complaint":
+        if not isinstance(order_id, str) or not order_id.strip():
+            return {}
+    elif "order_id" in candidate:
+        return {}
+
+    projected = {
+        "ticket_id": ticket_id,
+        "ticket_type": ticket_type,
+        "status": status,
+        "status_label": TICKET_STATUS_LABELS[status],
+        "priority": priority,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "next_action": CUSTOMER_NEXT_ACTIONS[status],
+    }
+    if ticket_type == "order_complaint":
+        projected["order_id"] = order_id
+    return projected
 
 
 class TicketService:
@@ -222,11 +315,17 @@ class TicketService:
             )
         if len(active) > 1:
             return ToolResponse.ok(
-                data={"tickets": [self._public(ticket) for ticket in active]},
+                data={
+                    "tickets": [
+                        self._customer_ticket_view(ticket)
+                        for ticket in active
+                    ]
+                },
                 user_message=(
                     "You have multiple active support tickets. "
                     "Please provide a Ticket ID."
                 ),
+                next_action="provide_ticket_id",
                 agent={
                     "entity": "tickets",
                     "tracking_state": "multiple_active_tickets",
@@ -240,6 +339,7 @@ class TicketService:
                 "You have no active support tickets. Please provide the "
                 "Ticket ID for an older ticket."
             ),
+            next_action="provide_ticket_id",
             agent={
                 "entity": "tickets",
                 "tracking_state": "no_active_tickets",
@@ -253,7 +353,7 @@ class TicketService:
         if not ticket:
             return self._ticket_not_found()
         return ToolResponse.ok(
-            data={"ticket": self._public(ticket)},
+            data={"ticket": self._admin_ticket_view(ticket)},
             user_message="Ticket details retrieved.",
         )
 
@@ -274,7 +374,10 @@ class TicketService:
         )
         return ToolResponse.ok(
             data={
-                "tickets": [self._public(ticket) for ticket in result["items"]],
+                "tickets": [
+                    self._admin_ticket_view(ticket)
+                    for ticket in result["items"]
+                ],
                 "next_cursor": result["next_cursor"],
             },
             user_message="Tickets retrieved.",
@@ -333,7 +436,7 @@ class TicketService:
             return self._ticket_not_found()
         if ticket.get("status") == status:
             return ToolResponse.ok(
-                data={"ticket": self._public(ticket)},
+                data={"ticket": self._admin_ticket_view(ticket)},
                 user_message="Ticket unchanged.",
             )
         actor_error = self._validate_actor(actor)
@@ -723,7 +826,7 @@ class TicketService:
         saved = deepcopy(ticket)
         saved["version"] = expected_version + 1
         return ToolResponse.ok(
-            data={"ticket": self._public(saved)},
+            data={"ticket": self._admin_ticket_view(saved)},
             user_message="Ticket updated.",
         )
 
@@ -760,9 +863,11 @@ class TicketService:
             message += (
                 f"\nCalls may come from {self.support_phone_number}."
             )
+        next_action = self._customer_next_action(ticket["status"])
         return ToolResponse.ok(
-            data={"ticket": self._public(ticket)},
+            data={"ticket": self._customer_ticket_view(ticket)},
             user_message=message,
+            next_action=next_action,
             agent={
                 "entity": "ticket",
                 "ticket_id": ticket["ticket_id"],
@@ -781,9 +886,11 @@ class TicketService:
             f"Ticket ID: {ticket['ticket_id']}\n"
             f"Status: {TICKET_STATUS_LABELS[ticket['status']]}"
         )
+        next_action = self._customer_next_action(ticket["status"])
         return ToolResponse.ok(
-            data={"ticket": self._public(ticket)},
+            data={"ticket": self._customer_ticket_view(ticket)},
             user_message=message,
+            next_action=next_action,
             agent={
                 "entity": "ticket",
                 "tracking_state": tracking_state,
@@ -794,21 +901,26 @@ class TicketService:
         )
 
     @staticmethod
-    def _public(ticket: dict) -> dict:
-        internal = {
-            "PK",
-            "SK",
-            "GSI1PK",
-            "GSI1SK",
-            "GSI2PK",
-            "GSI2SK",
-            "expires_at",
-        }
+    def _customer_ticket_view(ticket: Ticket | dict) -> dict:
+        projected = project_customer_ticket_view(ticket)
+        if not projected:
+            raise ValueError("invalid customer ticket data")
+        return projected
+
+    @staticmethod
+    def _admin_ticket_view(ticket: dict) -> dict:
         return {
-            key: deepcopy(value)
-            for key, value in ticket.items()
-            if key not in internal
+            key: deepcopy(ticket[key])
+            for key in ADMIN_TICKET_VIEW_KEYS
+            if key in ticket
         }
+
+    @staticmethod
+    def _customer_next_action(status: str) -> str:
+        try:
+            return CUSTOMER_NEXT_ACTIONS[status]
+        except KeyError as exc:
+            raise ValueError("invalid ticket status") from exc
 
     @staticmethod
     def _idempotency_hash(

@@ -36,6 +36,7 @@ from src.api.schemas import (
 from src.infrastructure.config import get_settings, parse_frontend_cors_origins
 from src.infrastructure.config import CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS
 from src.infrastructure.logging import configure_logging
+from src.services.ticket_service import project_customer_ticket_view
 
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
@@ -198,11 +199,19 @@ def _state_from_tool_calls(tool_calls: list[ToolCallResult]) -> dict[str, Any]:
         if entity in {"ticket", "support_ticket"}:
             ticket = data.get("ticket")
             if isinstance(ticket, dict):
-                state["support_ticket"] = ticket
+                projected = project_customer_ticket_view(ticket)
+                if projected:
+                    state["support_ticket"] = projected
         elif entity in {"tickets", "support_tickets"}:
             tickets = data.get("tickets")
             if isinstance(tickets, list):
-                state["support_tickets"] = tickets
+                projected_tickets = [
+                    projected
+                    for ticket in tickets
+                    if (projected := project_customer_ticket_view(ticket))
+                ]
+                if projected_tickets or not tickets:
+                    state["support_tickets"] = projected_tickets
         tracking_state = agent.get("tracking_state")
         if entity in {
             "ticket",
@@ -668,9 +677,7 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
         extra={
             "event": "agent_request_started",
             "http_request_id": http_request_id,
-            "request_id": record["request_id"],
             "actor_id": context.user_id,
-            "agent_session_id": context.agent_session_id,
             "channel": context.channel,
             "agent_request_status": record["status"],
         },
@@ -695,9 +702,7 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
             extra={
                 "event": "agentcore_invocation_completed",
                 "http_request_id": http_request_id,
-                "request_id": record["request_id"],
                 "actor_id": context.user_id,
-                "agent_session_id": context.agent_session_id,
                 "channel": context.channel,
                 "agentcore_invocation_status": "completed",
                 "response_time_ms": round((time.perf_counter() - invoke_started) * 1000, 2),
@@ -712,9 +717,7 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
             extra={
                 "event": "agent_request_completed",
                 "http_request_id": http_request_id,
-                "request_id": record["request_id"],
                 "actor_id": context.user_id,
-                "agent_session_id": context.agent_session_id,
                 "channel": context.channel,
                 "agent_request_status": record["status"],
             },

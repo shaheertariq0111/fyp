@@ -1,4 +1,5 @@
 import inspect
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -159,6 +160,64 @@ def test_human_assistance_tool_uses_trusted_context_and_records_write(monkeypatc
     assert "trusted-request" not in repr(result)
     assert context.tool_calls[-1]["tool_name"] == "create_human_assistance_ticket"
     assert context.tool_calls[-1]["is_write"] is True
+
+
+def test_customer_ticket_tool_results_and_recording_preserve_safe_boundary(
+    monkeypatch,
+    caplog,
+):
+    safe_ticket = {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "human_assistance",
+        "status": "open",
+        "status_label": "Open",
+        "priority": "normal",
+        "created_at": "2026-07-24T10:00:00+00:00",
+        "updated_at": "2026-07-24T10:00:00+00:00",
+        "next_action": "await_support_contact",
+    }
+    response = ToolResponse.ok(
+        data={"ticket": safe_ticket},
+        user_message="Authoritative ticket message.",
+        next_action="await_support_contact",
+        agent={"entity": "ticket", "ticket_status": "open"},
+    )
+    tickets = TicketStub(response)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+    context = AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id="trusted-request",
+    )
+
+    with caplog.at_level(logging.INFO), request_context(context):
+        result = tools.create_human_assistance_ticket(
+            description="private description"
+        )
+
+    assert result["data"]["ticket"] == safe_ticket
+    assert result["user_message"] == "Authoritative ticket message."
+    assert not {
+        "description",
+        "request_id",
+        "idempotency_key",
+        "idempotency_hash",
+        "session_id",
+        "version",
+        "admin_notes",
+        "status_history",
+    } & result["data"]["ticket"].keys()
+    assert context.tool_calls[-1]["result"] == result
+    completed = next(
+        record
+        for record in caplog.records
+        if record.getMessage() == "Agent tool call completed"
+    )
+    assert not hasattr(completed, "agent_session_id")
 
 
 def test_human_assistance_missing_request_id_is_deterministic_and_recorded(
@@ -394,6 +453,78 @@ def test_complaint_tool_drives_persisted_multi_turn_flow(monkeypatch):
         key.startswith("pending_")
         for key in sessions_repository.data["trusted-session"]
     )
+
+
+def test_complaint_tool_result_excludes_description_and_internal_fields(
+    monkeypatch,
+):
+    safe_ticket = {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "order_complaint",
+        "status": "open",
+        "status_label": "Open",
+        "priority": "normal",
+        "created_at": "2026-07-24T10:00:00+00:00",
+        "updated_at": "2026-07-24T10:00:00+00:00",
+        "next_action": "await_support_contact",
+        "order_id": "ORD-1",
+    }
+    flow = SupportFlowStub(ToolResponse.ok(
+        data={"ticket": safe_ticket},
+        user_message="Authoritative complaint message.",
+        next_action="await_support_contact",
+        agent={"entity": "ticket", "ticket_status": "open"},
+    ))
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(support_flow=flow),
+    )
+
+    with request_context(AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id="trusted-request",
+    )):
+        result = tools.handle_order_complaint(
+            order_id="ORD-1",
+            description="private complaint",
+        )
+
+    assert result["data"]["ticket"] == safe_ticket
+    assert "private complaint" not in repr(result)
+    assert "trusted-request" not in repr(result)
+
+
+def test_ticket_status_tool_result_excludes_internal_ticket_fields(monkeypatch):
+    safe_ticket = {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "human_assistance",
+        "status": "open",
+        "status_label": "Open",
+        "priority": "normal",
+        "created_at": "2026-07-24T10:00:00+00:00",
+        "updated_at": "2026-07-24T10:00:00+00:00",
+        "next_action": "await_support_contact",
+    }
+    tickets = TicketStub(ToolResponse.ok(
+        data={"ticket": safe_ticket},
+        user_message="Exact ticket status message.",
+        agent={"entity": "ticket", "tracking_state": "specific_ticket"},
+    ))
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+
+    with request_context(AgentRequestContext("trusted-user", "trusted-session")):
+        result = tools.get_support_ticket_status(
+            ticket_id="TKT-20260724-A1B2C3"
+        )
+
+    assert result["data"]["ticket"] == safe_ticket
+    assert result["user_message"] == "Exact ticket status message."
 
 
 @pytest.mark.parametrize(

@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,33 @@ from src.api import main
 from src.api.schemas import ToolCallResult
 from src.models.tool_responses import ToolResponse
 from test_config import make_test_settings
+
+
+CUSTOMER_TICKET_KEYS = {
+    "ticket_id",
+    "ticket_type",
+    "status",
+    "status_label",
+    "priority",
+    "created_at",
+    "updated_at",
+    "next_action",
+}
+
+
+def customer_ticket(**overrides):
+    ticket = {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "human_assistance",
+        "status": "open",
+        "status_label": "Open",
+        "priority": "normal",
+        "created_at": "2026-07-24T10:00:00+00:00",
+        "updated_at": "2026-07-24T10:00:00+00:00",
+        "next_action": "await_support_contact",
+    }
+    ticket.update(overrides)
+    return ticket
 
 
 class MemoryAgentRequestService:
@@ -106,11 +134,7 @@ def test_state_extraction_includes_customer_safe_support_ticket(
     entity,
     tool_name,
 ):
-    ticket = {
-        "ticket_id": "TKT-20260724-A1B2C3",
-        "status": "open",
-        "status_label": "Open",
-    }
+    ticket = customer_ticket()
     state = main._state_from_tool_calls([
         support_tool_call(
             {
@@ -125,10 +149,45 @@ def test_state_extraction_includes_customer_safe_support_ticket(
     assert state["support_ticket"] == ticket
 
 
+def test_state_extraction_defensively_projects_support_ticket():
+    ticket = customer_ticket(
+        ticket_type="order_complaint",
+        order_id="ORD-1",
+        description="private complaint",
+        order_status_snapshot="preparing",
+        admin_notes=[{"text": "private", "actor": "admin-1"}],
+        status_history=[{"actor": "admin-1"}],
+        session_id="private-session",
+        request_id="private-request",
+        version=3,
+        PK="TICKET#TKT-20260724-A1B2C3",
+    )
+
+    state = main._state_from_tool_calls([
+        support_tool_call({
+            "success": True,
+            "data": {"ticket": ticket},
+            "agent": {"entity": "ticket"},
+        })
+    ])
+
+    assert state["support_ticket"] == {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "order_complaint",
+        "status": "open",
+        "status_label": "Open",
+        "priority": "normal",
+        "created_at": "2026-07-24T10:00:00+00:00",
+        "updated_at": "2026-07-24T10:00:00+00:00",
+        "next_action": "await_support_contact",
+        "order_id": "ORD-1",
+    }
+
+
 @pytest.mark.parametrize(
     ("tracking_state", "tickets"),
     [
-        ("multiple_active_tickets", [{"ticket_id": "TKT-1"}]),
+        ("multiple_active_tickets", [customer_ticket()]),
         ("no_active_tickets", []),
     ],
 )
@@ -157,6 +216,145 @@ def test_state_extraction_includes_support_ticket_tracking(
         "tracking_state": tracking_state,
         "required_input": "ticket_id",
     }
+
+
+def test_state_extraction_filters_every_support_ticket_list_item():
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {
+                    "tickets": [
+                        {
+                            **customer_ticket(),
+                            "session_id": "private-session",
+                            "admin_notes": [{"actor": "admin-1"}],
+                        },
+                        "malformed",
+                        {
+                            **customer_ticket(
+                                ticket_id="TKT-20260724-D4E5F6",
+                                status="in_review",
+                                status_label="In review",
+                            ),
+                            "version": 2,
+                        },
+                    ]
+                },
+                "agent": {
+                    "entity": "tickets",
+                    "tracking_state": "multiple_active_tickets",
+                },
+            },
+            name="get_support_ticket_status",
+            is_write=False,
+        )
+    ])
+
+    assert state["support_tickets"] == [
+        {
+            **customer_ticket(),
+        },
+        {
+            **customer_ticket(
+                ticket_id="TKT-20260724-D4E5F6",
+                status="in_review",
+                status_label="In review",
+            ),
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "pending_manager"},
+        {"priority": "internal_only"},
+        {"created_at": "not-a-timestamp"},
+    ],
+)
+def test_state_extraction_ignores_malformed_single_support_ticket(overrides):
+    state = main._state_from_tool_calls([
+        support_tool_call({
+            "success": True,
+            "data": {"ticket": customer_ticket(**overrides)},
+            "agent": {"entity": "support_ticket"},
+        })
+    ])
+
+    assert "support_ticket" not in state
+
+
+def test_state_extraction_recomputes_forged_derived_ticket_fields():
+    state = main._state_from_tool_calls([
+        support_tool_call({
+            "success": True,
+            "data": {
+                "ticket": customer_ticket(
+                    status="waiting_for_customer",
+                    status_label="Escalated internally",
+                    next_action="reveal_internal_workflow",
+                )
+            },
+            "agent": {"entity": "ticket"},
+        })
+    ])
+
+    assert state["support_ticket"]["status_label"] == "Waiting for customer"
+    assert state["support_ticket"]["next_action"] == "respond_to_support"
+
+
+def test_state_extraction_filters_invalid_ticket_list_values_and_future_fields():
+    valid = customer_ticket(
+        future_customer_field="drop me",
+        status_label="forged",
+        next_action="forged",
+    )
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {
+                    "tickets": [
+                        valid,
+                        customer_ticket(status="pending_manager"),
+                        customer_ticket(priority="internal_only"),
+                    ]
+                },
+                "agent": {"entity": "support_tickets"},
+            },
+            name="get_support_ticket_status",
+            is_write=False,
+        )
+    ])
+
+    assert len(state["support_tickets"]) == 1
+    assert set(state["support_tickets"][0]) == CUSTOMER_TICKET_KEYS
+    assert state["support_tickets"][0]["status_label"] == "Open"
+    assert state["support_tickets"][0]["next_action"] == (
+        "await_support_contact"
+    )
+
+
+def test_state_extraction_ignores_ticket_list_when_every_item_is_invalid():
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {
+                    "tickets": [
+                        customer_ticket(status="pending_manager"),
+                        "malformed",
+                    ]
+                },
+                "agent": {"entity": "tickets"},
+            },
+            name="get_support_ticket_status",
+            is_write=False,
+        )
+    ])
+
+    assert "support_tickets" not in state
 
 
 @pytest.mark.parametrize(
@@ -462,6 +660,44 @@ def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
         "channel": "web",
         "request_id": "req-1",
     }
+
+
+def test_successful_chat_logs_exclude_trusted_request_and_session_ids(
+    monkeypatch,
+    caplog,
+):
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(message={"content": [{"text": "Handled."}]}),
+        text="Handled.",
+    )
+
+    with caplog.at_level(logging.INFO):
+        response = client().post(
+            "/api/chat",
+            json={
+                "message": "I need support",
+                "session_id": "private-session",
+                "user_id": "user",
+            },
+        )
+
+    assert response.status_code == 200
+    lifecycle_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") in {
+            "agent_request_started",
+            "agentcore_invocation_completed",
+            "agent_request_completed",
+        }
+    ]
+    assert len(lifecycle_records) == 3
+    assert all(not hasattr(record, "request_id") for record in lifecycle_records)
+    assert all(
+        not hasattr(record, "agent_session_id")
+        for record in lifecycle_records
+    )
 
 
 def test_chat_uses_persisted_request_id_and_ignores_frontend_value(monkeypatch):

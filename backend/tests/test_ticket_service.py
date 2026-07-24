@@ -11,15 +11,34 @@ from src.models.ticket import (
     MAX_STATUS_HISTORY,
     MAX_TICKET_ITEM_BYTES,
     NON_TERMINAL_TICKET_STATUSES,
+    Ticket,
     generate_ticket_id,
     ticket_item_size_bytes,
 )
 from src.repositories.ticket_repository import TicketVersionConflictError
-from src.services.ticket_service import TicketService
+from src.services.ticket_service import TicketService, project_customer_ticket_view
 
 
 NOW = datetime(2026, 7, 24, 10, 0, tzinfo=timezone.utc)
 SUPPORT_PHONE = "+92 21 111 222 333"
+CUSTOMER_TICKET_KEYS = {
+    "ticket_id",
+    "ticket_type",
+    "status",
+    "status_label",
+    "priority",
+    "created_at",
+    "updated_at",
+    "next_action",
+}
+COMPLAINT_CUSTOMER_TICKET_KEYS = CUSTOMER_TICKET_KEYS | {"order_id"}
+STATUS_CUSTOMER_FIELDS = {
+    "open": ("Open", "await_support_contact"),
+    "in_review": ("In review", "await_support_contact"),
+    "waiting_for_customer": ("Waiting for customer", "respond_to_support"),
+    "resolved": ("Resolved", "no_action_required"),
+    "closed": ("Closed", "no_action_required"),
+}
 
 
 class TicketIdFactory:
@@ -72,6 +91,22 @@ def complaint_kwargs(**overrides):
     return values
 
 
+def customer_ticket_input(**overrides):
+    ticket = {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "human_assistance",
+        "status": "open",
+        "status_label": "forged",
+        "priority": "normal",
+        "created_at": "2026-07-24T15:00:00+05:00",
+        "updated_at": "2026-07-24T15:30:00+05:00",
+        "next_action": "forged",
+        "future_customer_field": "must not survive",
+    }
+    ticket.update(overrides)
+    return ticket
+
+
 def create_order(repository, order_id="ORD-1", user_id="user-1", status="accepted"):
     repository.create(
         {
@@ -120,6 +155,210 @@ def test_create_human_assistance_and_deterministic_confirmation():
     assert stored["GSI1PK"] == "CUSTOMER#user-1"
     assert stored["GSI2PK"] == "STATUS#open"
     assert "expires_at" not in stored
+
+
+def assert_customer_ticket_view(ticket, *, complaint=False):
+    expected = (
+        COMPLAINT_CUSTOMER_TICKET_KEYS
+        if complaint
+        else CUSTOMER_TICKET_KEYS
+    )
+    assert set(ticket) == expected
+
+
+def test_customer_ticket_projector_valid_dictionary_has_exact_safe_keys():
+    projected = project_customer_ticket_view(customer_ticket_input())
+
+    assert projected == {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "human_assistance",
+        "status": "open",
+        "status_label": "Open",
+        "priority": "normal",
+        "created_at": "2026-07-24T10:00:00+00:00",
+        "updated_at": "2026-07-24T10:30:00+00:00",
+        "next_action": "await_support_contact",
+    }
+
+
+def test_customer_ticket_projector_accepts_valid_ticket_model():
+    service, tickets, _ = build_service()
+    created = service.create_human_assistance(**human_kwargs())
+    model = Ticket.model_validate(
+        tickets.get(created.data["ticket"]["ticket_id"])
+    )
+
+    projected = project_customer_ticket_view(model)
+
+    assert_customer_ticket_view(projected)
+    assert projected == created.data["ticket"]
+
+
+@pytest.mark.parametrize(
+    ("status", "status_label", "next_action"),
+    [
+        (status, expected[0], expected[1])
+        for status, expected in STATUS_CUSTOMER_FIELDS.items()
+    ],
+)
+def test_customer_ticket_projector_derives_every_status_field(
+    status,
+    status_label,
+    next_action,
+):
+    projected = project_customer_ticket_view(
+        customer_ticket_input(
+            status=status,
+            status_label="forged label",
+            next_action="forged_action",
+        )
+    )
+
+    assert projected["status_label"] == status_label
+    assert projected["next_action"] == next_action
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"ticket_type": "internal_escalation"},
+        {"status": "pending_manager"},
+        {"priority": "internal_only"},
+        {"ticket_id": "   "},
+        {"ticket_id": "TKT-20260230-A1B2C3"},
+        {"created_at": "not-a-timestamp"},
+        {"updated_at": "not-a-timestamp"},
+        {"created_at": "2026-07-24T10:00:00"},
+        {"updated_at": "2026-07-24T10:00:00"},
+        {
+            "created_at": "2026-07-24T10:30:00+00:00",
+            "updated_at": "2026-07-24T10:00:00+00:00",
+        },
+        {"ticket_type": "order_complaint", "order_id": "   "},
+        {"order_id": "ORD-1"},
+    ],
+)
+def test_customer_ticket_projector_rejects_malformed_data(overrides):
+    assert project_customer_ticket_view(
+        customer_ticket_input(**overrides)
+    ) == {}
+
+
+def test_customer_ticket_projector_retains_valid_complaint_order_id():
+    projected = project_customer_ticket_view(
+        customer_ticket_input(
+            ticket_type="order_complaint",
+            order_id="ORD-1",
+        )
+    )
+
+    assert_customer_ticket_view(projected, complaint=True)
+    assert projected["order_id"] == "ORD-1"
+
+
+@pytest.mark.parametrize(
+    ("status", "next_action"),
+    [
+        (status, expected[1])
+        for status, expected in STATUS_CUSTOMER_FIELDS.items()
+    ],
+)
+def test_service_customer_serializer_maps_every_valid_status(
+    status,
+    next_action,
+):
+    projected = TicketService._customer_ticket_view(
+        customer_ticket_input(status=status)
+    )
+
+    assert_customer_ticket_view(projected)
+    assert projected["next_action"] == next_action
+
+
+def test_service_next_action_rejects_unknown_status_without_fallback():
+    with pytest.raises(ValueError, match="invalid ticket status"):
+        TicketService._customer_next_action("pending_manager")
+
+
+def test_service_customer_serializer_rejects_malformed_internal_ticket():
+    with pytest.raises(ValueError, match="invalid customer ticket data"):
+        TicketService._customer_ticket_view(
+            customer_ticket_input(status="pending_manager")
+        )
+
+
+def test_customer_ticket_view_uses_strict_allowlist_for_all_internal_fields():
+    service, tickets, _ = build_service()
+    created = service.create_human_assistance(**human_kwargs())
+    stored = tickets.data[created.data["ticket"]["ticket_id"]]
+    stored["admin_notes"] = [{
+        "text": "Internal note",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+    stored["status_history"] = [{
+        "previous_status": "open",
+        "new_status": "in_review",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+    stored["request_id"] = "request-private"
+    stored["idempotency_key"] = "idempotency-private"
+    stored["idempotency_hash"] = "hash-private"
+    stored["raw_customer_metadata"] = {"private": True}
+    stored["expires_at"] = 123
+
+    response = service.get_ticket_status("user-1", stored["ticket_id"])
+
+    assert_customer_ticket_view(response.data["ticket"])
+    assert response.data["ticket"] == {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "human_assistance",
+        "status": "open",
+        "status_label": "Open",
+        "priority": "normal",
+        "created_at": NOW.isoformat(),
+        "updated_at": NOW.isoformat(),
+        "next_action": "await_support_contact",
+    }
+
+
+def test_human_creation_reuse_and_idempotent_resolution_are_customer_safe():
+    service, _, _ = build_service()
+
+    created = service.create_human_assistance(**human_kwargs())
+    reused = service.create_human_assistance(
+        **human_kwargs(idempotency_key="request-2")
+    )
+    idempotent = service.create_human_assistance(**human_kwargs())
+
+    for response in (created, reused, idempotent):
+        assert_customer_ticket_view(response.data["ticket"])
+        assert response.next_action == "await_support_contact"
+
+
+def test_complaint_creation_is_customer_safe_and_preserves_message():
+    service, _, orders = build_service()
+    create_order(orders, status="preparing")
+
+    response = service.create_order_complaint(**complaint_kwargs())
+
+    assert_customer_ticket_view(response.data["ticket"], complaint=True)
+    assert response.data["ticket"]["order_id"] == "ORD-1"
+    assert "description" not in response.data["ticket"]
+    assert "order_status_snapshot" not in response.data["ticket"]
+    assert response.next_action == "await_support_contact"
+    assert response.user_message == (
+        "Your complaint has been recorded.\n"
+        "\n"
+        "Ticket ID: TKT-20260724-A1B2C3\n"
+        "Order ID: ORD-1\n"
+        "Status: Open\n"
+        "\n"
+        "Our team will review your complaint and contact you using the contact "
+        "details associated with your account.\n"
+        f"Calls may come from {SUPPORT_PHONE}."
+    )
 
 
 @pytest.mark.parametrize("support_phone", ["", "   "])
@@ -387,7 +626,7 @@ def test_valid_owned_order_complaint_captures_status_and_message():
     response = service.create_order_complaint(**complaint_kwargs())
 
     assert response.success
-    assert response.data["ticket"]["order_status_snapshot"] == "preparing"
+    assert "order_status_snapshot" not in response.data["ticket"]
     assert response.user_message == (
         "Your complaint has been recorded.\n"
         "\n"
@@ -400,6 +639,10 @@ def test_valid_owned_order_complaint_captures_status_and_message():
         f"Calls may come from {SUPPORT_PHONE}."
     )
     assert tickets.get("TKT-20260724-A1B2C3")["order_id"] == "ORD-1"
+    assert (
+        tickets.get("TKT-20260724-A1B2C3")["order_status_snapshot"]
+        == "preparing"
+    )
 
 
 @pytest.mark.parametrize("support_phone", ["", "   "])
@@ -499,6 +742,8 @@ def test_exact_idempotent_retry_returns_same_ticket():
     retry = service.create_order_complaint(**complaint_kwargs())
 
     assert retry.data["ticket"]["ticket_id"] == first.data["ticket"]["ticket_id"]
+    assert_customer_ticket_view(first.data["ticket"], complaint=True)
+    assert_customer_ticket_view(retry.data["ticket"], complaint=True)
     assert len(tickets.data) == 1
 
 
@@ -614,6 +859,33 @@ def test_explicit_ticket_lookup_enforces_ownership_with_identical_error():
     assert unauthorized.error_code == "TICKET_NOT_FOUND"
 
 
+def test_explicit_ticket_lookup_excludes_notes_history_session_and_version():
+    service, tickets, _ = build_service()
+    created = service.create_human_assistance(**human_kwargs())
+    stored = tickets.data[created.data["ticket"]["ticket_id"]]
+    stored["admin_notes"] = [{
+        "text": "Do not disclose",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+    stored["status_history"] = [{
+        "previous_status": "open",
+        "new_status": "in_review",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+
+    response = service.get_ticket_status("user-1", stored["ticket_id"])
+
+    assert_customer_ticket_view(response.data["ticket"])
+    assert not {
+        "admin_notes",
+        "status_history",
+        "session_id",
+        "version",
+    } & response.data["ticket"].keys()
+
+
 def test_single_non_terminal_ticket_is_selected_automatically():
     service, _, _ = build_service()
     created = service.create_human_assistance(**human_kwargs())
@@ -623,6 +895,7 @@ def test_single_non_terminal_ticket_is_selected_automatically():
     assert response.agent["tracking_state"] == "single_active_ticket"
     assert response.agent["selected_ticket_id"] == created.data["ticket"]["ticket_id"]
     assert response.agent["requires_ticket_id"] is False
+    assert_customer_ticket_view(response.data["ticket"])
 
 
 def test_multiple_non_terminal_tickets_require_ticket_id():
@@ -640,6 +913,24 @@ def test_multiple_non_terminal_tickets_require_ticket_id():
     assert response.agent["tracking_state"] == "multiple_active_tickets"
     assert response.agent["requires_ticket_id"] is True
     assert response.agent["required_input"] == "ticket_id"
+    assert all(
+        set(ticket) == CUSTOMER_TICKET_KEYS
+        for ticket in response.data["tickets"]
+    )
+
+
+@pytest.mark.parametrize("status", ["resolved", "closed"])
+def test_terminal_ticket_remains_available_by_explicit_id(status):
+    service, tickets, _ = build_service()
+    created = service.create_human_assistance(**human_kwargs())
+    ticket_id = created.data["ticket"]["ticket_id"]
+    tickets.data[ticket_id]["status"] = status
+
+    response = service.get_ticket_status("user-1", ticket_id)
+
+    assert response.success
+    assert response.data["ticket"]["status"] == status
+    assert_customer_ticket_view(response.data["ticket"])
 
 
 def test_no_non_terminal_ticket_requests_older_ticket_id():
@@ -1021,3 +1312,41 @@ def test_admin_get_and_paginated_status_list():
     assert detail.data["ticket"]["ticket_id"] == ticket_id
     assert listing.data["tickets"][0]["ticket_id"] == ticket_id
     assert listing.data["next_cursor"] is None
+
+
+def test_admin_ticket_view_keeps_details_without_repository_metadata():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    tickets.data[ticket_id]["admin_notes"] = [{
+        "text": "Internal note",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+    tickets.data[ticket_id]["status_history"] = [{
+        "previous_status": "open",
+        "new_status": "in_review",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+
+    ticket = service.get_ticket_for_admin(ticket_id).data["ticket"]
+
+    assert ticket["description"] == human_kwargs()["description"]
+    assert ticket["customer_phone"] == human_kwargs()["customer_phone"]
+    assert ticket["admin_notes"][0]["actor"] == "admin-1"
+    assert ticket["status_history"][0]["actor"] == "admin-1"
+    assert ticket["version"] == 1
+    assert not {
+        "PK",
+        "SK",
+        "GSI1PK",
+        "GSI1SK",
+        "GSI2PK",
+        "GSI2SK",
+        "session_id",
+        "expires_at",
+        "idempotency_key",
+        "idempotency_hash",
+    } & ticket.keys()
