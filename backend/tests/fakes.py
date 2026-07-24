@@ -123,6 +123,118 @@ class MemoryOrderRepository:
         return [deepcopy(order) for order in self.data.values()]
 
 
+class MemoryAgentSessionRepository:
+    SUPPORT_FIELDS = {
+        "pending_support_intent",
+        "pending_order_id",
+        "pending_complaint_description",
+        "pending_support_updated_at",
+    }
+
+    def __init__(self):
+        self.data = {}
+        self.conflicts_remaining = 0
+        self.on_conflict = None
+        self.clear_conflicts_remaining = 0
+        self.on_clear_conflict = None
+        self.clear_calls = 0
+
+    def create(self, session):
+        self.data[session["agent_session_id"]] = deepcopy(session)
+
+    def get(self, agent_session_id):
+        return deepcopy(self.data.get(agent_session_id))
+
+    def save(self, session):
+        self.data[session["agent_session_id"]] = deepcopy(session)
+
+    def _get_owned_session(self, customer_id, agent_session_id):
+        from src.repositories.agent_session_repository import (
+            SessionNotFoundError,
+        )
+
+        session = self.data.get(agent_session_id)
+        if (
+            session is None
+            or session.get("PK") != f"CUSTOMER#{customer_id}"
+            or session.get("SK") != f"SESSION#{agent_session_id}"
+            or session.get("customer_id") != customer_id
+            or session.get("agent_session_id") != agent_session_id
+        ):
+            raise SessionNotFoundError
+        return session
+
+    def get_support_state(self, customer_id, agent_session_id):
+        session = self._get_owned_session(customer_id, agent_session_id)
+        return {
+            key: deepcopy(value)
+            for key, value in session.items()
+            if key in self.SUPPORT_FIELDS
+        }
+
+    def update_support_state(
+        self,
+        customer_id,
+        agent_session_id,
+        expected_updated_at,
+        intent,
+        order_id,
+        description,
+        updated_at,
+    ):
+        from src.repositories.agent_session_repository import (
+            SupportStateConflictError,
+        )
+
+        session = self._get_owned_session(customer_id, agent_session_id)
+        actual = session.get("pending_support_updated_at")
+        if self.conflicts_remaining:
+            self.conflicts_remaining -= 1
+            if self.on_conflict:
+                self.on_conflict()
+            raise SupportStateConflictError
+        if actual != expected_updated_at:
+            raise SupportStateConflictError
+        session["pending_support_intent"] = intent
+        session["pending_support_updated_at"] = updated_at
+        if order_id is None:
+            session.pop("pending_order_id", None)
+        else:
+            session["pending_order_id"] = order_id
+        if description is None:
+            session.pop("pending_complaint_description", None)
+        else:
+            session["pending_complaint_description"] = description
+
+    def clear_support_state(
+        self,
+        customer_id,
+        agent_session_id,
+        expected_updated_at=None,
+    ):
+        from src.repositories.agent_session_repository import (
+            SupportStateConflictError,
+        )
+
+        session = self._get_owned_session(customer_id, agent_session_id)
+        self.clear_calls += 1
+        actual = session.get("pending_support_updated_at")
+        if self.clear_conflicts_remaining:
+            self.clear_conflicts_remaining -= 1
+            if self.on_clear_conflict:
+                self.on_clear_conflict()
+            raise SupportStateConflictError
+        if self.conflicts_remaining:
+            self.conflicts_remaining -= 1
+            if self.on_conflict:
+                self.on_conflict()
+            raise SupportStateConflictError
+        if actual != expected_updated_at:
+            raise SupportStateConflictError
+        for field in self.SUPPORT_FIELDS:
+            session.pop(field, None)
+
+
 class MemoryTicketRepository:
     def __init__(self):
         self.data = {}
