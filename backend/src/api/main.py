@@ -174,9 +174,11 @@ def _tool_calls_from_result(result: Any) -> list[ToolCallResult]:
 def _state_from_tool_calls(tool_calls: list[ToolCallResult]) -> dict[str, Any]:
     state: dict[str, Any] = {}
     for call in tool_calls:
-        result = call.result or {}
-        data = result.get("data") or {}
-        agent = result.get("agent") or {}
+        result = call.result if isinstance(call.result, dict) else {}
+        raw_data = result.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        raw_agent = result.get("agent")
+        agent = raw_agent if isinstance(raw_agent, dict) else {}
         if "cart" in data:
             state["cart"] = data["cart"]
         elif agent.get("entity") == "cart":
@@ -192,6 +194,43 @@ def _state_from_tool_calls(tool_calls: list[ToolCallResult]) -> dict[str, Any]:
             state["order"] = data
         elif agent.get("entity") == "orders":
             state["orders"] = data.get("orders", [])
+        entity = agent.get("entity")
+        if entity in {"ticket", "support_ticket"}:
+            ticket = data.get("ticket")
+            if isinstance(ticket, dict):
+                state["support_ticket"] = ticket
+        elif entity in {"tickets", "support_tickets"}:
+            tickets = data.get("tickets")
+            if isinstance(tickets, list):
+                state["support_tickets"] = tickets
+        tracking_state = agent.get("tracking_state")
+        if entity in {
+            "ticket",
+            "tickets",
+            "support_ticket",
+            "support_tickets",
+        } and isinstance(tracking_state, str):
+            tracking = {"tracking_state": tracking_state}
+            required_input = agent.get("required_input")
+            if isinstance(required_input, str):
+                tracking["required_input"] = required_input
+            state["support_tracking"] = tracking
+        if entity == "pending_support":
+            pending: dict[str, Any] = {}
+            intent = agent.get("pending_support_intent")
+            if intent is None or isinstance(intent, str):
+                pending["pending_support_intent"] = intent
+            order_id = agent.get("order_id")
+            if isinstance(order_id, str) and order_id.strip():
+                pending["order_id"] = order_id
+            required_input = agent.get("required_input")
+            if isinstance(required_input, str):
+                pending["required_input"] = required_input
+            next_action = result.get("next_action")
+            if isinstance(next_action, str):
+                pending["next_action"] = next_action
+            if pending:
+                state["pending_support"] = pending
     return state
 
 

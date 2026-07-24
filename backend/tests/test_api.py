@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from src.agent_client import AgentInvocationResult
 from src.api import main
+from src.api.schemas import ToolCallResult
 from src.models.tool_responses import ToolResponse
 from test_config import make_test_settings
 
@@ -82,6 +83,176 @@ class IdentityServices:
             },
             "rotated": self.rotated,
         }
+
+
+def support_tool_call(result, *, name="handle_order_complaint", is_write=True):
+    return ToolCallResult(
+        tool_name=name,
+        success=result.get("success", True),
+        is_write=is_write,
+        result=result,
+        error_code=result.get("error_code"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("entity", "tool_name"),
+    [
+        ("ticket", "create_human_assistance_ticket"),
+        ("support_ticket", "handle_order_complaint"),
+    ],
+)
+def test_state_extraction_includes_customer_safe_support_ticket(
+    entity,
+    tool_name,
+):
+    ticket = {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "status": "open",
+        "status_label": "Open",
+    }
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {"ticket": ticket},
+                "agent": {"entity": entity, "ticket_id": ticket["ticket_id"]},
+            },
+            name=tool_name,
+        )
+    ])
+
+    assert state["support_ticket"] == ticket
+
+
+@pytest.mark.parametrize(
+    ("tracking_state", "tickets"),
+    [
+        ("multiple_active_tickets", [{"ticket_id": "TKT-1"}]),
+        ("no_active_tickets", []),
+    ],
+)
+def test_state_extraction_includes_support_ticket_tracking(
+    tracking_state,
+    tickets,
+):
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {"tickets": tickets},
+                "agent": {
+                    "entity": "tickets",
+                    "tracking_state": tracking_state,
+                    "required_input": "ticket_id",
+                },
+            },
+            name="get_support_ticket_status",
+            is_write=False,
+        )
+    ])
+
+    assert state["support_tickets"] == tickets
+    assert state["support_tracking"] == {
+        "tracking_state": tracking_state,
+        "required_input": "ticket_id",
+    }
+
+
+@pytest.mark.parametrize(
+    ("next_action", "agent", "expected"),
+    [
+        (
+            "request_order_id",
+            {
+                "entity": "pending_support",
+                "pending_support_intent": "order_complaint",
+                "required_input": "order_id",
+            },
+            {
+                "pending_support_intent": "order_complaint",
+                "required_input": "order_id",
+                "next_action": "request_order_id",
+            },
+        ),
+        (
+            "request_complaint_description",
+            {
+                "entity": "pending_support",
+                "pending_support_intent": "order_complaint",
+                "order_id": "ORD-1",
+                "required_input": "complaint_description",
+                "pending_complaint_description": "must stay private",
+            },
+            {
+                "pending_support_intent": "order_complaint",
+                "order_id": "ORD-1",
+                "required_input": "complaint_description",
+                "next_action": "request_complaint_description",
+            },
+        ),
+        (
+            "support_cancelled",
+            {
+                "entity": "pending_support",
+                "pending_support_intent": None,
+            },
+            {
+                "pending_support_intent": None,
+                "next_action": "support_cancelled",
+            },
+        ),
+    ],
+)
+def test_state_extraction_projects_pending_support_safely(
+    next_action,
+    agent,
+    expected,
+):
+    state = main._state_from_tool_calls([
+        support_tool_call({
+            "success": True,
+            "next_action": next_action,
+            "agent": agent,
+        })
+    ])
+
+    assert state["pending_support"] == expected
+    assert "pending_complaint_description" not in state["pending_support"]
+
+
+def test_state_extraction_ignores_malformed_support_and_preserves_cart_order():
+    calls = [
+        support_tool_call({
+            "success": True,
+            "data": "not-a-map",
+            "agent": "not-a-map",
+        }),
+        support_tool_call(
+            {
+                "success": True,
+                "data": {"cart": {"cart_id": "CART-1"}},
+                "agent": {"entity": "cart"},
+            },
+            name="get_active_cart",
+            is_write=False,
+        ),
+        support_tool_call(
+            {
+                "success": True,
+                "data": {"order": {"order_id": "ORD-1"}},
+                "agent": {},
+            },
+            name="get_order_status",
+            is_write=False,
+        ),
+    ]
+
+    state = main._state_from_tool_calls(calls)
+
+    assert state["cart"]["cart_id"] == "CART-1"
+    assert state["order"]["order_id"] == "ORD-1"
+    assert "support_ticket" not in state
 
 
 def client():

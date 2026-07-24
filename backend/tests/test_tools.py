@@ -1,8 +1,15 @@
+import inspect
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
+from fakes import MemoryAgentSessionRepository, MemoryOrderRepository
 from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
 from src.models.tool_responses import ToolResponse
+from src.services.agent_session_service import AgentSessionService
+from src.services.support_flow_service import SupportFlowService
 
 
 class MenuStub:
@@ -42,11 +49,409 @@ class CustomerStub:
 
 
 def test_mvp_tools_include_active_cart_lookup():
-    assert len(tools.MVP_TOOLS) == 15
+    assert len(tools.MVP_TOOLS) == 18
     assert tools.get_active_cart in tools.MVP_TOOLS
     assert tools.get_customer_profile in tools.MVP_TOOLS
     assert tools.update_customer_profile in tools.MVP_TOOLS
     assert tools.save_customer_address in tools.MVP_TOOLS
+    assert tools.create_human_assistance_ticket in tools.MVP_TOOLS
+    assert tools.handle_order_complaint in tools.MVP_TOOLS
+    assert tools.get_support_ticket_status in tools.MVP_TOOLS
+    assert "create_human_assistance_ticket" in tools.WRITE_TOOLS
+    assert "handle_order_complaint" in tools.WRITE_TOOLS
+    assert "get_support_ticket_status" not in tools.WRITE_TOOLS
+
+
+class TicketStub:
+    def __init__(self, response=None):
+        self.response = response or ToolResponse.ok(
+            data={"ticket": {"ticket_id": "TKT-20260724-A1B2C3", "status": "open"}},
+            user_message="Authoritative ticket message.",
+            agent={"entity": "ticket", "tracking_state": "specific_ticket"},
+        )
+        self.human_calls = []
+        self.complaint_calls = []
+        self.status_calls = []
+
+    def create_human_assistance(self, **kwargs):
+        self.human_calls.append(kwargs)
+        return self.response
+
+    def get_ticket_status(self, user_id, ticket_id=None):
+        self.status_calls.append((user_id, ticket_id))
+        return self.response
+
+    def create_order_complaint(self, **kwargs):
+        self.complaint_calls.append(kwargs)
+        return self.response
+
+
+class SupportFlowStub:
+    def __init__(self, response=None):
+        self.response = response or ToolResponse.ok(
+            user_message="Please provide the Order ID.",
+            next_action="request_order_id",
+            agent={
+                "entity": "pending_support",
+                "pending_support_intent": "order_complaint",
+                "required_input": "order_id",
+            },
+        )
+        self.calls = []
+
+    def handle_order_complaint(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
+def test_support_tool_signatures_expose_only_customer_inputs():
+    assert list(inspect.signature(tools.create_human_assistance_ticket).parameters) == [
+        "description"
+    ]
+    assert list(inspect.signature(tools.handle_order_complaint).parameters) == [
+        "order_id",
+        "description",
+        "action",
+    ]
+    assert list(inspect.signature(tools.get_support_ticket_status).parameters) == [
+        "ticket_id"
+    ]
+    action_schema = tools.handle_order_complaint.tool_spec["inputSchema"]["json"][
+        "properties"
+    ]["action"]
+    assert action_schema["enum"] == ["continue", "cancel"]
+
+
+def test_human_assistance_tool_uses_trusted_context_and_records_write(monkeypatch):
+    tickets = TicketStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+    context = AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        customer_id="customer-1",
+        customer_name="Ava",
+        customer_phone="+1000000",
+        channel="whatsapp",
+        request_id="trusted-request",
+    )
+
+    with request_context(context):
+        result = tools.create_human_assistance_ticket(
+            description="  Please call me.\nToday.  "
+        )
+
+    assert tickets.human_calls == [{
+        "user_id": "trusted-user",
+        "session_id": "trusted-session",
+        "description": "  Please call me.\nToday.  ",
+        "customer_id": "customer-1",
+        "customer_name": "Ava",
+        "customer_phone": "+1000000",
+        "source": "whatsapp",
+        "idempotency_key": "trusted-request",
+    }]
+    assert result["user_message"] == "Authoritative ticket message."
+    assert result["data"]["ticket"]["ticket_id"] == "TKT-20260724-A1B2C3"
+    assert "trusted-request" not in repr(result)
+    assert context.tool_calls[-1]["tool_name"] == "create_human_assistance_ticket"
+    assert context.tool_calls[-1]["is_write"] is True
+
+
+def test_human_assistance_missing_request_id_is_deterministic_and_recorded(
+    monkeypatch,
+):
+    tickets = TicketStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+    context = AgentRequestContext("trusted-user", "trusted-session")
+
+    with request_context(context):
+        result = tools.create_human_assistance_ticket()
+
+    assert result["success"] is False
+    assert result["error_code"] == "REQUEST_ID_REQUIRED"
+    assert result["retryable"] is False
+    assert tickets.human_calls == []
+    assert context.tool_calls[-1]["error_code"] == "REQUEST_ID_REQUIRED"
+
+
+@pytest.mark.parametrize(
+    ("user_id", "session_id", "error_code"),
+    [
+        ("", "trusted-session", "USER_ID_REQUIRED"),
+        ("trusted-user", "", "SESSION_ID_REQUIRED"),
+    ],
+)
+def test_human_assistance_requires_trusted_identity(
+    monkeypatch,
+    user_id,
+    session_id,
+    error_code,
+):
+    tickets = TicketStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+    context = AgentRequestContext(
+        user_id,
+        session_id,
+        request_id="trusted-request",
+    )
+
+    with request_context(context):
+        result = tools.create_human_assistance_ticket()
+
+    assert result["error_code"] == error_code
+    assert tickets.human_calls == []
+
+
+def test_human_assistance_preserves_reuse_response_without_description(monkeypatch):
+    response = ToolResponse.ok(
+        data={"ticket": {"ticket_id": "TKT-20260724-A1B2C3", "status": "open"}},
+        user_message="Your existing support request is still active.",
+        agent={"entity": "ticket", "ticket_status": "open"},
+    )
+    tickets = TicketStub(response)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+    context = AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id="trusted-request",
+    )
+
+    with request_context(context):
+        result = tools.create_human_assistance_ticket()
+
+    assert tickets.human_calls[0]["description"] is None
+    assert result["user_message"] == response.user_message
+
+
+def test_complaint_tool_passes_only_context_and_customer_inputs(monkeypatch):
+    flow = SupportFlowStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(support_flow=flow),
+    )
+    context = AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        customer_id="customer-1",
+        customer_name="Ava",
+        customer_phone="+1000000",
+        channel="web",
+        request_id="trusted-request",
+    )
+
+    with request_context(context):
+        result = tools.handle_order_complaint(
+            order_id="ORD-1",
+            description="  Cold food.\nMissing drink.  ",
+            action="continue",
+        )
+
+    assert flow.calls == [{
+        "user_id": "trusted-user",
+        "agent_session_id": "trusted-session",
+        "request_id": "trusted-request",
+        "order_id": "ORD-1",
+        "description": "  Cold food.\nMissing drink.  ",
+        "action": "continue",
+        "customer_id": "customer-1",
+        "customer_name": "Ava",
+        "customer_phone": "+1000000",
+        "source": "web",
+    }]
+    assert result["user_message"] == "Please provide the Order ID."
+    assert result["next_action"] == "request_order_id"
+    assert "trusted-request" not in repr(result)
+    assert context.tool_calls[-1]["tool_name"] == "handle_order_complaint"
+    assert context.tool_calls[-1]["is_write"] is True
+
+
+def test_complaint_tool_preserves_service_errors_and_cancellation(monkeypatch):
+    response = ToolResponse.error(
+        error_code="SUPPORT_STATE_CONFLICT",
+        user_message="The complaint details changed while they were being saved.",
+        retryable=True,
+    )
+    flow = SupportFlowStub(response)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(support_flow=flow),
+    )
+    context = AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id=None,
+    )
+
+    with request_context(context):
+        result = tools.handle_order_complaint(action="cancel")
+
+    assert flow.calls[0]["request_id"] is None
+    assert flow.calls[0]["action"] == "cancel"
+    assert result["error_code"] == "SUPPORT_STATE_CONFLICT"
+    assert result["user_message"] == response.user_message
+
+
+def test_complaint_tool_preserves_missing_request_id_response(monkeypatch):
+    response = ToolResponse.error(
+        error_code="REQUEST_ID_REQUIRED",
+        user_message="A trusted request ID is required.",
+    )
+    flow = SupportFlowStub(response)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(support_flow=flow),
+    )
+    context = AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id=None,
+    )
+
+    with request_context(context):
+        result = tools.handle_order_complaint()
+
+    assert result["error_code"] == "REQUEST_ID_REQUIRED"
+    assert result["user_message"] == "A trusted request ID is required."
+
+
+def test_complaint_tool_drives_persisted_multi_turn_flow(monkeypatch):
+    now = datetime(2026, 7, 24, 10, 0, tzinfo=timezone.utc)
+    sessions_repository = MemoryAgentSessionRepository()
+    sessions_repository.data["trusted-session"] = {
+        "PK": "CUSTOMER#trusted-user",
+        "SK": "SESSION#trusted-session",
+        "agent_session_id": "trusted-session",
+        "customer_id": "trusted-user",
+        "unrelated": "preserved",
+    }
+    sessions = AgentSessionService(
+        sessions_repository,
+        SimpleNamespace(),
+        SimpleNamespace(agent_session_ttl_hours=24),
+        clock=lambda: now,
+    )
+    orders = MemoryOrderRepository()
+    orders.data["ORD-1"] = {
+        "order_id": "ORD-1",
+        "user_id": "trusted-user",
+        "status": "confirmed",
+    }
+    tickets = TicketStub()
+    flow = SupportFlowService(sessions, tickets, orders)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(support_flow=flow),
+    )
+
+    with request_context(AgentRequestContext(
+        "trusted-user", "trusted-session", request_id="request-1"
+    )):
+        first = tools.handle_order_complaint()
+    with request_context(AgentRequestContext(
+        "trusted-user", "trusted-session", request_id="request-2"
+    )):
+        second = tools.handle_order_complaint(order_id="ORD-1")
+    with request_context(AgentRequestContext(
+        "trusted-user", "trusted-session", request_id="request-3"
+    )):
+        third = tools.handle_order_complaint(
+            description="  Cold food.\nMissing drink.  "
+        )
+
+    assert first["next_action"] == "request_order_id"
+    assert second["next_action"] == "request_complaint_description"
+    assert third["user_message"] == "Authoritative ticket message."
+    assert tickets.complaint_calls == [{
+        "user_id": "trusted-user",
+        "order_id": "ORD-1",
+        "description": "  Cold food.\nMissing drink.  ",
+        "session_id": "trusted-session",
+        "source": "web",
+        "idempotency_key": "request-3",
+    }]
+    assert sessions_repository.data["trusted-session"]["unrelated"] == "preserved"
+    assert not any(
+        key.startswith("pending_")
+        for key in sessions_repository.data["trusted-session"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("tracking_state", "ticket_id"),
+    [
+        ("specific_ticket", "TKT-20260724-A1B2C3"),
+        ("single_active_ticket", None),
+        ("multiple_active_tickets", None),
+        ("no_active_tickets", None),
+    ],
+)
+def test_ticket_status_tool_preserves_tracking_response(
+    monkeypatch,
+    tracking_state,
+    ticket_id,
+):
+    response = ToolResponse.ok(
+        data={"tickets": []},
+        user_message=f"Exact {tracking_state} message.",
+        next_action="provide_ticket_id",
+        agent={"entity": "tickets", "tracking_state": tracking_state},
+    )
+    tickets = TicketStub(response)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+    context = AgentRequestContext("trusted-user", "trusted-session")
+
+    with request_context(context):
+        result = tools.get_support_ticket_status(ticket_id=ticket_id)
+
+    assert tickets.status_calls == [("trusted-user", ticket_id)]
+    assert result["agent"]["tracking_state"] == tracking_state
+    assert result["user_message"] == response.user_message
+    assert context.tool_calls[-1]["is_write"] is False
+
+
+def test_ticket_status_tool_preserves_not_found(monkeypatch):
+    response = ToolResponse.error(
+        error_code="TICKET_NOT_FOUND",
+        user_message="I couldn't find that support ticket.",
+    )
+    tickets = TicketStub(response)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+
+    with request_context(AgentRequestContext("trusted-user", "trusted-session")):
+        result = tools.get_support_ticket_status(
+            ticket_id="TKT-20260724-FFFFFF"
+        )
+
+    assert result["error_code"] == "TICKET_NOT_FOUND"
+    assert result["user_message"] == response.user_message
 
 
 def test_menu_link_injects_trusted_context(monkeypatch):

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from src.agent import dependencies
 from src.repositories.ticket_repository import TicketRepository
+from src.services.support_flow_service import SupportFlowService
 from src.services.ticket_service import TicketService
 from test_config import make_test_settings
 
@@ -55,5 +56,9 @@ def test_service_container_wires_ticket_service_without_table_access(
     assert services.tickets.repository.table.name == "tickets-phase-2a"
     assert services.tickets.orders is services.orders.orders
     assert services.tickets.support_phone_number == "+1 555 0199"
+    assert isinstance(services.support_flow, SupportFlowService)
+    assert services.support_flow.agent_sessions is services.agent_sessions
+    assert services.support_flow.tickets is services.tickets
+    assert services.support_flow.orders is services.orders.orders
     assert dynamodb.table_names.count("tickets-phase-2a") == 1
     dependencies.get_services.cache_clear()
