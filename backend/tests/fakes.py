@@ -109,6 +109,12 @@ class MemoryOrderRepository:
     def get_by_order_id(self, order_id):
         return deepcopy(self.data.get(order_id))
 
+    def get(self, user_id, order_id):
+        order = self.data.get(order_id)
+        if not order or order.get("user_id") != user_id:
+            return None
+        return deepcopy(order)
+
     def save(self, order, expected_version):
         assert self.data[order["order_id"]]["version"] == expected_version
         saved = deepcopy(order)
@@ -245,6 +251,7 @@ class MemoryTicketRepository:
         self.guard_conflict_count = 0
         self.reusable_change_count = 0
         self.bind_error = None
+        self.save_error = None
         self.customer_pages = None
         self.save_calls = []
 
@@ -385,6 +392,8 @@ class MemoryTicketRepository:
         return {"items": tickets[:limit], "next_cursor": None}
 
     def save(self, ticket, expected_version):
+        if self.save_error:
+            raise self.save_error
         if self.version_conflict_count:
             self.version_conflict_count -= 1
             raise TicketVersionConflictError

@@ -6,7 +6,9 @@ import pytest
 from boto3.dynamodb.types import TypeDeserializer
 from boto3.dynamodb.conditions import ConditionExpressionBuilder
 from botocore.exceptions import ClientError
+from pydantic import ValidationError
 
+import src.models.ticket as ticket_models
 from src.repositories.ticket_repository import (
     HumanSessionGuardConflictError,
     IdempotencyConflictError,
@@ -94,6 +96,7 @@ def sample_ticket(**overrides):
         "created_at": "2026-07-24T10:00:00+00:00",
         "updated_at": "2026-07-24T10:00:00+00:00",
         "status_history": [],
+        "priority_history": [],
         "admin_notes": [],
         "version": 1,
         "PK": "TICKET#TKT-20260724-A1B2C3",
@@ -129,6 +132,95 @@ def sample_ticket(**overrides):
             f"UPDATED#{overrides['updated_at']}#{ticket['ticket_id']}"
         )
     return ticket
+
+
+def test_admin_note_and_status_history_extensions_are_backward_compatible():
+    note = ticket_models.AdminNote.model_validate({
+        "text": "legacy note",
+        "timestamp": "2026-07-24T10:00:00Z",
+    })
+    history = ticket_models.StatusHistoryEntry.model_validate({
+        "previous_status": "open",
+        "new_status": "in_review",
+        "timestamp": "2026-07-24T10:00:00Z",
+    })
+
+    assert note.note_id is None
+    assert note.actor is None
+    assert history.reason is None
+
+
+def test_admin_note_id_and_status_reason_validation_preserve_original_text():
+    note = ticket_models.AdminNote.model_validate({
+        "note_id": "NTE-20260724-A1B2C3",
+        "text": "  Keep note spacing.\n",
+        "timestamp": "2026-07-24T15:00:00+05:00",
+        "actor": "admin",
+    })
+    history = ticket_models.StatusHistoryEntry.model_validate({
+        "previous_status": "open",
+        "new_status": "resolved",
+        "timestamp": "2026-07-24T15:00:00+05:00",
+        "actor": "admin",
+        "reason": "  Customer confirmed.\n",
+    })
+
+    assert note.text == "  Keep note spacing.\n"
+    assert note.timestamp == "2026-07-24T10:00:00+00:00"
+    assert history.reason == "  Customer confirmed.\n"
+    with pytest.raises(ValidationError):
+        ticket_models.AdminNote.model_validate({
+            "note_id": "bad-note-id",
+            "text": "note",
+            "timestamp": "2026-07-24T10:00:00Z",
+            "actor": "admin",
+        })
+    for invalid_reason in ("   ", "x" * 2001):
+        with pytest.raises(ValidationError):
+            ticket_models.StatusHistoryEntry.model_validate({
+                "previous_status": "open",
+                "new_status": "resolved",
+                "timestamp": "2026-07-24T10:00:00Z",
+                "actor": "admin",
+                "reason": invalid_reason,
+            })
+
+
+def test_ticket_defaults_missing_priority_history_and_validates_entries():
+    legacy = ticket_models.Ticket.model_validate(sample_ticket())
+    entry = ticket_models.PriorityHistoryEntry.model_validate({
+        "previous_priority": "normal",
+        "new_priority": "high",
+        "timestamp": "2026-07-24T15:00:00+05:00",
+        "actor": "admin",
+        "reason": "  Escalated by support.\n",
+    })
+
+    assert legacy.priority_history == []
+    assert entry.timestamp == "2026-07-24T10:00:00+00:00"
+    assert entry.reason == "  Escalated by support.\n"
+    with pytest.raises(ValidationError):
+        ticket_models.PriorityHistoryEntry.model_validate({
+            "previous_priority": "critical",
+            "new_priority": "high",
+            "timestamp": "2026-07-24T10:00:00Z",
+            "actor": "admin",
+        })
+
+
+def test_priority_history_maximum_is_part_of_full_ticket_validation():
+    entry = {
+        "previous_priority": "normal",
+        "new_priority": "high",
+        "timestamp": "2026-07-24T10:00:00Z",
+        "actor": "admin",
+    }
+    valid = sample_ticket(priority_history=[entry] * 100)
+    invalid = sample_ticket(priority_history=[entry] * 101)
+
+    assert ticket_models.validate_ticket_for_write(valid)["priority_history"]
+    with pytest.raises(ticket_models.TicketDomainValidationError):
+        ticket_models.validate_ticket_for_write(invalid)
 
 
 def sample_marker():
@@ -1037,3 +1129,62 @@ def test_non_conditional_save_errors_are_not_version_conflicts(error_code):
         repository.save(sample_ticket(), expected_version=1)
 
     assert exc_info.value is error
+
+
+def test_repository_save_never_mutates_caller_input():
+    scenarios = ("success", "conflict", "aggregate", "infrastructure")
+
+    for scenario in scenarios:
+        dynamo = FakeDynamo()
+        repository = TicketRepository(dynamo, "tickets")
+        ticket = oversized_ticket() if scenario == "aggregate" else sample_ticket()
+        before = deepcopy(ticket)
+        if scenario == "conflict":
+            error = ClientError(
+                {
+                    "Error": {
+                        "Code": "ConditionalCheckFailedException",
+                        "Message": "stale",
+                    }
+                },
+                "PutItem",
+            )
+
+            def fail_conflict(**_kwargs):
+                raise error
+
+            dynamo.table.put_item = fail_conflict
+        elif scenario == "infrastructure":
+            error = ClientError(
+                {
+                    "Error": {
+                        "Code": "ProvisionedThroughputExceededException",
+                        "Message": "busy",
+                    }
+                },
+                "PutItem",
+            )
+
+            def fail_infrastructure(**_kwargs):
+                raise error
+
+            dynamo.table.put_item = fail_infrastructure
+
+        if scenario == "success":
+            repository.save(ticket, expected_version=1)
+            persisted = dynamo.table.put_calls[0]["Item"]
+            assert persisted["version"] == 2
+        else:
+            expected = (
+                TicketVersionConflictError
+                if scenario == "conflict"
+                else TicketDomainValidationError
+                if scenario == "aggregate"
+                else ClientError
+            )
+            with pytest.raises(expected):
+                repository.save(ticket, expected_version=1)
+
+        assert ticket == before
+        assert ticket["version"] == 1
+        assert ticket["admin_notes"] == before["admin_notes"]

@@ -48,7 +48,9 @@ MAX_CUSTOMER_PHONE_LENGTH = 64
 MAX_SOURCE_LENGTH = 64
 MAX_ACTOR_LENGTH = 200
 MAX_ADMIN_NOTE_LENGTH = 2_000
+MAX_NOTE_ID_LENGTH = 19
 MAX_STATUS_HISTORY = 100
+MAX_PRIORITY_HISTORY = 100
 MAX_ADMIN_NOTES = 100
 MAX_TICKET_ITEM_BYTES = 350 * 1024
 TICKET_ITEM_TOO_LARGE = "TICKET_ITEM_TOO_LARGE"
@@ -56,6 +58,7 @@ INVALID_TICKET_ID = "INVALID_TICKET_ID"
 INVALID_TIMESTAMP = "INVALID_TIMESTAMP"
 INVALID_TICKET_RECORD = "INVALID_TICKET_RECORD"
 TICKET_ID_PATTERN = re.compile(r"^TKT-([0-9]{8})-([A-F0-9]{6})$")
+NOTE_ID_PATTERN = re.compile(r"^NTE-([0-9]{8})-([A-F0-9]{6})$")
 TICKET_STATUS_LABELS = {
     "open": "Open",
     "in_review": "In review",
@@ -67,6 +70,11 @@ TICKET_STATUS_LABELS = {
 
 def generate_ticket_id(now: datetime) -> str:
     return f"TKT-{now:%Y%m%d}-{secrets.token_hex(3).upper()}"
+
+
+def generate_note_id(now: datetime) -> str:
+    normalized = now.astimezone(timezone.utc)
+    return f"NTE-{normalized:%Y%m%d}-{secrets.token_hex(3).upper()}"
 
 
 class TicketDomainValidationError(ValueError):
@@ -159,13 +167,17 @@ class StatusHistoryEntry(BaseModel):
     new_status: TicketStatus
     timestamp: str = Field(min_length=1)
     actor: str | None = Field(default=None, max_length=MAX_ACTOR_LENGTH)
+    reason: str | None = Field(
+        default=None,
+        max_length=MAX_ADMIN_NOTE_LENGTH,
+    )
 
     @field_validator("timestamp", mode="before")
     @classmethod
     def normalize_timestamp(cls, value: object) -> str:
         return normalize_ticket_timestamp(value)
 
-    @field_validator("actor")
+    @field_validator("actor", "reason")
     @classmethod
     def validate_non_blank(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
@@ -176,6 +188,7 @@ class StatusHistoryEntry(BaseModel):
 class AdminNote(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    note_id: str | None = Field(default=None, max_length=MAX_NOTE_ID_LENGTH)
     text: str = Field(min_length=1, max_length=MAX_ADMIN_NOTE_LENGTH)
     timestamp: str = Field(min_length=1)
     actor: str | None = Field(default=None, max_length=MAX_ACTOR_LENGTH)
@@ -185,7 +198,46 @@ class AdminNote(BaseModel):
     def normalize_timestamp(cls, value: object) -> str:
         return normalize_ticket_timestamp(value)
 
+    @field_validator("note_id")
+    @classmethod
+    def validate_note_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        match = NOTE_ID_PATTERN.fullmatch(value)
+        if not match:
+            raise ValueError("note_id has an invalid format")
+        try:
+            datetime.strptime(match.group(1), "%Y%m%d")
+        except ValueError as exc:
+            raise ValueError("note_id contains an invalid date") from exc
+        return value
+
     @field_validator("text", "actor")
+    @classmethod
+    def validate_non_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("value must not be blank")
+        return value
+
+
+class PriorityHistoryEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    previous_priority: TicketPriority
+    new_priority: TicketPriority
+    timestamp: str = Field(min_length=1)
+    actor: str = Field(min_length=1, max_length=MAX_ACTOR_LENGTH)
+    reason: str | None = Field(
+        default=None,
+        max_length=MAX_ADMIN_NOTE_LENGTH,
+    )
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def normalize_timestamp(cls, value: object) -> str:
+        return normalize_ticket_timestamp(value)
+
+    @field_validator("actor", "reason")
     @classmethod
     def validate_non_blank(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
@@ -220,6 +272,9 @@ class Ticket(BaseModel):
     updated_at: str = Field(min_length=1)
     status_history: list[StatusHistoryEntry] = Field(
         default_factory=list, max_length=MAX_STATUS_HISTORY
+    )
+    priority_history: list[PriorityHistoryEntry] = Field(
+        default_factory=list, max_length=MAX_PRIORITY_HISTORY
     )
     admin_notes: list[AdminNote] = Field(
         default_factory=list, max_length=MAX_ADMIN_NOTES
@@ -283,6 +338,13 @@ class Ticket(BaseModel):
 
     @model_validator(mode="after")
     def validate_record(self) -> "Ticket":
+        note_ids = [
+            note.note_id
+            for note in self.admin_notes
+            if note.note_id is not None
+        ]
+        if len(note_ids) != len(set(note_ids)):
+            raise ValueError("admin note IDs must be unique")
         if datetime.fromisoformat(self.created_at) > datetime.fromisoformat(
             self.updated_at
         ):

@@ -49,15 +49,32 @@ class TicketIdFactory:
         return next(self.ids)
 
 
-def build_service(ticket_ids=(), support_phone=SUPPORT_PHONE):
+class NoteIdFactory:
+    def __init__(self, *ids):
+        self.ids = iter(ids)
+
+    def __call__(self, _now):
+        return next(self.ids)
+
+
+def build_service(
+    ticket_ids=(),
+    support_phone=SUPPORT_PHONE,
+    note_ids=(),
+):
     tickets = MemoryTicketRepository()
     orders = MemoryOrderRepository()
+    service_kwargs = {
+        "support_phone_number": support_phone,
+        "clock": lambda: NOW,
+        "ticket_id_factory": TicketIdFactory(*ticket_ids),
+    }
+    if note_ids:
+        service_kwargs["note_id_factory"] = NoteIdFactory(*note_ids)
     service = TicketService(
         tickets,
         orders,
-        support_phone_number=support_phone,
-        clock=lambda: NOW,
-        ticket_id_factory=TicketIdFactory(*ticket_ids),
+        **service_kwargs,
     )
     return service, tickets, orders
 
@@ -108,14 +125,27 @@ def customer_ticket_input(**overrides):
 
 
 def create_order(repository, order_id="ORD-1", user_id="user-1", status="accepted"):
-    repository.create(
-        {
-            "order_id": order_id,
-            "user_id": user_id,
-            "status": status,
-            "version": 1,
-        }
-    )
+    repository.create({
+        "order_id": order_id,
+        "user_id": user_id,
+        "status": status,
+        "fulfillment_method": "delivery",
+        "total": 2500,
+        "currency": "PKR",
+        "created_at": NOW.isoformat(),
+        "updated_at": NOW.isoformat(),
+        "version": 1,
+    })
+
+
+def set_ticket_status(tickets, ticket_id, status):
+    tickets.data[ticket_id]["status"] = status
+    tickets.data[ticket_id]["GSI2PK"] = f"STATUS#{status}"
+
+
+def assert_admin_error(exc_info, error_code, *, retryable=False):
+    assert exc_info.value.error_code == error_code
+    assert exc_info.value.retryable is retryable
 
 
 def test_domain_constants_are_locked():
@@ -1071,9 +1101,14 @@ def test_status_update_appends_history_and_refreshes_gsi2():
     created = service.create_human_assistance(**human_kwargs())
     ticket_id = created.data["ticket"]["ticket_id"]
 
-    response = service.update_status(ticket_id, "in_review", actor="admin-1")
+    response = service.update_admin_status(
+        ticket_id,
+        "in_review",
+        expected_version=1,
+        actor="admin-1",
+    )
 
-    assert response.success
+    assert response["ticket"]["version"] == 2
     stored = tickets.get(ticket_id)
     assert stored["status_history"] == [
         {
@@ -1094,11 +1129,15 @@ def test_unchanged_status_is_a_complete_no_op():
     ).data["ticket"]["ticket_id"]
     before = tickets.get(ticket_id)
 
-    response = service.update_status(ticket_id, "open", actor="admin-1")
+    response = service.update_admin_status(
+        ticket_id,
+        "open",
+        expected_version=1,
+        actor="admin-1",
+    )
 
-    assert response.success
     assert tickets.get(ticket_id) == before
-    assert response.data["ticket"]["version"] == before["version"]
+    assert response["ticket"]["version"] == before["version"]
     assert tickets.save_calls == []
 
 
@@ -1108,18 +1147,38 @@ def test_admin_note_append_preserves_prior_notes_and_rejects_blank():
         **human_kwargs()
     ).data["ticket"]["ticket_id"]
 
-    service.append_admin_note(ticket_id, "First note", actor="admin-1")
-    service.append_admin_note(ticket_id, "Second note")
-    blank = service.append_admin_note(ticket_id, "   ")
+    service.add_admin_note(
+        ticket_id,
+        "  First note\n",
+        expected_version=1,
+        actor="admin-1",
+    )
+    service.add_admin_note(
+        ticket_id,
+        "Second note",
+        expected_version=2,
+        actor="admin-1",
+    )
 
     stored = tickets.get(ticket_id)
     assert [note["text"] for note in stored["admin_notes"]] == [
-        "First note",
+        "  First note\n",
         "Second note",
     ]
     assert stored["admin_notes"][0]["actor"] == "admin-1"
-    assert "actor" not in stored["admin_notes"][1]
-    assert blank.error_code == "ADMIN_NOTE_REQUIRED"
+    assert stored["admin_notes"][1]["actor"] == "admin-1"
+    assert re.fullmatch(
+        r"NTE-20260724-[A-F0-9]{6}",
+        stored["admin_notes"][0]["note_id"],
+    )
+    with pytest.raises(Exception) as exc_info:
+        service.add_admin_note(
+            ticket_id,
+            "   ",
+            expected_version=3,
+            actor="admin-1",
+        )
+    assert exc_info.value.error_code == "NOTE_REQUIRED"
 
 
 @pytest.mark.parametrize(
@@ -1160,11 +1219,23 @@ def test_admin_note_and_actor_limits_are_deterministic():
         **human_kwargs()
     ).data["ticket"]["ticket_id"]
 
-    note = service.append_admin_note(ticket_id, "x" * 2001)
-    actor = service.update_status(ticket_id, "in_review", actor="x" * 201)
+    with pytest.raises(Exception) as note:
+        service.add_admin_note(
+            ticket_id,
+            "x" * 2001,
+            expected_version=1,
+            actor="admin-1",
+        )
+    with pytest.raises(Exception) as actor:
+        service.update_admin_status(
+            ticket_id,
+            "in_review",
+            expected_version=1,
+            actor="x" * 201,
+        )
 
-    assert note.error_code == "ADMIN_NOTE_TOO_LONG"
-    assert actor.error_code == "ACTOR_TOO_LONG"
+    assert_admin_error(note, "NOTE_TOO_LONG")
+    assert_admin_error(actor, "INVALID_ADMIN_ACTOR")
 
 
 def test_note_and_history_collection_limits_do_not_discard_existing_entries():
@@ -1185,11 +1256,23 @@ def test_note_and_history_collection_limits_do_not_discard_existing_entries():
         for _index in range(MAX_STATUS_HISTORY)
     ]
 
-    note = service.append_admin_note(ticket_id, "one more")
-    status = service.update_status(ticket_id, "in_review")
+    with pytest.raises(Exception) as note:
+        service.add_admin_note(
+            ticket_id,
+            "one more",
+            expected_version=1,
+            actor="admin-1",
+        )
+    with pytest.raises(Exception) as status:
+        service.update_admin_status(
+            ticket_id,
+            "in_review",
+            expected_version=1,
+            actor="admin-1",
+        )
 
-    assert note.error_code == "ADMIN_NOTE_LIMIT_REACHED"
-    assert status.error_code == "STATUS_HISTORY_LIMIT_REACHED"
+    assert_admin_error(note, "ADMIN_NOTE_LIMIT_REACHED")
+    assert_admin_error(status, "STATUS_HISTORY_LIMIT_REACHED")
     assert len(tickets.get(ticket_id)["admin_notes"]) == MAX_ADMIN_NOTES
     assert len(tickets.get(ticket_id)["status_history"]) == MAX_STATUS_HISTORY
 
@@ -1215,14 +1298,15 @@ def test_oversized_note_update_returns_deterministic_error_without_mutation():
     assert ticket_item_size_bytes(ticket) < MAX_TICKET_ITEM_BYTES
     before = tickets.get(ticket_id)
 
-    response = service.append_admin_note(
-        ticket_id,
-        "😀" * 2_000,
-        actor="😀" * 200,
-    )
+    with pytest.raises(Exception) as exc_info:
+        service.add_admin_note(
+            ticket_id,
+            note["text"],
+            expected_version=1,
+            actor=note["actor"],
+        )
 
-    assert not response.success
-    assert response.error_code == "TICKET_ITEM_TOO_LARGE"
+    assert_admin_error(exc_info, "TICKET_ITEM_TOO_LARGE")
     assert tickets.get(ticket_id) == before
 
 
@@ -1233,11 +1317,19 @@ def test_optimistic_lock_conflict_is_deterministic():
     ).data["ticket"]["ticket_id"]
     tickets.version_conflict_count = 1
 
-    response = service.update_status(ticket_id, "in_review")
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_status(
+            ticket_id,
+            "in_review",
+            expected_version=1,
+            actor="admin-1",
+        )
 
-    assert not response.success
-    assert response.error_code == "TICKET_VERSION_CONFLICT"
-    assert response.retryable is True
+    assert_admin_error(
+        exc_info,
+        "TICKET_VERSION_CONFLICT",
+        retryable=True,
+    )
 
 
 @pytest.mark.parametrize("first_change", ["note", "status"])
@@ -1261,19 +1353,40 @@ def test_stale_note_or_status_update_cannot_overwrite_concurrent_change(first_ch
         tickets.save(stale, expected_version=1)
 
 
-@pytest.mark.parametrize("status", ["resolved", "closed"])
-def test_reopen_from_terminal_status(status):
+@pytest.mark.parametrize(
+    ("status", "target"),
+    [
+        ("resolved", "open"),
+        ("resolved", "in_review"),
+        ("closed", "open"),
+        ("closed", "in_review"),
+    ],
+)
+def test_reopen_from_terminal_status(status, target):
     service, tickets, _ = build_service()
     ticket_id = service.create_human_assistance(
         **human_kwargs()
     ).data["ticket"]["ticket_id"]
-    tickets.data[ticket_id]["status"] = status
+    set_ticket_status(tickets, ticket_id, status)
 
-    response = service.reopen_ticket(ticket_id, actor="admin-1")
+    response = service.reopen_admin_ticket(
+        ticket_id,
+        target_status=target,
+        reason="Customer replied",
+        expected_version=1,
+        actor="admin-1",
+    )
 
-    assert response.success
-    assert tickets.get(ticket_id)["status"] == "open"
-    assert tickets.get(ticket_id)["status_history"][-1]["previous_status"] == status
+    assert response["ticket"]["version"] == 2
+    stored = tickets.get(ticket_id)
+    assert stored["status"] == target
+    assert stored["status_history"][-1] == {
+        "previous_status": status,
+        "new_status": target,
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+        "reason": "Customer replied",
+    }
 
 
 def test_reopen_from_non_terminal_is_rejected():
@@ -1282,10 +1395,16 @@ def test_reopen_from_non_terminal_is_rejected():
         **human_kwargs()
     ).data["ticket"]["ticket_id"]
 
-    response = service.reopen_ticket(ticket_id)
+    with pytest.raises(Exception) as exc_info:
+        service.reopen_admin_ticket(
+            ticket_id,
+            target_status="open",
+            reason="Customer replied",
+            expected_version=1,
+            actor="admin-1",
+        )
 
-    assert not response.success
-    assert response.error_code == "INVALID_TICKET_STATE"
+    assert_admin_error(exc_info, "INVALID_TICKET_TRANSITION")
 
 
 def test_status_change_never_updates_linked_order():
@@ -1295,7 +1414,13 @@ def test_status_change_never_updates_linked_order():
         **complaint_kwargs()
     ).data["ticket"]["ticket_id"]
 
-    service.update_status(ticket_id, "resolved")
+    service.update_admin_status(
+        ticket_id,
+        "resolved",
+        reason="Resolved by support",
+        expected_version=1,
+        actor="admin-1",
+    )
 
     assert orders.get_by_order_id("ORD-1")["status"] == "accepted"
 
@@ -1306,10 +1431,10 @@ def test_admin_get_and_paginated_status_list():
         **human_kwargs()
     ).data["ticket"]["ticket_id"]
 
-    detail = service.get_ticket_for_admin(ticket_id)
+    detail = service.get_admin_ticket(ticket_id)
     listing = service.list_tickets_by_status("open", limit=25)
 
-    assert detail.data["ticket"]["ticket_id"] == ticket_id
+    assert detail["ticket"]["ticket_id"] == ticket_id
     assert listing.data["tickets"][0]["ticket_id"] == ticket_id
     assert listing.data["next_cursor"] is None
 
@@ -1331,13 +1456,37 @@ def test_admin_ticket_view_keeps_details_without_repository_metadata():
         "actor": "admin-1",
     }]
 
-    ticket = service.get_ticket_for_admin(ticket_id).data["ticket"]
+    ticket = service.get_admin_ticket(ticket_id)["ticket"]
 
     assert ticket["description"] == human_kwargs()["description"]
     assert ticket["customer_phone"] == human_kwargs()["customer_phone"]
     assert ticket["admin_notes"][0]["actor"] == "admin-1"
     assert ticket["status_history"][0]["actor"] == "admin-1"
+    assert ticket["priority_history"] == []
+    assert ticket["linked_order"] is None
     assert ticket["version"] == 1
+    assert set(ticket) == {
+        "ticket_id",
+        "user_id",
+        "customer_id",
+        "customer_name",
+        "customer_phone",
+        "ticket_type",
+        "category",
+        "description",
+        "priority",
+        "status",
+        "order_id",
+        "order_status_snapshot",
+        "source",
+        "created_at",
+        "updated_at",
+        "status_history",
+        "priority_history",
+        "admin_notes",
+        "version",
+        "linked_order",
+    }
     assert not {
         "PK",
         "SK",
@@ -1350,3 +1499,948 @@ def test_admin_ticket_view_keeps_details_without_repository_metadata():
         "idempotency_key",
         "idempotency_hash",
     } & ticket.keys()
+
+
+def test_admin_detail_includes_only_owned_linked_order_summary():
+    service, tickets, orders = build_service()
+    create_order(orders)
+    ticket_id = service.create_order_complaint(
+        **complaint_kwargs()
+    ).data["ticket"]["ticket_id"]
+
+    detail = service.get_admin_ticket(ticket_id)["ticket"]
+
+    assert detail["linked_order"] == {
+        "order_id": "ORD-1",
+        "status": "accepted",
+        "fulfillment_method": "delivery",
+        "total": 2500,
+        "currency": "PKR",
+        "created_at": NOW.isoformat(),
+        "updated_at": NOW.isoformat(),
+    }
+    assert "user_id" not in detail["linked_order"]
+    del orders.data["ORD-1"]
+    assert service.get_admin_ticket(ticket_id)["ticket"]["linked_order"] is None
+    create_order(orders, user_id="user-2")
+    assert service.get_admin_ticket(ticket_id)["ticket"]["linked_order"] is None
+
+
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [
+        ("open", "in_review"),
+        ("open", "waiting_for_customer"),
+        ("open", "resolved"),
+        ("open", "closed"),
+        ("in_review", "waiting_for_customer"),
+        ("in_review", "resolved"),
+        ("in_review", "closed"),
+        ("waiting_for_customer", "in_review"),
+        ("waiting_for_customer", "resolved"),
+        ("waiting_for_customer", "closed"),
+        ("resolved", "closed"),
+    ],
+)
+def test_locked_status_transitions(current, target):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    set_ticket_status(tickets, ticket_id, current)
+    reason = (
+        "  Required reason.\n"
+        if target in {"waiting_for_customer", "resolved", "closed"}
+        else None
+    )
+
+    result = service.update_admin_status(
+        ticket_id,
+        target,
+        reason=reason,
+        expected_version=1,
+        actor="admin-1",
+    )
+
+    history = tickets.get(ticket_id)["status_history"][-1]
+    assert result["ticket"]["version"] == 2
+    assert history["previous_status"] == current
+    assert history["new_status"] == target
+    assert history["actor"] == "admin-1"
+    if reason is not None:
+        assert history["reason"] == reason
+
+
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [
+        ("in_review", "open"),
+        ("waiting_for_customer", "open"),
+        ("resolved", "open"),
+        ("resolved", "in_review"),
+        ("closed", "open"),
+        ("closed", "in_review"),
+        ("closed", "resolved"),
+    ],
+)
+def test_prohibited_normal_status_transitions(current, target):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    set_ticket_status(tickets, ticket_id, current)
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_status(
+            ticket_id,
+            target,
+            reason="Reason",
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert_admin_error(exc_info, "INVALID_TICKET_TRANSITION")
+    assert tickets.get(ticket_id) == before
+
+
+@pytest.mark.parametrize("target", ["waiting_for_customer", "resolved", "closed"])
+def test_statuses_requiring_reason_reject_blank(target):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_status(
+            ticket_id,
+            target,
+            reason="   ",
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert_admin_error(exc_info, "NOTE_REQUIRED")
+    assert tickets.get(ticket_id)["version"] == 1
+
+
+def test_stale_no_op_status_and_priority_requests_conflict():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+
+    for method, value in (
+        (service.update_admin_status, "open"),
+        (service.update_admin_priority, "normal"),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            method(
+                ticket_id,
+                value,
+                expected_version=2,
+                actor="admin-1",
+            )
+        assert_admin_error(
+            exc_info,
+            "TICKET_VERSION_CONFLICT",
+            retryable=True,
+        )
+    assert tickets.save_calls == []
+
+
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [("normal", "high"), ("high", "urgent"), ("urgent", "normal")],
+)
+def test_priority_changes_append_private_history(current, target):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs(priority=current)
+    ).data["ticket"]["ticket_id"]
+
+    result = service.update_admin_priority(
+        ticket_id,
+        target,
+        reason="  Escalated.\n",
+        expected_version=1,
+        actor="admin-1",
+    )
+
+    stored = tickets.get(ticket_id)
+    assert result["ticket"]["version"] == 2
+    assert stored["priority"] == target
+    assert stored["priority_history"] == [{
+        "previous_priority": current,
+        "new_priority": target,
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+        "reason": "  Escalated.\n",
+    }]
+    customer = project_customer_ticket_view(stored)
+    assert customer["priority"] == target
+    assert "priority_history" not in customer
+
+
+def test_reopen_validation_and_concurrency_are_deterministic():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    set_ticket_status(tickets, ticket_id, "resolved")
+
+    for target, reason, expected_version, code in (
+        ("closed", "reason", 1, "INVALID_REOPEN_TARGET"),
+        ("open", "   ", 1, "REOPEN_REASON_REQUIRED"),
+        ("open", "reason", 2, "TICKET_VERSION_CONFLICT"),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            service.reopen_admin_ticket(
+                ticket_id,
+                target_status=target,
+                reason=reason,
+                expected_version=expected_version,
+                actor="admin-1",
+            )
+        assert exc_info.value.error_code == code
+
+
+def test_repository_failure_does_not_mutate_loaded_ticket():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    before = tickets.get(ticket_id)
+    tickets.save_error = RuntimeError("infrastructure unavailable")
+
+    with pytest.raises(RuntimeError, match="infrastructure unavailable"):
+        service.add_admin_note(
+            ticket_id,
+            "Internal note",
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert tickets.get(ticket_id) == before
+
+
+def test_malformed_and_missing_admin_ticket_ids_are_indistinguishable():
+    service, _, _ = build_service()
+
+    for ticket_id in ("bad-id", "TKT-20260724-FFFFFF"):
+        with pytest.raises(Exception) as exc_info:
+            service.get_admin_ticket(ticket_id)
+        assert_admin_error(exc_info, "TICKET_NOT_FOUND")
+
+
+def test_current_priority_no_op_and_invalid_priority():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    before = tickets.get(ticket_id)
+
+    result = service.update_admin_priority(
+        ticket_id,
+        "normal",
+        expected_version=1,
+        actor="admin-1",
+    )
+
+    assert result["ticket"]["version"] == 1
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_priority(
+            ticket_id,
+            "critical",
+            expected_version=1,
+            actor="admin-1",
+        )
+    assert_admin_error(exc_info, "INVALID_TICKET_PRIORITY")
+
+
+def test_priority_history_limit_preserves_existing_entries():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    entry = {
+        "previous_priority": "normal",
+        "new_priority": "high",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }
+    tickets.data[ticket_id]["priority_history"] = [entry] * 100
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_priority(
+            ticket_id,
+            "high",
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert_admin_error(exc_info, "PRIORITY_HISTORY_LIMIT_REACHED")
+    assert tickets.get(ticket_id) == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["note", "status", "priority", "reopen"],
+)
+def test_every_admin_mutation_rejects_stale_version(mutation):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    if mutation == "reopen":
+        set_ticket_status(tickets, ticket_id, "resolved")
+    calls = {
+        "note": lambda: service.add_admin_note(
+            ticket_id,
+            "note",
+            expected_version=2,
+            actor="admin-1",
+        ),
+        "status": lambda: service.update_admin_status(
+            ticket_id,
+            "in_review",
+            expected_version=2,
+            actor="admin-1",
+        ),
+        "priority": lambda: service.update_admin_priority(
+            ticket_id,
+            "high",
+            expected_version=2,
+            actor="admin-1",
+        ),
+        "reopen": lambda: service.reopen_admin_ticket(
+            ticket_id,
+            target_status="open",
+            reason="Customer replied",
+            expected_version=2,
+            actor="admin-1",
+        ),
+    }
+
+    with pytest.raises(Exception) as exc_info:
+        calls[mutation]()
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_VERSION_CONFLICT",
+        retryable=True,
+    )
+    assert tickets.save_calls == []
+
+
+@pytest.mark.parametrize("collision_count", [1, 4])
+def test_admin_note_id_collisions_retry_until_unique(collision_count):
+    colliding = "NTE-20260724-AAAAAA"
+    unique = "NTE-20260724-BBBBBB"
+    service, tickets, _ = build_service(
+        note_ids=([colliding] * collision_count) + [unique]
+    )
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    tickets.data[ticket_id]["admin_notes"] = [{
+        "note_id": colliding,
+        "text": "Existing note",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+
+    result = service.add_admin_note(
+        ticket_id,
+        "New note",
+        expected_version=1,
+        actor="admin-1",
+    )
+
+    note_ids = [
+        note.get("note_id")
+        for note in result["ticket"]["admin_notes"]
+        if note.get("note_id") is not None
+    ]
+    assert note_ids == [colliding, unique]
+    assert len(note_ids) == len(set(note_ids))
+    assert re.fullmatch(r"NTE-20260724-[A-F0-9]{6}", note_ids[-1])
+
+
+def test_admin_note_id_retry_exhaustion_is_deterministic():
+    colliding = "NTE-20260724-AAAAAA"
+    service, tickets, _ = build_service(note_ids=[colliding] * 8)
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    tickets.data[ticket_id]["admin_notes"] = [{
+        "note_id": colliding,
+        "text": "Existing note",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.add_admin_note(
+            ticket_id,
+            "New note",
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert_admin_error(
+        exc_info,
+        "NOTE_ID_GENERATION_FAILED",
+        retryable=True,
+    )
+    assert exc_info.value.user_message == (
+        "Unable to create a unique note ID. Please retry."
+    )
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+
+
+def test_legacy_notes_without_ids_do_not_collide():
+    generated = "NTE-20260724-CCCCCC"
+    service, tickets, _ = build_service(note_ids=[generated])
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    tickets.data[ticket_id]["admin_notes"] = [{
+        "text": "Legacy note",
+        "timestamp": NOW.isoformat(),
+    }]
+
+    result = service.add_admin_note(
+        ticket_id,
+        "New note",
+        expected_version=1,
+        actor="admin-1",
+    )
+
+    assert result["ticket"]["admin_notes"][0]["note_id"] is None
+    assert result["ticket"]["admin_notes"][1]["note_id"] == generated
+
+
+def invalid_nested_ticket_cases():
+    valid_note = {
+        "note_id": "NTE-20260724-AAAAAA",
+        "text": "Valid note",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }
+    return [
+        {"admin_notes": [{**valid_note, "note_id": "bad-note-id"}]},
+        {"admin_notes": [valid_note, deepcopy(valid_note)]},
+        {"admin_notes": [{**valid_note, "text": "   "}]},
+        {"admin_notes": [{**valid_note, "actor": "x" * 201}]},
+        {"admin_notes": [{**valid_note, "unexpected": "private"}]},
+        {"status_history": [{
+            "previous_status": "invalid",
+            "new_status": "open",
+            "timestamp": NOW.isoformat(),
+        }]},
+        {"status_history": [{
+            "previous_status": "open",
+            "new_status": "in_review",
+            "timestamp": "not-a-timestamp",
+        }]},
+        {"priority_history": [{
+            "previous_priority": "critical",
+            "new_priority": "high",
+            "timestamp": NOW.isoformat(),
+            "actor": "admin-1",
+        }]},
+        {"priority_history": [{
+            "previous_priority": "normal",
+            "new_priority": "high",
+            "timestamp": "not-a-timestamp",
+            "actor": "admin-1",
+        }]},
+        {"admin_notes": [
+            {
+                "text": "note",
+                "timestamp": NOW.isoformat(),
+            }
+            for _index in range(101)
+        ]},
+    ]
+
+
+@pytest.mark.parametrize("overrides", invalid_nested_ticket_cases())
+def test_malformed_persisted_nested_data_is_rejected(overrides):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    tickets.data[ticket_id].update(deepcopy(overrides))
+
+    with pytest.raises(Exception) as exc_info:
+        service.get_admin_ticket(ticket_id)
+
+    assert_admin_error(exc_info, "TICKET_DATA_INVALID")
+    assert exc_info.value.user_message == "The ticket record is invalid."
+    assert "admin_notes" not in str(exc_info.value)
+    assert tickets.save_calls == []
+
+
+def test_malformed_loaded_ticket_cannot_be_mutated():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    tickets.data[ticket_id]["admin_notes"] = [{
+        "note_id": "bad-note-id",
+        "text": "Invalid stored note",
+        "timestamp": NOW.isoformat(),
+    }]
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.add_admin_note(
+            ticket_id,
+            "New note",
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert_admin_error(exc_info, "TICKET_DATA_INVALID")
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+
+
+def test_legacy_persisted_ticket_is_validated_and_projected():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    tickets.data[ticket_id].pop("priority_history")
+    tickets.data[ticket_id]["admin_notes"] = [{
+        "text": "Legacy note",
+        "timestamp": NOW.isoformat(),
+    }]
+    tickets.data[ticket_id]["status_history"] = [{
+        "previous_status": "open",
+        "new_status": "in_review",
+        "timestamp": NOW.isoformat(),
+    }]
+
+    ticket = service.get_admin_ticket(ticket_id)["ticket"]
+
+    assert ticket["priority_history"] == []
+    assert ticket["admin_notes"] == [{
+        "note_id": None,
+        "actor": None,
+        "timestamp": NOW.isoformat(),
+        "text": "Legacy note",
+    }]
+    assert ticket["status_history"] == [{
+        "previous_status": "open",
+        "new_status": "in_review",
+        "timestamp": NOW.isoformat(),
+        "actor": None,
+        "reason": None,
+    }]
+
+
+def test_repository_failure_while_loading_admin_ticket_propagates():
+    service, tickets, _ = build_service()
+    error = RuntimeError("repository unavailable")
+
+    def fail_get(_ticket_id):
+        raise error
+
+    tickets.get = fail_get
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.get_admin_ticket("TKT-20260724-A1B2C3")
+
+    assert exc_info.value is error
+
+
+def test_legacy_admin_listing_shape_does_not_expand():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    tickets.data[ticket_id]["priority_history"] = [{
+        "previous_priority": "normal",
+        "new_priority": "high",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+    tickets.data[ticket_id]["admin_notes"] = [{
+        "note_id": "NTE-20260724-AAAAAA",
+        "text": "Internal",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+    }]
+    tickets.data[ticket_id]["status_history"] = [{
+        "previous_status": "open",
+        "new_status": "in_review",
+        "timestamp": NOW.isoformat(),
+        "actor": "admin-1",
+        "reason": "New detail-only field",
+    }]
+
+    listing = service.list_tickets_by_status("open").data["tickets"][0]
+    detail = service.get_admin_ticket(ticket_id)["ticket"]
+
+    assert set(listing) == {
+        "ticket_id",
+        "user_id",
+        "customer_name",
+        "customer_phone",
+        "ticket_type",
+        "category",
+        "description",
+        "priority",
+        "status",
+        "source",
+        "created_at",
+        "updated_at",
+        "status_history",
+        "admin_notes",
+        "version",
+    }
+    assert "priority_history" not in listing
+    assert "linked_order" not in listing
+    assert "note_id" not in listing["admin_notes"][0]
+    assert "reason" not in listing["status_history"][0]
+    assert detail["priority_history"]
+    assert detail["status_history"][0]["reason"] == "New detail-only field"
+
+
+@pytest.mark.parametrize("invalid_version", [True, False, 0, -1, "1"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["note", "status", "priority", "reopen"],
+)
+def test_every_admin_mutation_rejects_invalid_version(
+    mutation,
+    invalid_version,
+):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    if mutation == "reopen":
+        set_ticket_status(tickets, ticket_id, "resolved")
+    calls = {
+        "note": lambda: service.add_admin_note(
+            ticket_id,
+            "note",
+            expected_version=invalid_version,
+            actor="admin-1",
+        ),
+        "status": lambda: service.update_admin_status(
+            ticket_id,
+            "in_review",
+            expected_version=invalid_version,
+            actor="admin-1",
+        ),
+        "priority": lambda: service.update_admin_priority(
+            ticket_id,
+            "high",
+            expected_version=invalid_version,
+            actor="admin-1",
+        ),
+        "reopen": lambda: service.reopen_admin_ticket(
+            ticket_id,
+            target_status="open",
+            reason="Customer replied",
+            expected_version=invalid_version,
+            actor="admin-1",
+        ),
+    }
+
+    with pytest.raises(Exception) as exc_info:
+        calls[mutation]()
+
+    assert_admin_error(exc_info, "INVALID_TICKET_VERSION")
+    assert tickets.save_calls == []
+
+
+def test_linked_order_infrastructure_failure_occurs_before_ticket_save():
+    service, tickets, orders = build_service()
+    create_order(orders)
+    ticket_id = service.create_order_complaint(
+        **complaint_kwargs()
+    ).data["ticket"]["ticket_id"]
+    before = tickets.get(ticket_id)
+    error = RuntimeError("order repository unavailable")
+
+    def fail_get(_user_id, _order_id):
+        raise error
+
+    orders.get = fail_get
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.add_admin_note(
+            ticket_id,
+            "Internal note",
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert exc_info.value is error
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+
+
+@pytest.mark.parametrize("reason", [None, "   "])
+def test_resolved_to_closed_requires_reason_without_saving(reason):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    set_ticket_status(tickets, ticket_id, "resolved")
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_status(
+            ticket_id,
+            "closed",
+            reason=reason,
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert_admin_error(exc_info, "NOTE_REQUIRED")
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+
+
+def test_resolved_to_closed_preserves_exact_reason():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    set_ticket_status(tickets, ticket_id, "resolved")
+    reason = "  Confirmed complete.\n"
+
+    service.update_admin_status(
+        ticket_id,
+        "closed",
+        reason=reason,
+        expected_version=1,
+        actor="admin-1",
+    )
+
+    assert tickets.get(ticket_id)["status_history"][-1]["reason"] == reason
+
+
+def test_stale_resolved_to_closed_conflicts_before_reason_handling():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    set_ticket_status(tickets, ticket_id, "resolved")
+
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_status(
+            ticket_id,
+            "closed",
+            reason=None,
+            expected_version=2,
+            actor="admin-1",
+        )
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_VERSION_CONFLICT",
+        retryable=True,
+    )
+    assert tickets.save_calls == []
+
+
+@pytest.mark.parametrize(
+    ("current", "target", "reason"),
+    [
+        ("open", "waiting_for_customer", None),
+        ("open", "resolved", "   "),
+        ("resolved", "closed", 42),
+        ("resolved", "closed", "x" * 2001),
+        ("open", "open", {"malformed": True}),
+        ("waiting_for_customer", "in_review", "x" * 2001),
+    ],
+)
+def test_stale_status_version_precedes_every_reason_error(
+    current,
+    target,
+    reason,
+):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    set_ticket_status(tickets, ticket_id, current)
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_status(
+            ticket_id,
+            target,
+            reason=reason,
+            expected_version=2,
+            actor="admin-1",
+        )
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_VERSION_CONFLICT",
+        retryable=True,
+    )
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+
+
+@pytest.mark.parametrize(
+    ("target", "reason", "error_code"),
+    [
+        ("waiting_for_customer", None, "NOTE_REQUIRED"),
+        ("resolved", "   ", "NOTE_REQUIRED"),
+        ("closed", "x" * 2001, "NOTE_TOO_LONG"),
+        ("in_review", 42, "NOTE_REQUIRED"),
+    ],
+)
+def test_current_status_version_keeps_reason_errors(
+    target,
+    reason,
+    error_code,
+):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_status(
+            ticket_id,
+            target,
+            reason=reason,
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert_admin_error(exc_info, error_code)
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+
+
+@pytest.mark.parametrize(
+    ("target", "reason"),
+    [
+        ("high", 42),
+        ("high", "x" * 2001),
+        ("normal", {"malformed": True}),
+        ("normal", "x" * 2001),
+    ],
+)
+def test_stale_priority_version_precedes_every_reason_error(target, reason):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_priority(
+            ticket_id,
+            target,
+            reason=reason,
+            expected_version=2,
+            actor="admin-1",
+        )
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_VERSION_CONFLICT",
+        retryable=True,
+    )
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+
+
+def test_current_priority_version_keeps_reason_validation():
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.update_admin_priority(
+            ticket_id,
+            "high",
+            reason="x" * 2001,
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert_admin_error(exc_info, "NOTE_TOO_LONG")
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+
+
+@pytest.mark.parametrize("reason", [None, "   ", 42, "x" * 2001])
+def test_stale_reopen_version_precedes_every_reason_error(reason):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    set_ticket_status(tickets, ticket_id, "resolved")
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.reopen_admin_ticket(
+            ticket_id,
+            target_status="open",
+            reason=reason,
+            expected_version=2,
+            actor="admin-1",
+        )
+
+    assert_admin_error(
+        exc_info,
+        "TICKET_VERSION_CONFLICT",
+        retryable=True,
+    )
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []
+
+
+@pytest.mark.parametrize(
+    ("reason", "error_code"),
+    [
+        (None, "REOPEN_REASON_REQUIRED"),
+        ("   ", "REOPEN_REASON_REQUIRED"),
+        (42, "NOTE_REQUIRED"),
+        ("x" * 2001, "NOTE_TOO_LONG"),
+    ],
+)
+def test_current_reopen_version_keeps_reason_errors(reason, error_code):
+    service, tickets, _ = build_service()
+    ticket_id = service.create_human_assistance(
+        **human_kwargs()
+    ).data["ticket"]["ticket_id"]
+    set_ticket_status(tickets, ticket_id, "resolved")
+    before = tickets.get(ticket_id)
+
+    with pytest.raises(Exception) as exc_info:
+        service.reopen_admin_ticket(
+            ticket_id,
+            target_status="open",
+            reason=reason,
+            expected_version=1,
+            actor="admin-1",
+        )
+
+    assert_admin_error(exc_info, error_code)
+    assert tickets.get(ticket_id) == before
+    assert tickets.save_calls == []

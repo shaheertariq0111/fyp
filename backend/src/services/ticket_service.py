@@ -6,6 +6,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Callable
 
+from pydantic import ValidationError
+
 from src.models.ticket import (
     DEFAULT_TICKET_PRIORITY,
     DEFAULT_TICKET_STATUS,
@@ -18,6 +20,7 @@ from src.models.ticket import (
     MAX_CUSTOMER_PHONE_LENGTH,
     MAX_DESCRIPTION_LENGTH,
     MAX_SOURCE_LENGTH,
+    MAX_PRIORITY_HISTORY,
     MAX_STATUS_HISTORY,
     NON_TERMINAL_TICKET_STATUSES,
     TICKET_PRIORITIES,
@@ -27,6 +30,7 @@ from src.models.ticket import (
     TICKET_TYPES,
     Ticket,
     TicketDomainValidationError,
+    generate_note_id,
     generate_ticket_id,
     normalize_ticket_timestamp,
 )
@@ -43,6 +47,33 @@ from src.repositories.ticket_repository import (
 
 MAX_TICKET_ID_ATTEMPTS = 5
 MAX_HUMAN_GUARD_ATTEMPTS = 5
+MAX_NOTE_ID_ATTEMPTS = 8
+ADMIN_STATUS_TRANSITIONS = {
+    "open": {
+        "in_review",
+        "waiting_for_customer",
+        "resolved",
+        "closed",
+    },
+    "in_review": {"waiting_for_customer", "resolved", "closed"},
+    "waiting_for_customer": {"in_review", "resolved", "closed"},
+    "resolved": {"closed"},
+    "closed": set(),
+}
+STATUSES_REQUIRING_REASON = {
+    "waiting_for_customer",
+    "resolved",
+    "closed",
+}
+LINKED_ORDER_SUMMARY_KEYS = (
+    "order_id",
+    "status",
+    "fulfillment_method",
+    "total",
+    "currency",
+    "created_at",
+    "updated_at",
+)
 ADMIN_TICKET_VIEW_KEYS = (
     "ticket_id",
     "user_id",
@@ -70,6 +101,20 @@ CUSTOMER_NEXT_ACTIONS = {
     "resolved": "no_action_required",
     "closed": "no_action_required",
 }
+
+
+class AdminTicketError(Exception):
+    def __init__(
+        self,
+        error_code: str,
+        user_message: str,
+        *,
+        retryable: bool = False,
+    ):
+        super().__init__(user_message)
+        self.error_code = error_code
+        self.user_message = user_message
+        self.retryable = retryable
 
 
 def project_customer_ticket_view(ticket: object) -> dict:
@@ -146,12 +191,14 @@ class TicketService:
         support_phone_number: str,
         clock: Callable[[], datetime] | None = None,
         ticket_id_factory: Callable[[datetime], str] = generate_ticket_id,
+        note_id_factory: Callable[[datetime], str] = generate_note_id,
     ):
         self.repository = repository
         self.orders = order_repository
         self.support_phone_number = support_phone_number.strip()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.ticket_id_factory = ticket_id_factory
+        self.note_id_factory = note_id_factory
 
     def create_human_assistance(
         self,
@@ -348,14 +395,12 @@ class TicketService:
             },
         )
 
-    def get_ticket_for_admin(self, ticket_id: str) -> ToolResponse:
-        ticket = self.repository.get(ticket_id)
-        if not ticket:
-            return self._ticket_not_found()
-        return ToolResponse.ok(
-            data={"ticket": self._admin_ticket_view(ticket)},
-            user_message="Ticket details retrieved.",
-        )
+    def get_admin_ticket(self, ticket_id: str) -> dict:
+        ticket = self._load_admin_ticket(ticket_id)
+        linked_order = self._linked_order_summary(ticket)
+        return {
+            "ticket": self._admin_ticket_detail(ticket, linked_order)
+        }
 
     def list_tickets_by_status(
         self,
@@ -383,85 +428,187 @@ class TicketService:
             user_message="Tickets retrieved.",
         )
 
-    def append_admin_note(
+    def add_admin_note(
         self,
         ticket_id: str,
         text: str,
         *,
-        actor: str | None = None,
-    ) -> ToolResponse:
-        normalized = self._optional_text(text)
-        if normalized is None:
-            return self._error(
-                "ADMIN_NOTE_REQUIRED", "An admin note cannot be blank."
+        expected_version: int,
+        actor: str,
+    ) -> dict:
+        self._validate_expected_version(expected_version)
+        self._require_admin_actor(actor)
+        if not isinstance(text, str) or not text.strip():
+            raise AdminTicketError(
+                "NOTE_REQUIRED",
+                "An administrator note is required.",
             )
-        if len(normalized) > MAX_ADMIN_NOTE_LENGTH:
-            return self._error(
-                "ADMIN_NOTE_TOO_LONG",
-                f"An admin note cannot exceed {MAX_ADMIN_NOTE_LENGTH} characters.",
+        if len(text) > MAX_ADMIN_NOTE_LENGTH:
+            raise AdminTicketError(
+                "NOTE_TOO_LONG",
+                f"A note cannot exceed {MAX_ADMIN_NOTE_LENGTH} characters.",
             )
-        actor_error = self._validate_actor(actor)
-        if actor_error:
-            return actor_error
-        ticket = self.repository.get(ticket_id)
-        if not ticket:
-            return self._ticket_not_found()
+        ticket = self._load_admin_ticket(ticket_id)
+        self._require_admin_version(ticket, expected_version)
         if len(ticket.get("admin_notes", [])) >= MAX_ADMIN_NOTES:
-            return self._error(
+            raise AdminTicketError(
                 "ADMIN_NOTE_LIMIT_REACHED",
                 "The ticket cannot accept more admin notes.",
             )
-        timestamp = self._now().isoformat()
-        note = {"text": normalized, "timestamp": timestamp}
-        if self._non_blank(actor):
-            note["actor"] = actor.strip()
+        now = self._now()
+        timestamp = now.isoformat()
+        existing_note_ids = {
+            note["note_id"]
+            for note in ticket.get("admin_notes", [])
+            if note.get("note_id") is not None
+        }
+        note = {
+            "note_id": self._generate_unique_note_id(
+                now,
+                existing_note_ids,
+            ),
+            "text": text,
+            "timestamp": timestamp,
+            "actor": actor,
+        }
         updated = deepcopy(ticket)
         updated.setdefault("admin_notes", []).append(note)
         updated["updated_at"] = timestamp
         self._refresh_status_index(updated)
-        return self._save_admin_change(updated, ticket["version"])
+        linked_order = self._linked_order_summary(ticket)
+        return self._save_admin_change(
+            updated,
+            expected_version,
+            linked_order,
+        )
 
-    def update_status(
+    def update_admin_status(
         self,
         ticket_id: str,
         status: str,
         *,
-        actor: str | None = None,
-    ) -> ToolResponse:
-        invalid = self.validate_domain_value("status", status)
-        if not invalid.success:
-            return invalid
-        ticket = self.repository.get(ticket_id)
-        if not ticket:
-            return self._ticket_not_found()
+        expected_version: int,
+        actor: str,
+        reason: str | None = None,
+    ) -> dict:
+        self._require_domain_value("status", status)
+        self._validate_expected_version(expected_version)
+        self._require_admin_actor(actor)
+        ticket = self._load_admin_ticket(ticket_id)
+        self._require_admin_version(ticket, expected_version)
+        normalized_reason = self._optional_admin_reason(reason)
         if ticket.get("status") == status:
-            return ToolResponse.ok(
-                data={"ticket": self._admin_ticket_view(ticket)},
-                user_message="Ticket unchanged.",
+            linked_order = self._linked_order_summary(ticket)
+            return {
+                "ticket": self._admin_ticket_detail(ticket, linked_order)
+            }
+        if status not in ADMIN_STATUS_TRANSITIONS[ticket["status"]]:
+            raise AdminTicketError(
+                "INVALID_TICKET_TRANSITION",
+                "The requested ticket status transition is not allowed.",
             )
-        actor_error = self._validate_actor(actor)
-        if actor_error:
-            return actor_error
-        return self._apply_status(ticket, status, actor)
+        if (
+            status in STATUSES_REQUIRING_REASON
+            and normalized_reason is None
+        ):
+            raise AdminTicketError(
+                "NOTE_REQUIRED",
+                "A reason is required for this status change.",
+            )
+        linked_order = self._linked_order_summary(ticket)
+        return self._apply_admin_status(
+            ticket,
+            status,
+            expected_version=expected_version,
+            actor=actor,
+            reason=normalized_reason,
+            linked_order=linked_order,
+        )
 
-    def reopen_ticket(
+    def update_admin_priority(
+        self,
+        ticket_id: str,
+        priority: str,
+        *,
+        expected_version: int,
+        actor: str,
+        reason: str | None = None,
+    ) -> dict:
+        self._require_domain_value("priority", priority)
+        self._validate_expected_version(expected_version)
+        self._require_admin_actor(actor)
+        ticket = self._load_admin_ticket(ticket_id)
+        self._require_admin_version(ticket, expected_version)
+        normalized_reason = self._optional_admin_reason(reason)
+        if ticket.get("priority") == priority:
+            linked_order = self._linked_order_summary(ticket)
+            return {
+                "ticket": self._admin_ticket_detail(ticket, linked_order)
+            }
+        if len(ticket.get("priority_history", [])) >= MAX_PRIORITY_HISTORY:
+            raise AdminTicketError(
+                "PRIORITY_HISTORY_LIMIT_REACHED",
+                "The ticket cannot accept more priority history entries.",
+            )
+        timestamp = self._now().isoformat()
+        history = {
+            "previous_priority": ticket["priority"],
+            "new_priority": priority,
+            "timestamp": timestamp,
+            "actor": actor,
+        }
+        if normalized_reason is not None:
+            history["reason"] = normalized_reason
+        updated = deepcopy(ticket)
+        updated["priority"] = priority
+        updated["updated_at"] = timestamp
+        updated.setdefault("priority_history", []).append(history)
+        self._refresh_status_index(updated)
+        linked_order = self._linked_order_summary(ticket)
+        return self._save_admin_change(
+            updated,
+            expected_version,
+            linked_order,
+        )
+
+    def reopen_admin_ticket(
         self,
         ticket_id: str,
         *,
-        actor: str | None = None,
-    ) -> ToolResponse:
-        ticket = self.repository.get(ticket_id)
-        if not ticket:
-            return self._ticket_not_found()
+        target_status: str,
+        reason: str,
+        expected_version: int,
+        actor: str,
+    ) -> dict:
+        if target_status not in {"open", "in_review"}:
+            raise AdminTicketError(
+                "INVALID_REOPEN_TARGET",
+                "A reopened ticket must be open or in review.",
+        )
+        self._validate_expected_version(expected_version)
+        self._require_admin_actor(actor)
+        ticket = self._load_admin_ticket(ticket_id)
+        self._require_admin_version(ticket, expected_version)
+        normalized_reason = self._optional_admin_reason(reason)
+        if normalized_reason is None:
+            raise AdminTicketError(
+                "REOPEN_REASON_REQUIRED",
+                "A reason is required to reopen a ticket.",
+            )
         if ticket.get("status") not in {"resolved", "closed"}:
-            return self._error(
-                "INVALID_TICKET_STATE",
+            raise AdminTicketError(
+                "INVALID_TICKET_TRANSITION",
                 "Only resolved or closed tickets can be reopened.",
             )
-        actor_error = self._validate_actor(actor)
-        if actor_error:
-            return actor_error
-        return self._apply_status(ticket, "open", actor)
+        linked_order = self._linked_order_summary(ticket)
+        return self._apply_admin_status(
+            ticket,
+            target_status,
+            expected_version=expected_version,
+            actor=actor,
+            reason=normalized_reason,
+            linked_order=linked_order,
+        )
 
     def validate_domain_value(self, field: str, value: str) -> ToolResponse:
         definitions = {
@@ -782,14 +929,18 @@ class TicketService:
             ticket.get("ticket_id", ""),
         )
 
-    def _apply_status(
+    def _apply_admin_status(
         self,
         ticket: dict,
         status: str,
-        actor: str | None,
-    ) -> ToolResponse:
+        *,
+        expected_version: int,
+        actor: str,
+        reason: str | None,
+        linked_order: dict | None,
+    ) -> dict:
         if len(ticket.get("status_history", [])) >= MAX_STATUS_HISTORY:
-            return self._error(
+            raise AdminTicketError(
                 "STATUS_HISTORY_LIMIT_REACHED",
                 "The ticket cannot accept more status history entries.",
             )
@@ -798,37 +949,49 @@ class TicketService:
             "previous_status": ticket["status"],
             "new_status": status,
             "timestamp": timestamp,
+            "actor": actor,
         }
-        if self._non_blank(actor):
-            history["actor"] = actor.strip()
+        if reason is not None:
+            history["reason"] = reason
         updated = deepcopy(ticket)
         updated["status"] = status
         updated["updated_at"] = timestamp
         updated.setdefault("status_history", []).append(history)
         self._refresh_status_index(updated)
-        return self._save_admin_change(updated, ticket["version"])
+        return self._save_admin_change(
+            updated,
+            expected_version,
+            linked_order,
+        )
 
     def _save_admin_change(
         self,
         ticket: dict,
         expected_version: int,
-    ) -> ToolResponse:
+        linked_order: dict | None,
+    ) -> dict:
         try:
             self.repository.save(ticket, expected_version)
         except TicketVersionConflictError:
-            return self._error(
+            raise AdminTicketError(
                 "TICKET_VERSION_CONFLICT",
                 "The ticket changed before this update could be saved.",
                 retryable=True,
             )
         except TicketDomainValidationError as exc:
-            return self._ticket_validation_error(exc)
+            message = {
+                TICKET_ITEM_TOO_LARGE: (
+                    "The ticket has reached its maximum stored size."
+                ),
+                "INVALID_TICKET_ID": "The Ticket ID is invalid.",
+                "INVALID_TIMESTAMP": "The ticket timestamp is invalid.",
+            }.get(exc.code, "The ticket data is invalid.")
+            raise AdminTicketError(exc.code, message) from exc
         saved = deepcopy(ticket)
         saved["version"] = expected_version + 1
-        return ToolResponse.ok(
-            data={"ticket": self._admin_ticket_view(saved)},
-            user_message="Ticket updated.",
-        )
+        return {
+            "ticket": self._admin_ticket_detail(saved, linked_order)
+        }
 
     @staticmethod
     def _refresh_status_index(ticket: dict) -> None:
@@ -909,11 +1072,209 @@ class TicketService:
 
     @staticmethod
     def _admin_ticket_view(ticket: dict) -> dict:
-        return {
+        projected = {
             key: deepcopy(ticket[key])
             for key in ADMIN_TICKET_VIEW_KEYS
             if key in ticket
         }
+        projected["status_history"] = [
+            {
+                key: deepcopy(entry[key])
+                for key in (
+                    "previous_status",
+                    "new_status",
+                    "timestamp",
+                    "actor",
+                )
+                if key in entry
+            }
+            for entry in ticket.get("status_history", [])
+        ]
+        projected["admin_notes"] = [
+            {
+                key: deepcopy(note[key])
+                for key in ("text", "timestamp", "actor")
+                if key in note
+            }
+            for note in ticket.get("admin_notes", [])
+        ]
+        return projected
+
+    @staticmethod
+    def _admin_ticket_detail(
+        ticket: dict,
+        linked_order: dict | None,
+    ) -> dict:
+        return {
+            "ticket_id": ticket["ticket_id"],
+            "user_id": ticket["user_id"],
+            "customer_id": ticket.get("customer_id"),
+            "customer_name": ticket.get("customer_name"),
+            "customer_phone": ticket.get("customer_phone"),
+            "ticket_type": ticket["ticket_type"],
+            "category": ticket["category"],
+            "description": ticket.get("description"),
+            "priority": ticket["priority"],
+            "status": ticket["status"],
+            "order_id": ticket.get("order_id"),
+            "order_status_snapshot": ticket.get(
+                "order_status_snapshot"
+            ),
+            "source": ticket["source"],
+            "created_at": ticket["created_at"],
+            "updated_at": ticket["updated_at"],
+            "status_history": [
+                {
+                    "previous_status": entry["previous_status"],
+                    "new_status": entry["new_status"],
+                    "timestamp": entry["timestamp"],
+                    "actor": entry.get("actor"),
+                    "reason": entry.get("reason"),
+                }
+                for entry in ticket.get("status_history", [])
+            ],
+            "priority_history": [
+                {
+                    "previous_priority": entry["previous_priority"],
+                    "new_priority": entry["new_priority"],
+                    "timestamp": entry["timestamp"],
+                    "actor": entry["actor"],
+                    "reason": entry.get("reason"),
+                }
+                for entry in ticket.get("priority_history", [])
+            ],
+            "admin_notes": [
+                {
+                    "note_id": note.get("note_id"),
+                    "actor": note.get("actor"),
+                    "timestamp": note["timestamp"],
+                    "text": note["text"],
+                }
+                for note in ticket.get("admin_notes", [])
+            ],
+            "version": ticket["version"],
+            "linked_order": deepcopy(linked_order),
+        }
+
+    def _linked_order_summary(self, ticket: dict) -> dict | None:
+        order_id = ticket.get("order_id")
+        if not order_id:
+            return None
+        order = self.orders.get(ticket["user_id"], order_id)
+        if not order or order.get("user_id") != ticket["user_id"]:
+            return None
+        return {
+            key: deepcopy(order.get(key))
+            for key in LINKED_ORDER_SUMMARY_KEYS
+        }
+
+    def _load_admin_ticket(self, ticket_id: str) -> dict:
+        try:
+            Ticket.validate_ticket_id(ticket_id)
+        except (TypeError, ValueError):
+            raise AdminTicketError(
+                "TICKET_NOT_FOUND",
+                "The ticket could not be found.",
+            ) from None
+        ticket = self.repository.get(ticket_id)
+        if not ticket:
+            raise AdminTicketError(
+                "TICKET_NOT_FOUND",
+                "The ticket could not be found.",
+            )
+        try:
+            validated = Ticket.model_validate(ticket)
+        except ValidationError:
+            raise AdminTicketError(
+                "TICKET_DATA_INVALID",
+                "The ticket record is invalid.",
+            ) from None
+        return validated.model_dump(exclude_none=True)
+
+    def _generate_unique_note_id(
+        self,
+        now: datetime,
+        existing_note_ids: set[str],
+    ) -> str:
+        for _attempt in range(MAX_NOTE_ID_ATTEMPTS):
+            candidate = self.note_id_factory(now)
+            if candidate not in existing_note_ids:
+                return candidate
+        raise AdminTicketError(
+            "NOTE_ID_GENERATION_FAILED",
+            "Unable to create a unique note ID. Please retry.",
+            retryable=True,
+        )
+
+    @staticmethod
+    def _validate_expected_version(expected_version: int) -> None:
+        if (
+            isinstance(expected_version, bool)
+            or not isinstance(expected_version, int)
+            or expected_version < 1
+        ):
+            raise AdminTicketError(
+                "INVALID_TICKET_VERSION",
+                "The expected ticket version is invalid.",
+            )
+
+    @staticmethod
+    def _require_admin_actor(actor: str) -> None:
+        if (
+            not isinstance(actor, str)
+            or not actor.strip()
+            or len(actor) > MAX_ACTOR_LENGTH
+        ):
+            raise AdminTicketError(
+                "INVALID_ADMIN_ACTOR",
+                "The administrator identity is invalid.",
+            )
+
+    @staticmethod
+    def _require_admin_version(
+        ticket: dict,
+        expected_version: int,
+    ) -> None:
+        if ticket.get("version") != expected_version:
+            raise AdminTicketError(
+                "TICKET_VERSION_CONFLICT",
+                "The ticket changed before this update could be applied.",
+                retryable=True,
+            )
+
+    @staticmethod
+    def _optional_admin_reason(reason: str | None) -> str | None:
+        if reason is None:
+            return None
+        if not isinstance(reason, str):
+            raise AdminTicketError(
+                "NOTE_REQUIRED",
+                "A valid reason is required.",
+            )
+        if len(reason) > MAX_ADMIN_NOTE_LENGTH:
+            raise AdminTicketError(
+                "NOTE_TOO_LONG",
+                f"A reason cannot exceed {MAX_ADMIN_NOTE_LENGTH} characters.",
+            )
+        return reason if reason.strip() else None
+
+    @staticmethod
+    def _require_domain_value(field: str, value: str) -> None:
+        definitions = {
+            "priority": (
+                TICKET_PRIORITIES,
+                "INVALID_TICKET_PRIORITY",
+                "The ticket priority is invalid.",
+            ),
+            "status": (
+                TICKET_STATUSES,
+                "INVALID_TICKET_STATUS",
+                "The ticket status is invalid.",
+            ),
+        }
+        allowed, error_code, message = definitions[field]
+        if value not in allowed:
+            raise AdminTicketError(error_code, message)
 
     @staticmethod
     def _customer_next_action(status: str) -> str:
@@ -986,15 +1347,6 @@ class TicketService:
         for value, maximum, error_code, message in limits:
             if value is not None and len(value) > maximum:
                 return cls._error(error_code, message)
-        return None
-
-    @classmethod
-    def _validate_actor(cls, actor: str | None) -> ToolResponse | None:
-        if actor is not None and len(actor.strip()) > MAX_ACTOR_LENGTH:
-            return cls._error(
-                "ACTOR_TOO_LONG",
-                f"An actor cannot exceed {MAX_ACTOR_LENGTH} characters.",
-            )
         return None
 
     @classmethod
