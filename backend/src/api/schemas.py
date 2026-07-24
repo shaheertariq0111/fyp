@@ -231,3 +231,26 @@ class AdminTicketDetail(StrictAdminTicketSchema):
 
 class AdminTicketDetailResponse(StrictAdminTicketSchema):
     ticket: AdminTicketDetail
+
+
+class AdminTicketStatusUpdateRequest(StrictAdminTicketSchema):
+    status: str
+    reason: str | None = None
+    expected_version: int = Field(gt=0)
+
+
+class AdminTicketPriorityUpdateRequest(StrictAdminTicketSchema):
+    priority: str
+    reason: str | None = None
+    expected_version: int = Field(gt=0)
+
+
+class AdminTicketNoteCreateRequest(StrictAdminTicketSchema):
+    text: str
+    expected_version: int = Field(gt=0)
+
+
+class AdminTicketReopenRequest(StrictAdminTicketSchema):
+    target_status: str
+    reason: str
+    expected_version: int = Field(gt=0)

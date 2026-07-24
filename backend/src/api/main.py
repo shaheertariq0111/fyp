@@ -28,6 +28,10 @@ from src.api.schemas import (
     AdminStatusUpdateRequest,
     AdminTicketDetailResponse,
     AdminTicketListResponse,
+    AdminTicketNoteCreateRequest,
+    AdminTicketPriorityUpdateRequest,
+    AdminTicketReopenRequest,
+    AdminTicketStatusUpdateRequest,
     AdminUpsellGroupRequest,
     ChatRequest,
     ChatRequestStatusResponse,
@@ -39,6 +43,7 @@ from src.api.schemas import (
 from src.infrastructure.config import get_settings, parse_frontend_cors_origins
 from src.infrastructure.config import CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS
 from src.infrastructure.logging import configure_logging
+from src.models.ticket import MAX_ACTOR_LENGTH
 from src.services.ticket_service import (
     AdminTicketError,
     project_customer_ticket_view,
@@ -298,11 +303,23 @@ def _admin_ticket_http_error(exc: AdminTicketError) -> HTTPException:
         "INVALID_TICKET_STATUS": 400,
         "INVALID_TICKET_TYPE": 400,
         "INVALID_TICKET_PRIORITY": 400,
+        "INVALID_TICKET_TRANSITION": 400,
+        "INVALID_REOPEN_TARGET": 400,
+        "INVALID_TICKET_VERSION": 400,
+        "NOTE_REQUIRED": 400,
+        "NOTE_TOO_LONG": 400,
+        "REOPEN_REASON_REQUIRED": 400,
         "INVALID_TICKET_LIMIT": 400,
         "INVALID_CURSOR": 400,
         "TICKET_NOT_FOUND": 404,
         "TICKET_PAGINATION_STALLED": 409,
+        "TICKET_VERSION_CONFLICT": 409,
+        "TICKET_ITEM_TOO_LARGE": 409,
         "TICKET_DATA_INVALID": 409,
+        "ADMIN_NOTE_LIMIT_REACHED": 409,
+        "STATUS_HISTORY_LIMIT_REACHED": 409,
+        "PRIORITY_HISTORY_LIMIT_REACHED": 409,
+        "NOTE_ID_GENERATION_FAILED": 503,
     }
     status = status_by_code.get(exc.error_code)
     if status is None:
@@ -339,6 +356,40 @@ def _admin_ticket_internal_error() -> HTTPException:
             "user_message": "Ticket service returned an invalid response.",
         },
     )
+
+
+def _authenticated_admin_actor(admin: dict[str, Any]) -> str:
+    actor = admin.get("sub")
+    if (
+        not isinstance(actor, str)
+        or not actor.strip()
+        or len(actor) > MAX_ACTOR_LENGTH
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Admin login required",
+        )
+    return actor
+
+
+def _admin_ticket_mutation_response(
+    operation: Callable[[], dict[str, Any]],
+) -> AdminTicketDetailResponse:
+    try:
+        result = operation()
+    except HTTPException:
+        raise
+    except AdminTicketError as exc:
+        raise _admin_ticket_http_error(exc) from exc
+    except Exception as exc:
+        raise _admin_ticket_backend_error() from exc
+    try:
+        if not isinstance(result, dict) or set(result) != {"ticket"}:
+            raise ValueError
+        return AdminTicketDetailResponse.model_validate(result)
+    except (TypeError, ValueError, ValidationError):
+        raise _admin_ticket_internal_error() from None
+
 
 def _raise_if_error(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("success", True):
@@ -740,6 +791,89 @@ def admin_ticket(
         return AdminTicketDetailResponse.model_validate(result)
     except (TypeError, ValueError, ValidationError):
         raise _admin_ticket_internal_error() from None
+
+
+@app.patch(
+    "/api/admin/tickets/{ticket_id}/status",
+    response_model=AdminTicketDetailResponse,
+)
+def admin_ticket_status(
+    ticket_id: str,
+    request: AdminTicketStatusUpdateRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketDetailResponse:
+    actor = _authenticated_admin_actor(admin)
+    return _admin_ticket_mutation_response(
+        lambda: get_services().tickets.update_admin_status(
+            ticket_id,
+            request.status,
+            expected_version=request.expected_version,
+            actor=actor,
+            reason=request.reason,
+        )
+    )
+
+
+@app.patch(
+    "/api/admin/tickets/{ticket_id}/priority",
+    response_model=AdminTicketDetailResponse,
+)
+def admin_ticket_priority(
+    ticket_id: str,
+    request: AdminTicketPriorityUpdateRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketDetailResponse:
+    actor = _authenticated_admin_actor(admin)
+    return _admin_ticket_mutation_response(
+        lambda: get_services().tickets.update_admin_priority(
+            ticket_id,
+            request.priority,
+            expected_version=request.expected_version,
+            actor=actor,
+            reason=request.reason,
+        )
+    )
+
+
+@app.post(
+    "/api/admin/tickets/{ticket_id}/notes",
+    response_model=AdminTicketDetailResponse,
+)
+def admin_ticket_note(
+    ticket_id: str,
+    request: AdminTicketNoteCreateRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketDetailResponse:
+    actor = _authenticated_admin_actor(admin)
+    return _admin_ticket_mutation_response(
+        lambda: get_services().tickets.add_admin_note(
+            ticket_id,
+            request.text,
+            expected_version=request.expected_version,
+            actor=actor,
+        )
+    )
+
+
+@app.post(
+    "/api/admin/tickets/{ticket_id}/reopen",
+    response_model=AdminTicketDetailResponse,
+)
+def admin_ticket_reopen(
+    ticket_id: str,
+    request: AdminTicketReopenRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketDetailResponse:
+    actor = _authenticated_admin_actor(admin)
+    return _admin_ticket_mutation_response(
+        lambda: get_services().tickets.reopen_admin_ticket(
+            ticket_id,
+            target_status=request.target_status,
+            reason=request.reason,
+            expected_version=request.expected_version,
+            actor=actor,
+        )
+    )
 
 
 @app.get("/api/admin/analytics")
