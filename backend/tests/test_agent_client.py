@@ -11,6 +11,23 @@ from src.agent_client.local import LocalStrandsAgentRuntimeClient
 from src.agent_client.schemas import AgentInvocationRequest
 
 
+def test_agent_invocation_request_supports_optional_request_id():
+    request = AgentInvocationRequest(
+        message="hello",
+        user_id="user-1",
+        agent_session_id="session-1",
+        request_id="req-trusted",
+    )
+    legacy_request = AgentInvocationRequest(
+        message="hello",
+        user_id="user-1",
+        agent_session_id="session-1",
+    )
+
+    assert request.request_id == "req-trusted"
+    assert legacy_request.request_id is None
+
+
 def test_local_agent_runtime_client_invokes_existing_strands_agent(monkeypatch):
     captured = {}
 
@@ -34,6 +51,7 @@ def test_local_agent_runtime_client_invokes_existing_strands_agent(monkeypatch):
             customer_name="Ava",
             customer_phone="+923001234567",
             channel="web",
+            request_id="req-trusted",
         )
     )
 
@@ -48,7 +66,35 @@ def test_local_agent_runtime_client_invokes_existing_strands_agent(monkeypatch):
         "customer_name": "Ava",
         "customer_phone": "+923001234567",
         "channel": "web",
+        "request_id": "req-trusted",
     }
+
+
+def test_local_agent_runtime_client_preserves_missing_request_id(monkeypatch):
+    captured = {}
+
+    def fake_invoke_restaurant_agent(message, **kwargs):
+        captured.update({"message": message, **kwargs})
+        return {"agent": "result"}
+
+    monkeypatch.setattr(
+        "src.agent_client.local.invoke_restaurant_agent",
+        fake_invoke_restaurant_agent,
+    )
+    monkeypatch.setattr(
+        "src.agent_client.local.agent_result_text",
+        lambda result: "Agent response",
+    )
+
+    LocalStrandsAgentRuntimeClient().invoke(
+        AgentInvocationRequest(
+            message="hello",
+            user_id="user-1",
+            agent_session_id="session-1",
+        )
+    )
+
+    assert captured["request_id"] is None
 
 
 def test_local_agent_runtime_client_async_methods_are_agentcore_boundary():
@@ -99,6 +145,7 @@ def test_agentcore_runtime_client_invokes_bedrock_agentcore_runtime():
             customer_name="Ava",
             customer_phone="+923001234567",
             channel="web",
+            request_id="req-trusted",
         )
     )
 
@@ -118,7 +165,21 @@ def test_agentcore_runtime_client_invokes_bedrock_agentcore_runtime():
         "customer_name": "Ava",
         "customer_phone": "+923001234567",
         "channel": "web",
+        "request_id": "req-trusted",
     }
+
+
+def test_agentcore_runtime_payload_preserves_missing_request_id():
+    payload = AgentCoreRuntimeClient._payload(
+        AgentInvocationRequest(
+            message="hello",
+            user_id="user-1",
+            agent_session_id="session-1",
+        )
+    )
+
+    assert "request_id" in payload
+    assert payload["request_id"] is None
 
 
 def test_agent_runtime_factory_uses_agentcore_when_runtime_arn_is_set(monkeypatch):

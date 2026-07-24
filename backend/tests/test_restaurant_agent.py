@@ -221,6 +221,7 @@ def test_invoke_restaurant_agent_injects_trusted_context():
         "customer_name": context.customer_name,
         "customer_phone": context.customer_phone,
         "channel": context.channel,
+        "request_id": context.request_id,
             }
 
     result = restaurant_agent.invoke_restaurant_agent(
@@ -232,6 +233,7 @@ def test_invoke_restaurant_agent_injects_trusted_context():
         customer_name="Ava",
         customer_phone="+923001234567",
         channel="web",
+        request_id="req-trusted",
         agent=FakeAgent(),
         invocation_state={"source": "test"},
     )
@@ -246,7 +248,23 @@ def test_invoke_restaurant_agent_injects_trusted_context():
         "customer_name": "Ava",
         "customer_phone": "+923001234567",
         "channel": "web",
+        "request_id": "req-trusted",
     }
+
+
+def test_invoke_restaurant_agent_supports_context_without_request_id():
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            return get_request_context().request_id
+
+    result = restaurant_agent.invoke_restaurant_agent(
+        "hello",
+        user_id="trusted-user",
+        agent_session_id="trusted-session",
+        agent=FakeAgent(),
+    )
+
+    assert result is None
 
 
 def test_invoke_restaurant_agent_builds_session_scoped_agent(monkeypatch):

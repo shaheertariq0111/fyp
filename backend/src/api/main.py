@@ -643,6 +643,7 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
                 message=payload.message,
                 user_id=context.user_id,
                 agent_session_id=context.agent_session_id,
+                request_id=record["request_id"],
                 branch_id=payload.branch_id,
                 customer_id=context.customer_id,
                 customer_name=context.customer_name,

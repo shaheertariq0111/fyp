@@ -64,6 +64,7 @@ def invoke_restaurant_agent(
     *,
     user_id: str,
     agent_session_id: str,
+    request_id: str | None = None,
     branch_id: str | None = None,
     customer_id: str | None = None,
     customer_name: str | None = None,
@@ -75,6 +76,7 @@ def invoke_restaurant_agent(
     context = AgentRequestContext(
         user_id=user_id,
         agent_session_id=agent_session_id,
+        request_id=request_id,
         branch_id=branch_id,
         customer_id=customer_id or user_id,
         customer_name=customer_name,

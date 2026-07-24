@@ -14,6 +14,7 @@ class AgentInvocationRequest:
     customer_name: str | None = None
     customer_phone: str | None = None
     channel: str = "web"
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)

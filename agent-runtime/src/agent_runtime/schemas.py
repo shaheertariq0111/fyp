@@ -7,6 +7,7 @@ class RuntimeRequest(BaseModel):
     message: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
     agent_session_id: str = Field(min_length=1)
+    request_id: str | None = None
     branch_id: str | None = None
     customer_id: str | None = None
     customer_name: str | None = None

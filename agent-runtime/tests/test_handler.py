@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from agent_runtime import handler
 from agent_runtime.server import app
+from agent_runtime.schemas import RuntimeRequest
 
 
 class FakeMemoryConfig:
@@ -64,6 +65,7 @@ def runtime_payload(**overrides):
         "customer_name": "Ava",
         "customer_phone": "+923001234567",
         "channel": "web",
+        "request_id": "req-trusted",
     }
     payload.update(overrides)
     return payload
@@ -128,7 +130,54 @@ def test_handler_invokes_existing_restaurant_agent_with_agentcore_memory(monkeyp
     assert captured["session_manager"] is FakeMemorySessionManager.created[0]
     assert captured["agent"].session_manager is FakeMemorySessionManager.created[0]
     assert captured["agent_session_id"] == "session-1"
+    assert captured["request_id"] == "req-trusted"
     assert FakeMemorySessionManager.closed == [FakeMemorySessionManager.created[0]]
+
+
+def test_runtime_request_accepts_missing_request_id():
+    payload = runtime_payload()
+    payload.pop("request_id")
+
+    request = RuntimeRequest.model_validate(payload)
+
+    assert request.request_id is None
+
+
+def test_handler_forwards_missing_request_id_without_substitute(monkeypatch):
+    captured = {}
+    payload = runtime_payload()
+    payload.pop("request_id")
+
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: SimpleNamespace(
+            session_manager=session_manager
+        ),
+    )
+
+    def fake_invoke_restaurant_agent(message, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            message={"content": [{"text": "ok"}]},
+            tool_calls=[],
+        )
+
+    monkeypatch.setattr(
+        handler,
+        "invoke_restaurant_agent",
+        fake_invoke_restaurant_agent,
+    )
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: "ok")
+    monkeypatch.setattr(
+        handler,
+        "get_agentcore_runtime_settings",
+        lambda: settings(),
+    )
+
+    handler.invoke(payload)
+
+    assert captured["request_id"] is None
 
 
 def test_handler_uses_user_id_as_actor_when_customer_id_missing(monkeypatch):

@@ -289,7 +289,33 @@ def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
         "customer_name": None,
         "customer_phone": None,
         "channel": "web",
+        "request_id": "req-1",
     }
+
+
+def test_chat_uses_persisted_request_id_and_ignores_frontend_value(monkeypatch):
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(message={"content": [{"text": "Handled."}]}),
+        text="Handled.",
+        captured=captured,
+    )
+
+    response = client().post(
+        "/api/chat",
+        json={
+            "message": "hello",
+            "session_id": "session",
+            "user_id": "user",
+            "request_id": "req-frontend-controlled",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["request_id"] == "req-1"
+    assert captured["request_id"] == "req-1"
+    assert captured["request_id"] != "req-frontend-controlled"
 
 
 def test_chat_false_success_without_write_tool_keeps_text_but_reports_no_write(monkeypatch):
