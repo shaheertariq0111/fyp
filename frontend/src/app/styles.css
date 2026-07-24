@@ -2543,6 +2543,267 @@ button.admin-customer-result-card {
   }
 }
 
+.admin-ticket-page,
+.admin-ticket-results {
+  display: grid;
+  gap: 16px;
+}
+
+.admin-ticket-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: var(--admin-surface);
+}
+
+.admin-ticket-toolbar label {
+  display: grid;
+  gap: 6px;
+  color: var(--admin-muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.admin-ticket-table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: var(--admin-surface);
+}
+
+.admin-ticket-table {
+  min-width: 1080px;
+}
+
+.admin-ticket-table td {
+  max-width: 190px;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.admin-ticket-table td strong,
+.admin-ticket-table td small {
+  display: block;
+}
+
+.admin-ticket-table td small {
+  margin-top: 4px;
+  color: var(--admin-muted);
+}
+
+.admin-ticket-id,
+.admin-ticket-card code {
+  color: var(--admin-navy);
+  font-family: var(--font-geist-mono), Consolas, monospace;
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.admin-ticket-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--admin-border);
+  border-radius: 999px;
+  background: #f0f3f5;
+  color: var(--admin-text);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.admin-ticket-badge.is-status-open,
+.admin-ticket-badge.is-status-in_review {
+  border-color: rgba(0, 100, 145, 0.22);
+  background: rgba(0, 100, 145, 0.1);
+  color: var(--admin-blue);
+}
+
+.admin-ticket-badge.is-status-waiting_for_customer,
+.admin-ticket-badge.is-priority-high {
+  border-color: rgba(232, 145, 24, 0.25);
+  background: rgba(232, 145, 24, 0.12);
+  color: #8a5200;
+}
+
+.admin-ticket-badge.is-status-resolved,
+.admin-ticket-badge.is-status-closed {
+  border-color: rgba(29, 138, 85, 0.22);
+  background: rgba(29, 138, 85, 0.1);
+  color: var(--admin-success);
+}
+
+.admin-ticket-badge.is-priority-urgent {
+  border-color: rgba(201, 52, 52, 0.22);
+  background: rgba(201, 52, 52, 0.1);
+  color: var(--admin-danger);
+}
+
+.admin-ticket-cards {
+  display: none;
+}
+
+.admin-ticket-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: var(--admin-surface);
+}
+
+.admin-ticket-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--admin-border);
+}
+
+.admin-ticket-card dl {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.admin-ticket-card dl div {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.35fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--admin-border);
+}
+
+.admin-ticket-card dl div:last-child {
+  border-bottom: 0;
+}
+
+.admin-ticket-card dt {
+  color: var(--admin-muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.admin-ticket-card dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-ticket-pagination,
+.admin-ticket-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-ticket-pagination {
+  justify-content: flex-end;
+}
+
+.admin-ticket-page-label {
+  color: var(--admin-muted);
+  font-weight: 900;
+}
+
+.admin-ticket-loading-label {
+  color: var(--admin-muted);
+  font-size: 13px;
+}
+
+.admin-ticket-skeleton,
+.admin-ticket-skeleton-table {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-ticket-skeleton-table {
+  padding: 14px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: var(--admin-surface);
+}
+
+.admin-ticket-skeleton-table > div {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(80px, 1fr));
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--admin-border);
+}
+
+.admin-ticket-skeleton-table > div:last-child {
+  border-bottom: 0;
+}
+
+.admin-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 900px) {
+  .admin-ticket-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .admin-ticket-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-ticket-table-wrap {
+    display: none;
+  }
+
+  .admin-ticket-cards {
+    display: grid;
+    gap: 12px;
+  }
+
+  .admin-ticket-pagination {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .admin-ticket-page-label,
+  .admin-ticket-loading-label {
+    grid-column: 1 / -1;
+    text-align: center;
+  }
+
+  .admin-ticket-page-label {
+    grid-row: 1;
+  }
+
+  .admin-ticket-loading-label {
+    grid-row: 2;
+  }
+
+  .admin-ticket-pagination button {
+    width: 100%;
+  }
+}
+
 .item-card p {
   margin: 0;
   color: var(--muted);
