@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from src.infrastructure.config import Settings
 
 
@@ -12,6 +14,8 @@ BASE = {
     "agent_requests_table_name": "agent-requests-test",
     "menu_sessions_table_name": "sessions-test",
     "audit_table_name": "audit-test",
+    "tickets_table_name": "tickets-test",
+    "support_phone_number": "+1 555 0100",
     "menu_site_base_url": "http://localhost:3000/menu",
     "session_token_secret": "test-secret-at-least-sixteen",
     "restaurant_id": "restaurant-test",
@@ -42,6 +46,27 @@ def test_admin_auth_settings_have_safe_defaults():
     assert settings.admin_password == ""
     assert settings.admin_session_secret == ""
     assert settings.admin_session_ttl_hours == 8
+
+
+def test_ticket_settings_are_loaded():
+    settings = make_test_settings()
+    assert settings.tickets_table_name == "tickets-test"
+    assert settings.support_phone_number == "+1 555 0100"
+
+
+def test_support_phone_has_no_invented_default():
+    values = dict(BASE)
+    values.pop("support_phone_number")
+    settings = Settings(_env_file=None, **values)
+    assert settings.support_phone_number == ""
+
+
+def test_backend_env_example_documents_ticket_configuration():
+    example = (
+        Path(__file__).resolve().parents[1] / ".env.example"
+    ).read_text(encoding="utf-8")
+    assert "TICKETS_TABLE_NAME=" in example
+    assert "SUPPORT_PHONE_NUMBER=" in example
 
 
 def test_frontend_cors_origins_default_to_local_in_tests():

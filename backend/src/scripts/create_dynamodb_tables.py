@@ -73,6 +73,38 @@ def table_definitions(settings):
             "BillingMode": "PAY_PER_REQUEST",
         }
     )
+    definitions.append(
+        {
+            "TableName": settings.tickets_table_name,
+            "KeySchema": standard["KeySchema"],
+            "AttributeDefinitions": standard["AttributeDefinitions"]
+            + [
+                {"AttributeName": "GSI1PK", "AttributeType": "S"},
+                {"AttributeName": "GSI1SK", "AttributeType": "S"},
+                {"AttributeName": "GSI2PK", "AttributeType": "S"},
+                {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            ],
+            "GlobalSecondaryIndexes": [
+                {
+                    "IndexName": "GSI1",
+                    "KeySchema": [
+                        {"AttributeName": "GSI1PK", "KeyType": "HASH"},
+                        {"AttributeName": "GSI1SK", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": "GSI2",
+                    "KeySchema": [
+                        {"AttributeName": "GSI2PK", "KeyType": "HASH"},
+                        {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+        }
+    )
     return definitions
 
 
@@ -86,7 +118,11 @@ def create_tables() -> list[str]:
     client = dynamodb.meta.client
     tags = settings.parsed_dynamodb_tags()
     created = []
-    ttl_table_names = (settings.agent_sessions_table_name, settings.agent_requests_table_name)
+    ttl_table_names = (
+        settings.agent_sessions_table_name,
+        settings.agent_requests_table_name,
+        settings.tickets_table_name,
+    )
     for definition in table_definitions(settings):
         name = definition["TableName"]
         try:

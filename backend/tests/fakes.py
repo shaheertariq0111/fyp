@@ -1,5 +1,18 @@
 from copy import deepcopy
 
+from src.models.ticket import (
+    validate_guard_for_ticket,
+    validate_marker_for_ticket,
+    validate_ticket_for_write,
+)
+from src.repositories.ticket_repository import (
+    HumanSessionGuardConflictError,
+    IdempotencyConflictError,
+    ReusableTicketChangedError,
+    TicketIdCollisionError,
+    TicketVersionConflictError,
+)
+
 
 class MemoryMenuRepository:
     def __init__(self, items, groups, upsells=None):
@@ -108,3 +121,167 @@ class MemoryOrderRepository:
 
     def list_all(self):
         return [deepcopy(order) for order in self.data.values()]
+
+
+class MemoryTicketRepository:
+    def __init__(self):
+        self.data = {}
+        self.markers = {}
+        self.guards = {}
+        self.ticket_collision_count = 0
+        self.version_conflict_count = 0
+        self.guard_conflict_count = 0
+        self.reusable_change_count = 0
+        self.bind_error = None
+        self.customer_pages = None
+        self.save_calls = []
+
+    @staticmethod
+    def _marker_hash(marker):
+        return marker["PK"].removeprefix("IDEMPOTENCY#")
+
+    @staticmethod
+    def _guard_identity(guard):
+        return (guard["user_id"], guard["session_id"])
+
+    @staticmethod
+    def _guard_matches(existing, expected):
+        return bool(
+            existing
+            and expected
+            and existing["version"] == expected["version"]
+            and existing["active_ticket_id"] == expected["active_ticket_id"]
+        )
+
+    def create_with_idempotency(
+        self,
+        ticket,
+        marker,
+        now_epoch,
+        *,
+        guard=None,
+        expected_guard=None,
+    ):
+        ticket = validate_ticket_for_write(ticket)
+        marker = validate_marker_for_ticket(marker, ticket)
+        if guard is not None:
+            guard = validate_guard_for_ticket(guard, ticket)
+        if self.ticket_collision_count:
+            self.ticket_collision_count -= 1
+            raise TicketIdCollisionError
+        if ticket["ticket_id"] in self.data:
+            raise TicketIdCollisionError
+        marker_hash = self._marker_hash(marker)
+        existing_marker = self.markers.get(marker_hash)
+        if existing_marker and existing_marker["expires_at"] > now_epoch:
+            raise IdempotencyConflictError
+        if guard is not None:
+            if self.guard_conflict_count:
+                self.guard_conflict_count -= 1
+                raise HumanSessionGuardConflictError
+            guard_identity = self._guard_identity(guard)
+            existing_guard = self.guards.get(guard_identity)
+            if expected_guard is None:
+                if existing_guard:
+                    raise HumanSessionGuardConflictError
+            elif not self._guard_matches(existing_guard, expected_guard):
+                raise HumanSessionGuardConflictError
+        self.data[ticket["ticket_id"]] = deepcopy(ticket)
+        self.markers[marker_hash] = deepcopy(marker)
+        if guard is not None:
+            self.guards[self._guard_identity(guard)] = deepcopy(guard)
+
+    def bind_human_reuse(
+        self,
+        ticket,
+        marker,
+        guard,
+        now_epoch,
+        *,
+        expected_guard=None,
+    ):
+        ticket = validate_ticket_for_write(ticket)
+        marker = validate_marker_for_ticket(marker, ticket)
+        guard = validate_guard_for_ticket(guard, ticket)
+        if self.bind_error:
+            error = self.bind_error
+            self.bind_error = None
+            raise error
+        current = self.data.get(ticket["ticket_id"])
+        if self.reusable_change_count:
+            self.reusable_change_count -= 1
+            if current:
+                current["status"] = "closed"
+            raise ReusableTicketChangedError
+        if (
+            not current
+            or current.get("user_id") != ticket["user_id"]
+            or current.get("session_id") != ticket["session_id"]
+            or current.get("ticket_type") != "human_assistance"
+            or current.get("status")
+            not in {"open", "in_review", "waiting_for_customer"}
+        ):
+            raise ReusableTicketChangedError
+        marker_hash = self._marker_hash(marker)
+        existing_marker = self.markers.get(marker_hash)
+        if existing_marker and existing_marker["expires_at"] > now_epoch:
+            raise IdempotencyConflictError
+        identity = self._guard_identity(guard)
+        existing_guard = self.guards.get(identity)
+        if expected_guard is None:
+            if existing_guard:
+                raise HumanSessionGuardConflictError
+        elif not self._guard_matches(existing_guard, expected_guard):
+            raise HumanSessionGuardConflictError
+        self.markers[marker_hash] = deepcopy(marker)
+        self.guards[identity] = deepcopy(guard)
+
+    def get(self, ticket_id):
+        return deepcopy(self.data.get(ticket_id))
+
+    def get_idempotency_marker(self, idempotency_hash):
+        return deepcopy(self.markers.get(idempotency_hash))
+
+    def get_human_session_guard(self, user_id, session_id):
+        guard = self.guards.get((user_id, session_id))
+        return deepcopy(guard)
+
+    def list_for_customer(self, user_id):
+        if self.customer_pages is not None:
+            return [
+                deepcopy(ticket)
+                for page in self.customer_pages
+                for ticket in page
+                if ticket["user_id"] == user_id
+            ]
+        tickets = [
+            deepcopy(ticket)
+            for ticket in self.data.values()
+            if ticket["user_id"] == user_id
+        ]
+        return sorted(tickets, key=lambda ticket: ticket["GSI1SK"])
+
+    def list_by_status(self, status, limit=50, exclusive_start_key=None):
+        tickets = sorted(
+            (
+                deepcopy(ticket)
+                for ticket in self.data.values()
+                if ticket["status"] == status
+            ),
+            key=lambda ticket: ticket["GSI2SK"],
+        )
+        return {"items": tickets[:limit], "next_cursor": None}
+
+    def save(self, ticket, expected_version):
+        if self.version_conflict_count:
+            self.version_conflict_count -= 1
+            raise TicketVersionConflictError
+        current = self.data.get(ticket["ticket_id"])
+        if not current or current["version"] != expected_version:
+            raise TicketVersionConflictError
+        saved = validate_ticket_for_write(ticket)
+        if saved["version"] != expected_version:
+            raise ValueError("ticket version does not match expected_version")
+        saved["version"] = expected_version + 1
+        self.data[saved["ticket_id"]] = saved
+        self.save_calls.append((deepcopy(saved), expected_version))

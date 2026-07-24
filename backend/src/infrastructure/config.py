@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     agent_requests_table_name: str = Field(min_length=1)
     menu_sessions_table_name: str = Field(min_length=1)
     audit_table_name: str = Field(min_length=1)
+    tickets_table_name: str = Field(min_length=1)
+    support_phone_number: str = ""
 
     menu_site_base_url: HttpUrl
     session_token_secret: str = Field(min_length=16)
