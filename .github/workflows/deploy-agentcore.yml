@@ -112,6 +112,7 @@ jobs:
       AGENTCORE_RUNTIME_ID: fyp_dev_restaurant_agent-dwLwVnClBF
       AGENTCORE_RUNTIME_ARN: arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_restaurant_agent-dwLwVnClBF
       AGENTCORE_EXECUTION_ROLE_ARN: arn:aws:iam::352306494518:role/fyp-dev-agentcore-execution
+      BACKEND_STACK_NAME: ${{ vars.BACKEND_STACK_NAME || 'fyp-dev-backend-api' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -203,6 +204,52 @@ jobs:
               output.write(f"network-mode={network.get('networkMode', '')}\n")
           PY
 
+      - name: Resolve ticket environment from backend stack
+        run: |
+          set -euo pipefail
+          aws cloudformation describe-stacks \
+            --stack-name "$BACKEND_STACK_NAME" \
+            --output json > backend-stack.json
+          python - <<'PY'
+          import json
+
+          with open("backend-stack.json", "r", encoding="utf-8") as handle:
+              response = json.load(handle)
+
+          stacks = response.get("Stacks") or []
+          if len(stacks) != 1:
+              raise SystemExit("Expected exactly one backend CloudFormation stack.")
+          stack = stacks[0]
+          outputs = {
+              item["OutputKey"]: item.get("OutputValue", "")
+              for item in stack.get("Outputs", [])
+          }
+          parameters = {
+              item["ParameterKey"]: item.get("ParameterValue", "")
+              for item in stack.get("Parameters", [])
+          }
+          tickets_table_name = outputs.get("TicketsTableName", "")
+          if not tickets_table_name:
+              raise SystemExit(
+                  "Backend stack output TicketsTableName is required."
+              )
+          if "SupportPhoneNumber" not in parameters:
+              raise SystemExit(
+                  "Backend stack parameter SupportPhoneNumber is required."
+              )
+          environment = {
+              "TICKETS_TABLE_NAME": tickets_table_name,
+              "SUPPORT_PHONE_NUMBER": parameters["SupportPhoneNumber"],
+          }
+          with open(
+              "agentcore-ticket-environment.json",
+              "w",
+              encoding="utf-8",
+          ) as handle:
+              json.dump(environment, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+
       - name: Build AgentCore update input
         run: |
           set -euo pipefail
@@ -216,6 +263,7 @@ jobs:
             --mode deployment \
             --github-sha "${{ github.sha }}" \
             --client-token "agentcore-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}" \
+            --environment-file agentcore-ticket-environment.json \
             --output agentcore-update-input.json
 
       - name: Update AgentCore runtime

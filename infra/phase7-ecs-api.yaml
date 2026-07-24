@@ -76,6 +76,20 @@ Parameters:
   AgentRequestsTableName:
     Type: String
     Default: fyp-dev-AgentRequests
+  CreateTicketsTable:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Set true only if the Tickets table does not already exist.
+  TicketsTableName:
+    Type: String
+    Default: fyp-dev-Tickets
+  SupportPhoneNumber:
+    Type: String
+    Default: ""
+    Description: Optional customer-visible support phone number.
   MenuTableName:
     Type: String
     Default: fyp-dev-Menu
@@ -154,6 +168,7 @@ Parameters:
 Conditions:
   HasBackendImageUri: !Not [!Equals [!Ref BackendImageUri, ""]]
   ShouldCreateAgentRequestsTable: !Equals [!Ref CreateAgentRequestsTable, "true"]
+  ShouldCreateTicketsTable: !Equals [!Ref CreateTicketsTable, "true"]
   HasAgentCoreRuntimeArn: !Not [!Equals [!Ref AgentCoreRuntimeArn, ""]]
   HasAgentCoreMemoryArn: !Not [!Equals [!Ref AgentCoreMemoryArn, ""]]
   HasAgentCoreSessionTokenSecret: !Not [!Equals [!Ref AgentCoreSessionTokenSecretArn, ""]]
@@ -433,6 +448,18 @@ Resources:
               - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuSessionsTableName}/index/*
               - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}
               - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}/index/*
+          - Sid: UseTicketsTable
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+              - dynamodb:TransactWriteItems
+              - dynamodb:DescribeTable
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TicketsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TicketsTableName}/index/*
 
   EcsTaskAgentCorePolicy:
     Type: AWS::IAM::Policy
@@ -629,6 +656,18 @@ Resources:
               - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuSessionsTableName}/index/*
               - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}
               - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}/index/*
+          - Sid: UseTicketsTable
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+              - dynamodb:TransactWriteItems
+              - dynamodb:DescribeTable
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TicketsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TicketsTableName}/index/*
 
   AgentCoreExecutionKnowledgeBasePolicy:
     Type: AWS::IAM::Policy
@@ -718,6 +757,60 @@ Resources:
         - Key: Project
           Value: !Ref ProjectName
 
+  TicketsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: ShouldCreateTicketsTable
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref TicketsTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        - AttributeName: GSI2PK
+          AttributeType: S
+        - AttributeName: GSI2SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: GSI2PK
+              KeyType: HASH
+            - AttributeName: GSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
   BackendTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Condition: HasBackendImageUri
@@ -758,6 +851,10 @@ Resources:
               Value: !Ref AgentCoreRuntimeArn
             - Name: AGENT_REQUESTS_TABLE_NAME
               Value: !Ref AgentRequestsTableName
+            - Name: TICKETS_TABLE_NAME
+              Value: !Ref TicketsTableName
+            - Name: SUPPORT_PHONE_NUMBER
+              Value: !Ref SupportPhoneNumber
             - Name: MENU_TABLE_NAME
               Value: !Ref MenuTableName
             - Name: CARTS_TABLE_NAME
@@ -945,6 +1042,10 @@ Outputs:
     Value: !GetAtt AgentCoreExecutionRole.Arn
   AgentRequestsTableName:
     Value: !Ref AgentRequestsTableName
+  TicketsTableName:
+    Value: !Ref TicketsTableName
+  TicketsTableArn:
+    Value: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TicketsTableName}
   MenuTableName:
     Value: !Ref MenuTableName
   CartsTableName:

@@ -40,6 +40,18 @@
     "ParameterValue": "fyp-dev-AgentRequests"
   },
   {
+    "ParameterKey": "CreateTicketsTable",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "TicketsTableName",
+    "ParameterValue": "fyp-dev-Tickets"
+  },
+  {
+    "ParameterKey": "SupportPhoneNumber",
+    "ParameterValue": ""
+  },
+  {
     "ParameterKey": "MenuTableName",
     "ParameterValue": "fyp-dev-Menu"
   },
