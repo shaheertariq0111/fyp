@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { AdminTicketListItem } from "@/lib/adminTicketTypes";
 import {
   formatTicketDateTime,
@@ -8,6 +9,10 @@ import {
   ticketTypeLabel,
   visibleValue,
 } from "@/app/admin/tickets/ticketPresentation";
+
+function ticketDetailHref(ticketId: string) {
+  return `/admin/tickets/${encodeURIComponent(ticketId)}`;
+}
 
 function StatusBadge({ ticket }: { ticket: AdminTicketListItem }) {
   return (
@@ -29,7 +34,9 @@ function TicketCard({ ticket }: { ticket: AdminTicketListItem }) {
   return (
     <article className="admin-ticket-card">
       <div className="admin-ticket-card-heading">
-        <code>{ticket.ticket_id}</code>
+        <Link href={ticketDetailHref(ticket.ticket_id)}>
+          <code>{ticket.ticket_id}</code>
+        </Link>
         <StatusBadge ticket={ticket} />
       </div>
       <dl>
@@ -68,7 +75,11 @@ export function TicketListTable({ tickets }: { tickets: AdminTicketListItem[] })
           <tbody>
             {tickets.map((ticket) => (
               <tr key={ticket.ticket_id}>
-                <td><code className="admin-ticket-id">{ticket.ticket_id}</code></td>
+                <td>
+                  <Link href={ticketDetailHref(ticket.ticket_id)}>
+                    <code className="admin-ticket-id">{ticket.ticket_id}</code>
+                  </Link>
+                </td>
                 <td>
                   <strong>{ticketTypeLabel(ticket.ticket_type)}</strong>
                   <small>{visibleValue(ticket.category)}</small>

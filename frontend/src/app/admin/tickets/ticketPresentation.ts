@@ -38,24 +38,38 @@ const priorityClassNames: Record<TicketPriority, string> = {
   urgent: "is-priority-urgent",
 };
 
-export function statusLabel(status: TicketStatus) {
-  return statusLabels[status];
+function mappedValue<T extends string>(
+  values: Record<T, string>,
+  value: unknown,
+  fallback: string,
+) {
+  if (
+    typeof value !== "string"
+    || !Object.prototype.hasOwnProperty.call(values, value)
+  ) {
+    return fallback;
+  }
+  return values[value as T];
 }
 
-export function priorityLabel(priority: TicketPriority) {
-  return priorityLabels[priority];
+export function statusLabel(status: unknown) {
+  return mappedValue(statusLabels, status, "Unknown status");
 }
 
-export function ticketTypeLabel(ticketType: TicketType) {
-  return ticketTypeLabels[ticketType];
+export function priorityLabel(priority: unknown) {
+  return mappedValue(priorityLabels, priority, "Unknown priority");
 }
 
-export function statusClassName(status: TicketStatus) {
-  return statusClassNames[status] ?? "is-status-neutral";
+export function ticketTypeLabel(ticketType: unknown) {
+  return mappedValue(ticketTypeLabels, ticketType, "Unknown ticket type");
 }
 
-export function priorityClassName(priority: TicketPriority) {
-  return priorityClassNames[priority] ?? "is-priority-neutral";
+export function statusClassName(status: unknown) {
+  return mappedValue(statusClassNames, status, "is-status-neutral");
+}
+
+export function priorityClassName(priority: unknown) {
+  return mappedValue(priorityClassNames, priority, "is-priority-neutral");
 }
 
 export const formatTicketDateTime = formatDateTime;

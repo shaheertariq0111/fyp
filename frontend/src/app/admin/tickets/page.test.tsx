@@ -237,7 +237,54 @@ describe("ticket list presentation and states", () => {
     expect(screen.queryByText("internal-user")).not.toBeInTheDocument();
     expect(screen.queryByText("internal-customer")).not.toBeInTheDocument();
     expect(screen.queryByText("7")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: ticket.ticket_id })).not.toBeInTheDocument();
+    const ticketLinks = screen.getAllByRole("link", { name: ticket.ticket_id });
+    expect(ticketLinks).toHaveLength(2);
+    for (const link of ticketLinks) {
+      expect(link).toHaveAttribute(
+        "href",
+        `/admin/tickets/${encodeURIComponent(ticket.ticket_id)}`,
+      );
+      expect(link.getAttribute("href")).not.toMatch(/internal|customer|cursor/i);
+    }
+  });
+
+  it("safely encodes special ticket ID characters in desktop and mobile links", async () => {
+    const specialId = "TKT/SYNTHETIC ?#%";
+    mockedListAdminTickets.mockResolvedValue(response([{ ...ticket, ticket_id: specialId }]));
+    render(<TicketsPageClient />);
+
+    const links = await screen.findAllByRole("link", { name: specialId });
+
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link).toHaveAttribute(
+        "href",
+        `/admin/tickets/${encodeURIComponent(specialId)}`,
+      );
+    }
+    expect(screen.getByRole("table", { name: "Support tickets" }).closest("a"))
+      .not.toBeInTheDocument();
+  });
+
+  it("uses neutral presentation for malformed runtime enum values", async () => {
+    mockedListAdminTickets.mockResolvedValue(response([{
+      ...ticket,
+      ticket_type: "runtime-ticket-type",
+      status: "runtime-status",
+      priority: "runtime-priority",
+    } as unknown as AdminTicketListItem]));
+    const { container } = render(<TicketsPageClient />);
+
+    expect(await screen.findAllByText("Unknown ticket type")).toHaveLength(2);
+    for (const badge of screen.getAllByText("Unknown status")) {
+      expect(badge).toHaveClass("is-status-neutral");
+    }
+    for (const badge of screen.getAllByText("Unknown priority")) {
+      expect(badge).toHaveClass("is-priority-neutral");
+    }
+    expect(container).not.toHaveTextContent("runtime-ticket-type");
+    expect(container).not.toHaveTextContent("runtime-status");
+    expect(container).not.toHaveTextContent("runtime-priority");
   });
 
   it("shows safe null and blank fallbacks", async () => {
