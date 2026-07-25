@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
-from boto3.dynamodb.types import TypeDeserializer
 from boto3.dynamodb.conditions import ConditionExpressionBuilder
 from botocore.exceptions import ClientError
 from pydantic import ValidationError
@@ -30,12 +29,7 @@ from src.models.ticket import (
 from fakes import MemoryTicketRepository
 
 
-DESERIALIZER = TypeDeserializer()
 HASH_VALUE = "a" * 64
-
-
-def deserialize_item(item):
-    return {key: DESERIALIZER.deserialize(value) for key, value in item.items()}
 
 
 def expression_values(expression):
@@ -283,8 +277,12 @@ def test_create_ticket_and_marker_uses_atomic_conditional_transaction():
     )
     expected_ticket = sample_ticket()
     expected_ticket.pop("description")
-    assert deserialize_item(ticket_put["Item"]) == expected_ticket
-    assert deserialize_item(marker_put["Item"]) == sample_marker()
+    assert ticket_put["Item"] == expected_ticket
+    assert marker_put["Item"] == sample_marker()
+    assert marker_put["Item"]["expires_at"] == 1784973600
+    assert marker_put["ExpressionAttributeValues"] == {
+        ":now": 1784887200,
+    }
     assert "ReturnConsumedCapacity" not in transaction
 
 
@@ -365,7 +363,7 @@ def test_human_creation_atomically_writes_ticket_marker_and_guard():
     items = dynamo.meta.client.transactions[0]["TransactItems"]
     assert len(items) == 3
     guard_put = items[2]["Put"]
-    assert deserialize_item(guard_put["Item"]) == sample_guard()
+    assert guard_put["Item"] == sample_guard()
     assert guard_put["ConditionExpression"] == "attribute_not_exists(PK)"
 
 
@@ -394,11 +392,7 @@ def test_stale_guard_replacement_has_atomic_version_and_ticket_conditions():
     guard_put = dynamo.meta.client.transactions[0]["TransactItems"][2]["Put"]
     assert "#version = :expected_version" in guard_put["ConditionExpression"]
     assert "active_ticket_id = :expected_ticket_id" in guard_put["ConditionExpression"]
-    values = {
-        key: DESERIALIZER.deserialize(value)
-        for key, value in guard_put["ExpressionAttributeValues"].items()
-    }
-    assert values == {
+    assert guard_put["ExpressionAttributeValues"] == {
         ":expected_version": 1,
         ":expected_ticket_id": "TKT-20260724-A1B2C3",
     }
@@ -435,8 +429,16 @@ def test_bind_reused_ticket_condition_checks_identity_and_active_status():
     assert len(items) == 3
     check = items[0]["ConditionCheck"]
     assert check["Key"] == {
-        "PK": {"S": "TICKET#TKT-20260724-A1B2C3"},
-        "SK": {"S": "METADATA"},
+        "PK": "TICKET#TKT-20260724-A1B2C3",
+        "SK": "METADATA",
+    }
+    assert check["ExpressionAttributeValues"] == {
+        ":user_id": "user-1",
+        ":session_id": "session-1",
+        ":ticket_type": "human_assistance",
+        ":open": "open",
+        ":in_review": "in_review",
+        ":waiting": "waiting_for_customer",
     }
     assert "#status IN (:open, :in_review, :waiting)" in check["ConditionExpression"]
 
@@ -841,9 +843,7 @@ def test_repository_normalizes_z_and_offset_timestamps_to_canonical_utc():
         ticket, sample_marker(), now_epoch=1784887200
     )
 
-    stored = deserialize_item(
-        dynamo.meta.client.transactions[0]["TransactItems"][0]["Put"]["Item"]
-    )
+    stored = dynamo.meta.client.transactions[0]["TransactItems"][0]["Put"]["Item"]
     assert stored["created_at"] == "2026-07-24T10:00:00+00:00"
     assert stored["updated_at"] == "2026-07-24T10:00:00+00:00"
     assert stored["GSI1SK"].startswith("CREATED#2026-07-24T10:00:00+00:00#")

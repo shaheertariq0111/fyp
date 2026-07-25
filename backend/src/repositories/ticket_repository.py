@@ -3,7 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 
 from boto3.dynamodb.conditions import Key
-from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
 from src.models.ticket import (
@@ -53,7 +52,6 @@ class TicketRepository:
         self.table = dynamodb.Table(table_name)
         self.client = dynamodb.meta.client
         self.table_name = table_name
-        self.serializer = TypeSerializer()
 
     def create_with_idempotency(
         self,
@@ -141,10 +139,7 @@ class TicketRepository:
                         "#ticket_type": "ticket_type",
                         "#status": "status",
                     },
-                    "ExpressionAttributeValues": {
-                        key: self.serializer.serialize(value)
-                        for key, value in values.items()
-                    },
+                    "ExpressionAttributeValues": values,
                 }
             },
             self._marker_put(validated_marker, now_epoch),
@@ -281,9 +276,7 @@ class TicketRepository:
                 "ConditionExpression": (
                     "attribute_not_exists(PK) OR expires_at <= :now"
                 ),
-                "ExpressionAttributeValues": {
-                    ":now": self.serializer.serialize(now_epoch)
-                },
+                "ExpressionAttributeValues": {":now": now_epoch},
             }
         }
 
@@ -308,12 +301,8 @@ class TicketRepository:
                 ),
                 "ExpressionAttributeNames": {"#version": "version"},
                 "ExpressionAttributeValues": {
-                    ":expected_version": self.serializer.serialize(
-                        expected_guard["version"]
-                    ),
-                    ":expected_ticket_id": self.serializer.serialize(
-                        expected_guard["active_ticket_id"]
-                    ),
+                    ":expected_version": expected_guard["version"],
+                    ":expected_ticket_id": expected_guard["active_ticket_id"],
                 },
             }
         )
@@ -332,11 +321,7 @@ class TicketRepository:
         return validate_guard_for_ticket(guard, ticket)
 
     def _serialize_item(self, item: dict) -> dict:
-        converted = to_dynamodb(item)
-        return {
-            key: self.serializer.serialize(value)
-            for key, value in converted.items()
-        }
+        return to_dynamodb(item)
 
     @staticmethod
     def _is_transaction_cancelled(exc: ClientError) -> bool:
