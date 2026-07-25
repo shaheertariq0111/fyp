@@ -59,6 +59,11 @@ ADMIN_TICKET_CURSOR_DOMAIN = b"admin-ticket-http-cursor-v1."
 ADMIN_TICKET_CURSOR_TTL_SECONDS = 3600
 ADMIN_TICKET_CURSOR_FUTURE_SKEW_SECONDS = 60
 MAX_ADMIN_TICKET_CURSOR_LENGTH = 16 * 1024
+AUTHORITATIVE_SUPPORT_TICKET_TOOLS = frozenset({
+    "create_human_assistance_ticket",
+    "handle_order_complaint",
+    "get_support_ticket_status",
+})
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_frontend_cors_origins(
@@ -517,6 +522,19 @@ def _buttons_from_tool_calls(tool_calls: list[ToolCallResult]) -> list[dict[str,
     return []
 
 
+def _authoritative_ticket_message(
+    tool_calls: list[ToolCallResult],
+) -> str | None:
+    for call in reversed(tool_calls):
+        if call.tool_name not in AUTHORITATIVE_SUPPORT_TICKET_TOOLS:
+            continue
+        result = call.result if isinstance(call.result, dict) else {}
+        message = result.get("user_message")
+        if isinstance(message, str) and message.strip():
+            return message
+    return None
+
+
 def _chat_response_from_invocation(
     context: AgentRequestContext,
     identity_state: dict[str, Any],
@@ -530,8 +548,9 @@ def _chat_response_from_invocation(
     if write_succeeded:
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
+    response_text = _authoritative_ticket_message(tool_calls) or invocation.text
     return ChatResponse(
-        text=invocation.text,
+        text=response_text,
         session_id=context.agent_session_id,
         user_id=context.user_id,
         customer_id=context.customer_id,

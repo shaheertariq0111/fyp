@@ -632,6 +632,217 @@ def test_chat_dictionary_runtime_result_preserves_tool_calls(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    (
+        "tool_name",
+        "success",
+        "is_write",
+        "authoritative_message",
+        "model_text",
+    ),
+    [
+        (
+            "create_human_assistance_ticket",
+            True,
+            True,
+            (
+                "Ticket ID: TKT-20260725-271706\n"
+                "Status: Open"
+            ),
+            (
+                "Ticket ID: TKT-20260725-271706\n"
+                "Status: Open\n\nI will keep an eye on this for you."
+            ),
+        ),
+        (
+            "get_support_ticket_status",
+            True,
+            False,
+            (
+                "Ticket ID: TKT-20260725-271706\n"
+                "Status: In review"
+            ),
+            (
+                "Ticket ID: TKT-20260725-271706\n"
+                "Status: In review\n\nPlease contact us if you need more help."
+            ),
+        ),
+        (
+            "handle_order_complaint",
+            True,
+            True,
+            "Please describe what went wrong with your order.",
+            (
+                "Please describe what went wrong with your order. "
+                "I can also suggest menu items."
+            ),
+        ),
+        (
+            "get_support_ticket_status",
+            False,
+            False,
+            "Ticket service is temporarily unavailable.",
+            "I could not retrieve the ticket. Please try several other options.",
+        ),
+    ],
+)
+def test_chat_support_ticket_tool_message_is_authoritative_and_persisted(
+    monkeypatch,
+    tool_name,
+    success,
+    is_write,
+    authoritative_message,
+    model_text,
+):
+    services = IdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
+            tool_calls=[{
+                "tool_name": tool_name,
+                "success": success,
+                "is_write": is_write,
+                "result": {
+                    "success": success,
+                    "user_message": authoritative_message,
+                },
+                "error_code": None if success else "TICKET_BACKEND_UNAVAILABLE",
+            }]
+        ),
+        text=model_text,
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={"message": "support", "session_id": "session", "user_id": "user"},
+    )
+    request_id = submitted.json()["request_id"]
+    stored = services.agent_requests.requests[request_id]["response"]
+    completed = completed_chat_response(test_client, request_id)
+
+    assert stored["text"] == authoritative_message
+    assert completed["response"] == authoritative_message
+    assert completed["text"] == authoritative_message
+    assert completed["tool_calls"][0]["result"]["user_message"] == (
+        authoritative_message
+    )
+
+
+def test_chat_last_valid_support_ticket_tool_message_wins(monkeypatch):
+    first = "The first ticket message."
+    last = "The final authoritative ticket message."
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
+            tool_calls=[
+                {
+                    "tool_name": "create_human_assistance_ticket",
+                    "success": True,
+                    "is_write": True,
+                    "result": {"success": True, "user_message": first},
+                    "error_code": None,
+                },
+                {
+                    "tool_name": "get_support_ticket_status",
+                    "success": True,
+                    "is_write": False,
+                    "result": {"success": True, "user_message": last},
+                    "error_code": None,
+                },
+            ]
+        ),
+        text="Model text that must not be returned.",
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={"message": "support", "session_id": "session", "user_id": "user"},
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == last
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {},
+        {"user_message": None},
+        {"user_message": ""},
+        {"user_message": " \n\t"},
+        {"user_message": 123},
+    ],
+)
+def test_chat_invalid_support_ticket_message_falls_back_to_invocation_text(
+    monkeypatch,
+    result,
+):
+    model_text = "The model response remains unchanged."
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
+            tool_calls=[{
+                "tool_name": "get_support_ticket_status",
+                "success": False,
+                "is_write": False,
+                "result": result,
+                "error_code": "TICKET_DATA_INVALID",
+            }]
+        ),
+        text=model_text,
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={"message": "support", "session_id": "session", "user_id": "user"},
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == model_text
+
+
+def test_chat_non_ticket_tool_message_does_not_replace_invocation_text(monkeypatch):
+    model_text = "Here are the matching menu items."
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
+            tool_calls=[{
+                "tool_name": "search_menu",
+                "success": True,
+                "is_write": False,
+                "result": {
+                    "success": True,
+                    "user_message": "Internal tool summary.",
+                },
+                "error_code": None,
+            }]
+        ),
+        text=model_text,
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={"message": "menu", "session_id": "session", "user_id": "user"},
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == model_text
+
+
 def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
     captured = {}
 
