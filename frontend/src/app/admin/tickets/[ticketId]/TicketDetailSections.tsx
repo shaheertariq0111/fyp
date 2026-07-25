@@ -305,10 +305,17 @@ function MetadataSection({ ticket }: { ticket: AdminTicketDetail }) {
   );
 }
 
-export function TicketDetailSections({ ticket }: { ticket: AdminTicketDetail }) {
+export function TicketDetailSections({
+  ticket,
+  actions,
+}: {
+  ticket: AdminTicketDetail;
+  actions?: React.ReactNode;
+}) {
   return (
     <div className="admin-ticket-detail-layout">
       <TicketHeader ticket={ticket} />
+      {actions}
       <CustomerSection ticket={ticket} />
       <DescriptionSection ticket={ticket} />
       <OrderSections ticket={ticket} />

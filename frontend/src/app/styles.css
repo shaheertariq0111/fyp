@@ -2945,6 +2945,101 @@ button.admin-customer-result-card {
   min-width: 0;
 }
 
+.admin-ticket-actions-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.admin-ticket-actions-heading h2,
+.admin-ticket-actions-heading p {
+  margin: 0;
+}
+
+.admin-ticket-actions-heading p {
+  margin-top: 5px;
+  color: var(--admin-muted);
+}
+
+.admin-ticket-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 24px;
+}
+
+.admin-ticket-action-form {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: 9px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--admin-border);
+}
+
+.admin-ticket-action-form h3,
+.admin-ticket-action-form p {
+  margin: 0;
+}
+
+.admin-ticket-action-form h3 {
+  color: var(--admin-text);
+  font-size: 16px;
+}
+
+.admin-ticket-action-form label {
+  color: var(--admin-text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-ticket-action-form textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.admin-ticket-action-current,
+.admin-ticket-note-count,
+.admin-ticket-action-advisory {
+  color: var(--admin-muted);
+  font-size: 13px;
+}
+
+.admin-ticket-note-count {
+  justify-self: end;
+}
+
+.admin-ticket-action-advisory {
+  font-weight: 800;
+}
+
+.admin-ticket-action-feedback,
+.admin-ticket-action-validation {
+  padding: 10px 11px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.admin-ticket-action-feedback.is-success {
+  border: 1px solid rgba(29, 138, 85, 0.2);
+  background: rgba(29, 138, 85, 0.1);
+  color: var(--admin-success);
+}
+
+.admin-ticket-action-feedback.is-error,
+.admin-ticket-action-validation {
+  border: 1px solid rgba(201, 52, 52, 0.2);
+  background: rgba(201, 52, 52, 0.08);
+  color: var(--admin-danger);
+}
+
+.admin-ticket-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .admin-ticket-detail-skeleton {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2995,6 +3090,16 @@ button.admin-customer-result-card {
 
   .admin-ticket-detail-fields {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-ticket-actions-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-ticket-action-buttons,
+  .admin-ticket-action-buttons > *,
+  .admin-ticket-action-form > button {
+    width: 100%;
   }
 
   .admin-ticket-detail-page .admin-ticket-error-actions,
