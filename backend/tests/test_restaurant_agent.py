@@ -221,6 +221,7 @@ def test_invoke_restaurant_agent_injects_trusted_context():
         "customer_name": context.customer_name,
         "customer_phone": context.customer_phone,
         "channel": context.channel,
+        "request_id": context.request_id,
             }
 
     result = restaurant_agent.invoke_restaurant_agent(
@@ -232,6 +233,7 @@ def test_invoke_restaurant_agent_injects_trusted_context():
         customer_name="Ava",
         customer_phone="+923001234567",
         channel="web",
+        request_id="req-trusted",
         agent=FakeAgent(),
         invocation_state={"source": "test"},
     )
@@ -246,7 +248,45 @@ def test_invoke_restaurant_agent_injects_trusted_context():
         "customer_name": "Ava",
         "customer_phone": "+923001234567",
         "channel": "web",
+        "request_id": "req-trusted",
     }
+
+
+def test_invoke_restaurant_agent_supports_context_without_request_id():
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            return get_request_context().request_id
+
+    result = restaurant_agent.invoke_restaurant_agent(
+        "hello",
+        user_id="trusted-user",
+        agent_session_id="trusted-session",
+        agent=FakeAgent(),
+    )
+
+    assert result is None
+
+
+def test_system_prompt_defines_deterministic_support_ticket_behavior():
+    prompt = " ".join(RESTAURANT_AGENT_SYSTEM_PROMPT.split())
+
+    assert "CUSTOMER SUPPORT TICKETS" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "create_human_assistance_ticket immediately" in prompt
+    assert "do not make the customer repeat the reason" in prompt.lower()
+    assert "handle_order_complaint" in prompt
+    assert "pending complaint state does not mean every later customer message" in prompt
+    assert 'handle_order_complaint(action="cancel")' in prompt
+    assert "get_support_ticket_status" in prompt
+    assert "present its returned user_message exactly" in prompt
+    assert "General policy questions may use retrieve_restaurant_knowledge" in prompt
+    assert "must use the ticket tools" in prompt
+    assert "promise a refund" in prompt
+    assert "promise compensation" in prompt
+    assert "admit legal liability" in prompt
+    assert "guarantee callback timing" in prompt
+    assert "guarantee a particular outcome" in prompt
+    assert "invent Ticket IDs" in prompt
+    assert "Unrelated menu or order questions must be handled normally" in prompt
 
 
 def test_invoke_restaurant_agent_builds_session_scoped_agent(monkeypatch):

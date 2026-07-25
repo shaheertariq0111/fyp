@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatRequest(BaseModel):
@@ -145,3 +145,112 @@ class AdminUpsellGroupRequest(BaseModel):
     items: list[str] = Field(default_factory=list)
     trigger_categories: list[str] = Field(default_factory=list)
     max_suggestions: int = Field(default=3, gt=0)
+
+
+class StrictAdminTicketSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class AdminTicketListItem(StrictAdminTicketSchema):
+    ticket_id: str
+    user_id: str
+    customer_id: str | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    ticket_type: str
+    category: str
+    priority: str
+    status: str
+    order_id: str | None = None
+    source: str
+    created_at: str
+    updated_at: str
+    version: int = Field(gt=0)
+
+
+class AdminTicketListResponse(StrictAdminTicketSchema):
+    tickets: list[AdminTicketListItem]
+    next_cursor: str | None = None
+
+
+class AdminTicketStatusHistoryEntry(StrictAdminTicketSchema):
+    previous_status: str
+    new_status: str
+    timestamp: str
+    actor: str | None = None
+    reason: str | None = None
+
+
+class AdminTicketPriorityHistoryEntry(StrictAdminTicketSchema):
+    previous_priority: str
+    new_priority: str
+    timestamp: str
+    actor: str | None = None
+    reason: str | None = None
+
+
+class AdminTicketNote(StrictAdminTicketSchema):
+    note_id: str | None = None
+    actor: str | None = None
+    timestamp: str
+    text: str
+
+
+class AdminTicketLinkedOrder(StrictAdminTicketSchema):
+    order_id: str
+    status: str
+    fulfillment_method: str | None = None
+    total: int
+    currency: str
+    created_at: str
+    updated_at: str
+
+
+class AdminTicketDetail(StrictAdminTicketSchema):
+    ticket_id: str
+    user_id: str
+    customer_id: str | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    ticket_type: str
+    category: str
+    description: str | None = None
+    priority: str
+    status: str
+    order_id: str | None = None
+    order_status_snapshot: str | None = None
+    source: str
+    created_at: str
+    updated_at: str
+    status_history: list[AdminTicketStatusHistoryEntry]
+    priority_history: list[AdminTicketPriorityHistoryEntry]
+    admin_notes: list[AdminTicketNote]
+    version: int = Field(gt=0)
+    linked_order: AdminTicketLinkedOrder | None = None
+
+
+class AdminTicketDetailResponse(StrictAdminTicketSchema):
+    ticket: AdminTicketDetail
+
+
+class AdminTicketStatusUpdateRequest(StrictAdminTicketSchema):
+    status: str
+    reason: str | None = None
+    expected_version: int = Field(gt=0)
+
+
+class AdminTicketPriorityUpdateRequest(StrictAdminTicketSchema):
+    priority: str
+    reason: str | None = None
+    expected_version: int = Field(gt=0)
+
+
+class AdminTicketNoteCreateRequest(StrictAdminTicketSchema):
+    text: str
+    expected_version: int = Field(gt=0)
+
+
+class AdminTicketReopenRequest(StrictAdminTicketSchema):
+    target_status: str
+    reason: str
+    expected_version: int = Field(gt=0)

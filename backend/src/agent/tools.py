@@ -1,5 +1,6 @@
 from collections.abc import Callable
 import logging
+from typing import Literal
 
 from strands import tool
 
@@ -20,6 +21,8 @@ WRITE_TOOLS = {
     "update_order_flow",
     "update_customer_profile",
     "save_customer_address",
+    "create_human_assistance_ticket",
+    "handle_order_complaint",
 }
 
 
@@ -36,7 +39,6 @@ def _record_tool_call(tool_name: str, is_write: bool, result: dict) -> None:
             "tool_success": bool(result.get("success", False)),
             "is_write": is_write,
             "actor_id": context.user_id,
-            "agent_session_id": context.agent_session_id,
             "channel": context.channel,
             "error_code": result.get("error_code"),
         },
@@ -228,6 +230,99 @@ def get_order_status(order_id: str | None = None) -> dict:
     return _result("get_order_status", lambda: get_services().orders.get_order_status(context.user_id, order_id))
 
 
+def _human_assistance_context_error() -> ToolResponse | None:
+    context = get_request_context()
+    if not context.user_id or not context.user_id.strip():
+        return ToolResponse.error(
+            error_code="USER_ID_REQUIRED",
+            user_message="A trusted user ID is required.",
+        )
+    if (
+        not context.agent_session_id
+        or not context.agent_session_id.strip()
+    ):
+        return ToolResponse.error(
+            error_code="SESSION_ID_REQUIRED",
+            user_message="A trusted session ID is required.",
+        )
+    if not context.request_id or not context.request_id.strip():
+        return ToolResponse.error(
+            error_code="REQUEST_ID_REQUIRED",
+            user_message="A trusted request ID is required.",
+        )
+    return None
+
+
+@tool
+def create_human_assistance_ticket(
+    description: str | None = None,
+) -> dict:
+    """Create or reuse a human-assistance ticket for the trusted session."""
+    context = get_request_context()
+
+    def create_ticket() -> ToolResponse:
+        error = _human_assistance_context_error()
+        if error:
+            return error
+        return get_services().tickets.create_human_assistance(
+            user_id=context.user_id,
+            session_id=context.agent_session_id,
+            description=description,
+            customer_id=context.customer_id,
+            customer_name=context.customer_name,
+            customer_phone=context.customer_phone,
+            source=context.channel,
+            idempotency_key=context.request_id,
+        )
+
+    return _result(
+        "create_human_assistance_ticket",
+        create_ticket,
+        is_write=True,
+    )
+
+
+@tool
+def handle_order_complaint(
+    order_id: str | None = None,
+    description: str | None = None,
+    action: Literal["continue", "cancel"] = "continue",
+) -> dict:
+    """Continue or cancel the trusted session's persisted complaint flow."""
+    context = get_request_context()
+    return _result(
+        "handle_order_complaint",
+        lambda: get_services().support_flow.handle_order_complaint(
+            user_id=context.user_id,
+            agent_session_id=context.agent_session_id,
+            request_id=context.request_id,
+            order_id=order_id,
+            description=description,
+            action=action,
+            customer_id=context.customer_id,
+            customer_name=context.customer_name,
+            customer_phone=context.customer_phone,
+            source=context.channel,
+        ),
+        is_write=True,
+    )
+
+
+@tool
+def get_support_ticket_status(
+    ticket_id: str | None = None,
+) -> dict:
+    """Read support-ticket status for the trusted customer."""
+    context = get_request_context()
+    return _result(
+        "get_support_ticket_status",
+        lambda: get_services().tickets.get_ticket_status(
+            context.user_id,
+            ticket_id,
+        ),
+    )
+
+
 @tool
 def get_customer_profile() -> dict:
     """Read the trusted customer profile for this conversation."""
@@ -288,6 +383,9 @@ MVP_TOOLS = [
     update_order_flow,
     get_active_cart,
     get_order_status,
+    create_human_assistance_ticket,
+    handle_order_complaint,
+    get_support_ticket_status,
     get_customer_profile,
     update_customer_profile,
     save_customer_address,

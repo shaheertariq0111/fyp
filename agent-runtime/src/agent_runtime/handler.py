@@ -76,6 +76,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 request.message,
                 user_id=request.user_id,
                 agent_session_id=request.agent_session_id,
+                request_id=request.request_id,
                 branch_id=request.branch_id,
                 customer_id=request.customer_id,
                 customer_name=request.customer_name,

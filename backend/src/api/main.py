@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
 
 from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
@@ -25,6 +26,12 @@ from src.api.schemas import (
     AdminMenuItemRequest,
     AdminOptionGroupRequest,
     AdminStatusUpdateRequest,
+    AdminTicketDetailResponse,
+    AdminTicketListResponse,
+    AdminTicketNoteCreateRequest,
+    AdminTicketPriorityUpdateRequest,
+    AdminTicketReopenRequest,
+    AdminTicketStatusUpdateRequest,
     AdminUpsellGroupRequest,
     ChatRequest,
     ChatRequestStatusResponse,
@@ -36,12 +43,22 @@ from src.api.schemas import (
 from src.infrastructure.config import get_settings, parse_frontend_cors_origins
 from src.infrastructure.config import CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS
 from src.infrastructure.logging import configure_logging
+from src.models.ticket import MAX_ACTOR_LENGTH
+from src.services.ticket_service import (
+    AdminTicketError,
+    project_customer_ticket_view,
+)
 
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 app = FastAPI(title="Pizza Restaurant Ordering Agent API")
 logger = logging.getLogger(__name__)
 ADMIN_COOKIE_NAME = "pizza_admin_session"
+ADMIN_TICKET_CURSOR_KIND = "admin_ticket_http_cursor"
+ADMIN_TICKET_CURSOR_DOMAIN = b"admin-ticket-http-cursor-v1."
+ADMIN_TICKET_CURSOR_TTL_SECONDS = 3600
+ADMIN_TICKET_CURSOR_FUTURE_SKEW_SECONDS = 60
+MAX_ADMIN_TICKET_CURSOR_LENGTH = 16 * 1024
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_frontend_cors_origins(
@@ -135,6 +152,137 @@ def require_admin(pizza_admin_session: str | None = Cookie(default=None)) -> dic
     return _verify_admin_token(pizza_admin_session)
 
 
+def _admin_ticket_cursor_now() -> int:
+    return int(time.time())
+
+
+def _base64url_without_padding(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _strict_base64url_decode(value: str) -> bytes:
+    allowed = (
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz"
+        "0123456789-_"
+    )
+    if (
+        not value
+        or "=" in value
+        or any(character not in allowed for character in value)
+    ):
+        raise ValueError("invalid base64url")
+    padding = "=" * (-len(value) % 4)
+    return base64.b64decode(
+        f"{value}{padding}",
+        altchars=b"-_",
+        validate=True,
+    )
+
+
+def _json_object_without_duplicate_keys(pairs) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def _invalid_admin_ticket_cursor() -> AdminTicketError:
+    return AdminTicketError(
+        "INVALID_CURSOR",
+        "The ticket cursor is invalid.",
+    )
+
+
+def _encode_admin_ticket_cursor(state: dict[str, Any]) -> str:
+    if not isinstance(state, dict):
+        raise ValueError("ticket cursor state must be a dictionary")
+    issued_at = _admin_ticket_cursor_now()
+    payload = {
+        "v": 1,
+        "kind": ADMIN_TICKET_CURSOR_KIND,
+        "iat": issued_at,
+        "exp": issued_at + ADMIN_TICKET_CURSOR_TTL_SECONDS,
+        "state": state,
+    }
+    encoded_payload = _base64url_without_padding(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    signature = hmac.new(
+        _admin_secret().encode("utf-8"),
+        ADMIN_TICKET_CURSOR_DOMAIN + encoded_payload.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    cursor = (
+        f"{encoded_payload}.{_base64url_without_padding(signature)}"
+    )
+    if len(cursor) > MAX_ADMIN_TICKET_CURSOR_LENGTH:
+        raise ValueError("ticket cursor is too large")
+    return cursor
+
+
+def _decode_admin_ticket_cursor(cursor: str) -> dict[str, Any]:
+    try:
+        if (
+            not isinstance(cursor, str)
+            or not cursor
+            or len(cursor) > MAX_ADMIN_TICKET_CURSOR_LENGTH
+        ):
+            raise ValueError
+        parts = cursor.split(".")
+        if len(parts) != 2:
+            raise ValueError
+        encoded_payload, encoded_signature = parts
+        signature = _strict_base64url_decode(encoded_signature)
+        if len(signature) != hashlib.sha256().digest_size:
+            raise ValueError
+        expected = hmac.new(
+            _admin_secret().encode("utf-8"),
+            ADMIN_TICKET_CURSOR_DOMAIN + encoded_payload.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        payload_bytes = _strict_base64url_decode(encoded_payload)
+        payload = json.loads(
+            payload_bytes.decode("utf-8"),
+            object_pairs_hook=_json_object_without_duplicate_keys,
+        )
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"v", "kind", "iat", "exp", "state"}
+            or isinstance(payload["v"], bool)
+            or not isinstance(payload["v"], int)
+            or payload["v"] != 1
+            or payload["kind"] != ADMIN_TICKET_CURSOR_KIND
+            or isinstance(payload["iat"], bool)
+            or not isinstance(payload["iat"], int)
+            or isinstance(payload["exp"], bool)
+            or not isinstance(payload["exp"], int)
+            or not isinstance(payload["state"], dict)
+        ):
+            raise ValueError
+        issued_at = payload["iat"]
+        expires_at = payload["exp"]
+        now = _admin_ticket_cursor_now()
+        if (
+            expires_at <= issued_at
+            or expires_at - issued_at > ADMIN_TICKET_CURSOR_TTL_SECONDS
+            or expires_at <= now
+            or issued_at > now + ADMIN_TICKET_CURSOR_FUTURE_SKEW_SECONDS
+        ):
+            raise ValueError
+        return payload["state"]
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        raise _invalid_admin_ticket_cursor() from None
+
+
 def _admin_cookie_options(settings) -> dict[str, Any]:
     cross_site = settings.cross_site_admin_cookie()
     return {
@@ -148,6 +296,100 @@ def _admin_http_error(exc: ValueError) -> HTTPException:
     code = str(exc)
     status = 404 if code.endswith("_NOT_FOUND") or code == "MENU_ENTITY_NOT_FOUND" else 400
     return HTTPException(status_code=status, detail={"error_code": code, "user_message": code.replace("_", " ").title()})
+
+
+def _admin_ticket_http_error(exc: AdminTicketError) -> HTTPException:
+    status_by_code = {
+        "INVALID_TICKET_STATUS": 400,
+        "INVALID_TICKET_TYPE": 400,
+        "INVALID_TICKET_PRIORITY": 400,
+        "INVALID_TICKET_TRANSITION": 400,
+        "INVALID_REOPEN_TARGET": 400,
+        "INVALID_TICKET_VERSION": 400,
+        "NOTE_REQUIRED": 400,
+        "NOTE_TOO_LONG": 400,
+        "REOPEN_REASON_REQUIRED": 400,
+        "INVALID_TICKET_LIMIT": 400,
+        "INVALID_CURSOR": 400,
+        "TICKET_NOT_FOUND": 404,
+        "TICKET_PAGINATION_STALLED": 409,
+        "TICKET_VERSION_CONFLICT": 409,
+        "TICKET_ITEM_TOO_LARGE": 409,
+        "TICKET_DATA_INVALID": 409,
+        "ADMIN_NOTE_LIMIT_REACHED": 409,
+        "STATUS_HISTORY_LIMIT_REACHED": 409,
+        "PRIORITY_HISTORY_LIMIT_REACHED": 409,
+        "NOTE_ID_GENERATION_FAILED": 503,
+    }
+    status = status_by_code.get(exc.error_code)
+    if status is None:
+        return _admin_ticket_internal_error()
+    user_message = (
+        "The ticket cursor is invalid."
+        if exc.error_code == "INVALID_CURSOR"
+        else exc.user_message
+    )
+    return HTTPException(
+        status_code=status,
+        detail={
+            "error_code": exc.error_code,
+            "user_message": user_message,
+        },
+    )
+
+
+def _admin_ticket_backend_error() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={
+            "error_code": "TICKET_BACKEND_UNAVAILABLE",
+            "user_message": "Ticket service is temporarily unavailable.",
+        },
+    )
+
+
+def _admin_ticket_internal_error() -> HTTPException:
+    return HTTPException(
+        status_code=500,
+        detail={
+            "error_code": "TICKET_INTERNAL_ERROR",
+            "user_message": "Ticket service returned an invalid response.",
+        },
+    )
+
+
+def _authenticated_admin_actor(admin: dict[str, Any]) -> str:
+    actor = admin.get("sub")
+    if (
+        not isinstance(actor, str)
+        or not actor.strip()
+        or len(actor) > MAX_ACTOR_LENGTH
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Admin login required",
+        )
+    return actor
+
+
+def _admin_ticket_mutation_response(
+    operation: Callable[[], dict[str, Any]],
+) -> AdminTicketDetailResponse:
+    try:
+        result = operation()
+    except HTTPException:
+        raise
+    except AdminTicketError as exc:
+        raise _admin_ticket_http_error(exc) from exc
+    except Exception as exc:
+        raise _admin_ticket_backend_error() from exc
+    try:
+        if not isinstance(result, dict) or set(result) != {"ticket"}:
+            raise ValueError
+        return AdminTicketDetailResponse.model_validate(result)
+    except (TypeError, ValueError, ValidationError):
+        raise _admin_ticket_internal_error() from None
+
 
 def _raise_if_error(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("success", True):
@@ -174,9 +416,11 @@ def _tool_calls_from_result(result: Any) -> list[ToolCallResult]:
 def _state_from_tool_calls(tool_calls: list[ToolCallResult]) -> dict[str, Any]:
     state: dict[str, Any] = {}
     for call in tool_calls:
-        result = call.result or {}
-        data = result.get("data") or {}
-        agent = result.get("agent") or {}
+        result = call.result if isinstance(call.result, dict) else {}
+        raw_data = result.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        raw_agent = result.get("agent")
+        agent = raw_agent if isinstance(raw_agent, dict) else {}
         if "cart" in data:
             state["cart"] = data["cart"]
         elif agent.get("entity") == "cart":
@@ -192,6 +436,51 @@ def _state_from_tool_calls(tool_calls: list[ToolCallResult]) -> dict[str, Any]:
             state["order"] = data
         elif agent.get("entity") == "orders":
             state["orders"] = data.get("orders", [])
+        entity = agent.get("entity")
+        if entity in {"ticket", "support_ticket"}:
+            ticket = data.get("ticket")
+            if isinstance(ticket, dict):
+                projected = project_customer_ticket_view(ticket)
+                if projected:
+                    state["support_ticket"] = projected
+        elif entity in {"tickets", "support_tickets"}:
+            tickets = data.get("tickets")
+            if isinstance(tickets, list):
+                projected_tickets = [
+                    projected
+                    for ticket in tickets
+                    if (projected := project_customer_ticket_view(ticket))
+                ]
+                if projected_tickets or not tickets:
+                    state["support_tickets"] = projected_tickets
+        tracking_state = agent.get("tracking_state")
+        if entity in {
+            "ticket",
+            "tickets",
+            "support_ticket",
+            "support_tickets",
+        } and isinstance(tracking_state, str):
+            tracking = {"tracking_state": tracking_state}
+            required_input = agent.get("required_input")
+            if isinstance(required_input, str):
+                tracking["required_input"] = required_input
+            state["support_tracking"] = tracking
+        if entity == "pending_support":
+            pending: dict[str, Any] = {}
+            intent = agent.get("pending_support_intent")
+            if intent is None or isinstance(intent, str):
+                pending["pending_support_intent"] = intent
+            order_id = agent.get("order_id")
+            if isinstance(order_id, str) and order_id.strip():
+                pending["order_id"] = order_id
+            required_input = agent.get("required_input")
+            if isinstance(required_input, str):
+                pending["required_input"] = required_input
+            next_action = result.get("next_action")
+            if isinstance(next_action, str):
+                pending["next_action"] = next_action
+            if pending:
+                state["pending_support"] = pending
     return state
 
 
@@ -406,6 +695,185 @@ def admin_logout(response: Response) -> dict[str, bool]:
 @app.get("/api/admin/me")
 def admin_me(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     return {"admin": {"username": admin.get("sub")}, "expires_at": admin.get("exp")}
+
+
+@app.get(
+    "/api/admin/tickets",
+    response_model=AdminTicketListResponse,
+)
+def admin_tickets(
+    status: str | None = None,
+    ticket_type: str | None = None,
+    priority: str | None = None,
+    limit: int = 25,
+    cursor: str | None = None,
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketListResponse:
+    try:
+        cursor_state = (
+            _decode_admin_ticket_cursor(cursor)
+            if cursor is not None
+            else None
+        )
+    except AdminTicketError as exc:
+        raise _admin_ticket_http_error(exc) from None
+    try:
+        ticket_service = get_services().tickets
+        result = ticket_service.list_admin_tickets(
+            status=status,
+            ticket_type=ticket_type,
+            priority=priority,
+            limit=limit,
+            cursor_state=cursor_state,
+        )
+    except AdminTicketError as exc:
+        raise _admin_ticket_http_error(exc) from exc
+    except Exception as exc:
+        raise _admin_ticket_backend_error() from exc
+    try:
+        if (
+            not isinstance(result, dict)
+            or set(result) != {"tickets", "next_cursor_state"}
+        ):
+            raise ValueError
+        validated = AdminTicketListResponse(
+            tickets=result["tickets"],
+            next_cursor=None,
+        )
+        next_state = result["next_cursor_state"]
+        if next_state is not None and not isinstance(next_state, dict):
+            raise ValueError
+        if next_state is None:
+            next_cursor = None
+        else:
+            validated_next_state = (
+                ticket_service.validate_admin_cursor_state(
+                    next_state,
+                    status=status,
+                    ticket_type=ticket_type,
+                    priority=priority,
+                )
+            )
+            next_cursor = _encode_admin_ticket_cursor(
+                validated_next_state
+            )
+        return AdminTicketListResponse(
+            tickets=validated.tickets,
+            next_cursor=next_cursor,
+        )
+    except (
+        AdminTicketError,
+        KeyError,
+        TypeError,
+        ValueError,
+        ValidationError,
+    ):
+        raise _admin_ticket_internal_error() from None
+
+
+@app.get(
+    "/api/admin/tickets/{ticket_id}",
+    response_model=AdminTicketDetailResponse,
+)
+def admin_ticket(
+    ticket_id: str,
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketDetailResponse:
+    try:
+        result = get_services().tickets.get_admin_ticket(ticket_id)
+    except AdminTicketError as exc:
+        raise _admin_ticket_http_error(exc) from exc
+    except Exception as exc:
+        raise _admin_ticket_backend_error() from exc
+    try:
+        if not isinstance(result, dict) or set(result) != {"ticket"}:
+            raise ValueError
+        return AdminTicketDetailResponse.model_validate(result)
+    except (TypeError, ValueError, ValidationError):
+        raise _admin_ticket_internal_error() from None
+
+
+@app.patch(
+    "/api/admin/tickets/{ticket_id}/status",
+    response_model=AdminTicketDetailResponse,
+)
+def admin_ticket_status(
+    ticket_id: str,
+    request: AdminTicketStatusUpdateRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketDetailResponse:
+    actor = _authenticated_admin_actor(admin)
+    return _admin_ticket_mutation_response(
+        lambda: get_services().tickets.update_admin_status(
+            ticket_id,
+            request.status,
+            expected_version=request.expected_version,
+            actor=actor,
+            reason=request.reason,
+        )
+    )
+
+
+@app.patch(
+    "/api/admin/tickets/{ticket_id}/priority",
+    response_model=AdminTicketDetailResponse,
+)
+def admin_ticket_priority(
+    ticket_id: str,
+    request: AdminTicketPriorityUpdateRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketDetailResponse:
+    actor = _authenticated_admin_actor(admin)
+    return _admin_ticket_mutation_response(
+        lambda: get_services().tickets.update_admin_priority(
+            ticket_id,
+            request.priority,
+            expected_version=request.expected_version,
+            actor=actor,
+            reason=request.reason,
+        )
+    )
+
+
+@app.post(
+    "/api/admin/tickets/{ticket_id}/notes",
+    response_model=AdminTicketDetailResponse,
+)
+def admin_ticket_note(
+    ticket_id: str,
+    request: AdminTicketNoteCreateRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketDetailResponse:
+    actor = _authenticated_admin_actor(admin)
+    return _admin_ticket_mutation_response(
+        lambda: get_services().tickets.add_admin_note(
+            ticket_id,
+            request.text,
+            expected_version=request.expected_version,
+            actor=actor,
+        )
+    )
+
+
+@app.post(
+    "/api/admin/tickets/{ticket_id}/reopen",
+    response_model=AdminTicketDetailResponse,
+)
+def admin_ticket_reopen(
+    ticket_id: str,
+    request: AdminTicketReopenRequest,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> AdminTicketDetailResponse:
+    actor = _authenticated_admin_actor(admin)
+    return _admin_ticket_mutation_response(
+        lambda: get_services().tickets.reopen_admin_ticket(
+            ticket_id,
+            target_status=request.target_status,
+            reason=request.reason,
+            expected_version=request.expected_version,
+            actor=actor,
+        )
+    )
 
 
 @app.get("/api/admin/analytics")
@@ -629,9 +1097,7 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
         extra={
             "event": "agent_request_started",
             "http_request_id": http_request_id,
-            "request_id": record["request_id"],
             "actor_id": context.user_id,
-            "agent_session_id": context.agent_session_id,
             "channel": context.channel,
             "agent_request_status": record["status"],
         },
@@ -643,6 +1109,7 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
                 message=payload.message,
                 user_id=context.user_id,
                 agent_session_id=context.agent_session_id,
+                request_id=record["request_id"],
                 branch_id=payload.branch_id,
                 customer_id=context.customer_id,
                 customer_name=context.customer_name,
@@ -655,9 +1122,7 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
             extra={
                 "event": "agentcore_invocation_completed",
                 "http_request_id": http_request_id,
-                "request_id": record["request_id"],
                 "actor_id": context.user_id,
-                "agent_session_id": context.agent_session_id,
                 "channel": context.channel,
                 "agentcore_invocation_status": "completed",
                 "response_time_ms": round((time.perf_counter() - invoke_started) * 1000, 2),
@@ -672,9 +1137,7 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
             extra={
                 "event": "agent_request_completed",
                 "http_request_id": http_request_id,
-                "request_id": record["request_id"],
                 "actor_id": context.user_id,
-                "agent_session_id": context.agent_session_id,
                 "channel": context.channel,
                 "agent_request_status": record["status"],
             },

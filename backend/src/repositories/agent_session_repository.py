@@ -1,6 +1,23 @@
 from boto3.dynamodb.conditions import Attr
+from botocore.exceptions import ClientError
 
 from .base import from_dynamodb, to_dynamodb
+
+
+SUPPORT_STATE_FIELDS = (
+    "pending_support_intent",
+    "pending_order_id",
+    "pending_complaint_description",
+    "pending_support_updated_at",
+)
+
+
+class SupportStateConflictError(RuntimeError):
+    pass
+
+
+class SessionNotFoundError(RuntimeError):
+    pass
 
 
 class AgentSessionRepository:
@@ -26,3 +43,181 @@ class AgentSessionRepository:
 
     def save(self, session: dict) -> None:
         self.table.put_item(Item=to_dynamodb(session))
+
+    def get_support_state(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> dict:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        return {
+            field: session[field]
+            for field in SUPPORT_STATE_FIELDS
+            if field in session
+        }
+
+    def update_support_state(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        expected_updated_at: str | None,
+        intent: str,
+        order_id: str | None,
+        description: str | None,
+        updated_at: str,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+
+        names = {
+            "#pk": "PK",
+            "#customer_id": "customer_id",
+            "#agent_session_id": "agent_session_id",
+            "#intent": "pending_support_intent",
+            "#order_id": "pending_order_id",
+            "#description": "pending_complaint_description",
+            "#updated_at": "pending_support_updated_at",
+        }
+        values = {
+            ":customer_id": customer_id,
+            ":agent_session_id": agent_session_id,
+            ":intent": intent,
+            ":updated_at": updated_at,
+        }
+        set_parts = ["#intent = :intent", "#updated_at = :updated_at"]
+        remove_parts = []
+        if order_id is None:
+            remove_parts.append("#order_id")
+        else:
+            set_parts.append("#order_id = :order_id")
+            values[":order_id"] = order_id
+        if description is None:
+            remove_parts.append("#description")
+        else:
+            set_parts.append("#description = :description")
+            values[":description"] = description
+
+        condition = (
+            "attribute_exists(#pk) "
+            "AND #customer_id = :customer_id "
+            "AND #agent_session_id = :agent_session_id AND "
+        )
+        if expected_updated_at is None:
+            condition += "attribute_not_exists(#updated_at)"
+        else:
+            condition += "#updated_at = :expected_updated_at"
+            values[":expected_updated_at"] = expected_updated_at
+
+        update_expression = f"SET {', '.join(set_parts)}"
+        if remove_parts:
+            update_expression += f" REMOVE {', '.join(remove_parts)}"
+        self._update_support_attributes(
+            session,
+            update_expression=update_expression,
+            condition_expression=condition,
+            names=names,
+            values=values,
+        )
+
+    def clear_support_state(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        expected_updated_at: str | None = None,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+
+        names = {
+            "#pk": "PK",
+            "#customer_id": "customer_id",
+            "#agent_session_id": "agent_session_id",
+            "#intent": "pending_support_intent",
+            "#order_id": "pending_order_id",
+            "#description": "pending_complaint_description",
+            "#updated_at": "pending_support_updated_at",
+        }
+        values = {
+            ":customer_id": customer_id,
+            ":agent_session_id": agent_session_id,
+        }
+        condition = (
+            "attribute_exists(#pk) "
+            "AND #customer_id = :customer_id "
+            "AND #agent_session_id = :agent_session_id AND "
+        )
+        if expected_updated_at is None:
+            condition += "attribute_not_exists(#updated_at)"
+        else:
+            condition += "#updated_at = :expected_updated_at"
+            values[":expected_updated_at"] = expected_updated_at
+
+        self._update_support_attributes(
+            session,
+            update_expression=(
+                "REMOVE #intent, #order_id, #description, #updated_at"
+            ),
+            condition_expression=condition,
+            names=names,
+            values=values,
+        )
+
+    def _get_owned_session(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> dict:
+        key = {
+            "PK": f"CUSTOMER#{customer_id}",
+            "SK": f"SESSION#{agent_session_id}",
+        }
+        response = self.table.get_item(
+            Key=to_dynamodb(key),
+            ConsistentRead=True,
+        )
+        item = response.get("Item")
+        if not item:
+            raise SessionNotFoundError
+        session = from_dynamodb(item)
+        if (
+            session.get("PK") != key["PK"]
+            or session.get("SK") != key["SK"]
+            or session.get("customer_id") != customer_id
+            or session.get("agent_session_id") != agent_session_id
+        ):
+            raise SessionNotFoundError
+        return session
+
+    def _update_support_attributes(
+        self,
+        session: dict,
+        *,
+        update_expression: str,
+        condition_expression: str,
+        names: dict,
+        values: dict,
+    ) -> None:
+        kwargs = {
+            "Key": to_dynamodb(
+                {
+                    "PK": session["PK"],
+                    "SK": session["SK"],
+                }
+            ),
+            "UpdateExpression": update_expression,
+            "ConditionExpression": condition_expression,
+            "ExpressionAttributeNames": names,
+        }
+        if values:
+            kwargs["ExpressionAttributeValues"] = to_dynamodb(values)
+        try:
+            self.table.update_item(**kwargs)
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                self._get_owned_session(
+                    session["customer_id"],
+                    session["agent_session_id"],
+                )
+                raise SupportStateConflictError from exc
+            raise

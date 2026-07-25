@@ -83,6 +83,81 @@ def test_builds_update_input_preserving_mutable_fields_without_response_fields()
         assert field not in update_input
 
 
+def test_environment_overrides_merge_without_dropping_existing_values():
+    current = current_runtime()
+    existing_environment = current["environmentVariables"]
+    update_input = build(
+        current=current,
+        environment_overrides={
+            "TICKETS_TABLE_NAME": "fyp-dev-tickets",
+            "SUPPORT_PHONE_NUMBER": "",
+        }
+    )
+
+    assert update_input["environmentVariables"] == {
+        **existing_environment,
+        "TICKETS_TABLE_NAME": "fyp-dev-tickets",
+        "SUPPORT_PHONE_NUMBER": "",
+    }
+
+
+def test_omitting_environment_overrides_preserves_existing_support_phone():
+    current = current_runtime(
+        environmentVariables={
+            **current_runtime()["environmentVariables"],
+            "SUPPORT_PHONE_NUMBER": "synthetic-support-contact",
+        }
+    )
+
+    update_input = build(current=current)
+
+    assert update_input["environmentVariables"] == current["environmentVariables"]
+
+
+def test_explicit_empty_support_phone_override_clears_existing_value():
+    old_support_phone = "synthetic-support-contact"
+    current = current_runtime(
+        environmentVariables={
+            **current_runtime()["environmentVariables"],
+            "SUPPORT_PHONE_NUMBER": old_support_phone,
+        }
+    )
+
+    update_input = build(
+        current=current,
+        environment_overrides={
+            "TICKETS_TABLE_NAME": "fyp-dev-tickets",
+            "SUPPORT_PHONE_NUMBER": "",
+        },
+    )
+
+    assert update_input["environmentVariables"] == {
+        **current["environmentVariables"],
+        "TICKETS_TABLE_NAME": "fyp-dev-tickets",
+        "SUPPORT_PHONE_NUMBER": "",
+    }
+    assert old_support_phone not in update_input["environmentVariables"].values()
+
+
+@pytest.mark.parametrize(
+    "environment_overrides",
+    [
+        {"TICKETS_TABLE_NAME": ""},
+        {"TICKETS_TABLE_NAME": "fyp-dev-tickets"},
+        {"SUPPORT_PHONE_NUMBER": ""},
+        {
+            "TICKETS_TABLE_NAME": "fyp-dev-tickets",
+            "SUPPORT_PHONE_NUMBER": 123,
+        },
+    ],
+)
+def test_environment_overrides_require_ticket_name_and_support_phone(
+    environment_overrides,
+):
+    with pytest.raises(ValueError, match="environment"):
+        build(environment_overrides=environment_overrides)
+
+
 def test_valid_33_character_client_token_is_accepted():
     token = "a" * 33
 

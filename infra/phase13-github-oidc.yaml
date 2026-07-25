@@ -61,6 +61,11 @@ Parameters:
     Type: String
     Default: arn:aws:iam::352306494518:role/fyp-dev-agentcore-execution
     Description: Existing AgentCore execution role created by phase7-ecs-api.yaml with ProjectName=fyp-dev.
+  BackendStackName:
+    Type: String
+    Default: fyp-dev-backend-api
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]{0,127}$"
+    Description: Phase 7 stack read by AgentCore deployment for runtime environment values.
 
 Conditions:
   ShouldCreateGitHubOidcProvider: !Equals [!Ref CreateGitHubOidcProvider, "true"]
@@ -211,6 +216,11 @@ Resources:
                   - bedrock-agentcore:GetAgentRuntime
                   - bedrock-agentcore:UpdateAgentRuntime
                 Resource: !Ref AgentCoreRuntimeArn
+              - Sid: ReadBackendStackConfiguration
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${BackendStackName}/*
               - Sid: PassOnlyAgentCoreExecutionRole
                 Effect: Allow
                 Action:

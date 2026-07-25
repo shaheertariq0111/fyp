@@ -33,6 +33,10 @@ RESPONSE_ONLY_FIELDS = {
 
 FULL_GITHUB_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 CLIENT_TOKEN_STRUCTURE_RE = re.compile(r"^[A-Za-z0-9](?:-*[A-Za-z0-9])*$")
+REQUIRED_ENVIRONMENT_OVERRIDES = {
+    "TICKETS_TABLE_NAME",
+    "SUPPORT_PHONE_NUMBER",
+}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -102,6 +106,33 @@ def validate_runtime_status(status: str, mode: str) -> None:
         )
 
 
+def validate_environment_overrides(
+    environment_overrides: dict[str, Any],
+) -> dict[str, str]:
+    if set(environment_overrides) != REQUIRED_ENVIRONMENT_OVERRIDES:
+        raise ValueError(
+            "environment overrides must contain exactly "
+            "TICKETS_TABLE_NAME and SUPPORT_PHONE_NUMBER"
+        )
+    tickets_table_name = environment_overrides["TICKETS_TABLE_NAME"]
+    support_phone_number = environment_overrides["SUPPORT_PHONE_NUMBER"]
+    if (
+        not isinstance(tickets_table_name, str)
+        or not tickets_table_name.strip()
+    ):
+        raise ValueError(
+            "environment TICKETS_TABLE_NAME must be a non-empty string"
+        )
+    if not isinstance(support_phone_number, str):
+        raise ValueError(
+            "environment SUPPORT_PHONE_NUMBER must be a string"
+        )
+    return {
+        "TICKETS_TABLE_NAME": tickets_table_name,
+        "SUPPORT_PHONE_NUMBER": support_phone_number,
+    }
+
+
 def build_update_input(
     *,
     current: dict[str, Any],
@@ -113,6 +144,7 @@ def build_update_input(
     mode: str,
     github_sha: str | None,
     client_token: str,
+    environment_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_image_uri(
         image_uri=image_uri,
@@ -162,6 +194,18 @@ def build_update_input(
         if field in current and current[field] is not None:
             update_input[field] = copy.deepcopy(current[field])
 
+    if environment_overrides is not None:
+        overrides = validate_environment_overrides(environment_overrides)
+        environment = update_input.get("environmentVariables", {})
+        if not isinstance(environment, dict):
+            raise ValueError(
+                "current runtime environmentVariables must be an object"
+            )
+        update_input["environmentVariables"] = {
+            **environment,
+            **overrides,
+        }
+
     forbidden = RESPONSE_ONLY_FIELDS.intersection(update_input)
     if forbidden:
         raise ValueError(f"update input includes response-only fields: {sorted(forbidden)}")
@@ -183,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=("deployment", "rollback"), required=True)
     parser.add_argument("--github-sha")
     parser.add_argument("--client-token", required=True)
+    parser.add_argument("--environment-file", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -190,6 +235,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     current = load_json(args.current_runtime)
+    environment_overrides = (
+        load_json(args.environment_file)
+        if args.environment_file is not None
+        else None
+    )
     update_input = build_update_input(
         current=current,
         image_uri=args.image_uri,
@@ -200,6 +250,7 @@ def main() -> int:
         mode=args.mode,
         github_sha=args.github_sha,
         client_token=args.client_token,
+        environment_overrides=environment_overrides,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:

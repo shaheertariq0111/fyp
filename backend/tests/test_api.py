@@ -1,12 +1,48 @@
+import base64
+import hashlib
+import hmac
+import json
+import logging
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from src.agent_client import AgentInvocationResult
 from src.api import main
+from src.api.schemas import ToolCallResult
 from src.models.tool_responses import ToolResponse
+from src.services.ticket_service import AdminTicketError
 from test_config import make_test_settings
+
+
+CUSTOMER_TICKET_KEYS = {
+    "ticket_id",
+    "ticket_type",
+    "status",
+    "status_label",
+    "priority",
+    "created_at",
+    "updated_at",
+    "next_action",
+}
+
+
+def customer_ticket(**overrides):
+    ticket = {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "human_assistance",
+        "status": "open",
+        "status_label": "Open",
+        "priority": "normal",
+        "created_at": "2026-07-24T10:00:00+00:00",
+        "updated_at": "2026-07-24T10:00:00+00:00",
+        "next_action": "await_support_contact",
+    }
+    ticket.update(overrides)
+    return ticket
 
 
 class MemoryAgentRequestService:
@@ -82,6 +118,346 @@ class IdentityServices:
             },
             "rotated": self.rotated,
         }
+
+
+def support_tool_call(result, *, name="handle_order_complaint", is_write=True):
+    return ToolCallResult(
+        tool_name=name,
+        success=result.get("success", True),
+        is_write=is_write,
+        result=result,
+        error_code=result.get("error_code"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("entity", "tool_name"),
+    [
+        ("ticket", "create_human_assistance_ticket"),
+        ("support_ticket", "handle_order_complaint"),
+    ],
+)
+def test_state_extraction_includes_customer_safe_support_ticket(
+    entity,
+    tool_name,
+):
+    ticket = customer_ticket()
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {"ticket": ticket},
+                "agent": {"entity": entity, "ticket_id": ticket["ticket_id"]},
+            },
+            name=tool_name,
+        )
+    ])
+
+    assert state["support_ticket"] == ticket
+
+
+def test_state_extraction_defensively_projects_support_ticket():
+    ticket = customer_ticket(
+        ticket_type="order_complaint",
+        order_id="ORD-1",
+        description="private complaint",
+        order_status_snapshot="preparing",
+        admin_notes=[{"text": "private", "actor": "admin-1"}],
+        status_history=[{"actor": "admin-1"}],
+        session_id="private-session",
+        request_id="private-request",
+        version=3,
+        PK="TICKET#TKT-20260724-A1B2C3",
+    )
+
+    state = main._state_from_tool_calls([
+        support_tool_call({
+            "success": True,
+            "data": {"ticket": ticket},
+            "agent": {"entity": "ticket"},
+        })
+    ])
+
+    assert state["support_ticket"] == {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "ticket_type": "order_complaint",
+        "status": "open",
+        "status_label": "Open",
+        "priority": "normal",
+        "created_at": "2026-07-24T10:00:00+00:00",
+        "updated_at": "2026-07-24T10:00:00+00:00",
+        "next_action": "await_support_contact",
+        "order_id": "ORD-1",
+    }
+
+
+@pytest.mark.parametrize(
+    ("tracking_state", "tickets"),
+    [
+        ("multiple_active_tickets", [customer_ticket()]),
+        ("no_active_tickets", []),
+    ],
+)
+def test_state_extraction_includes_support_ticket_tracking(
+    tracking_state,
+    tickets,
+):
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {"tickets": tickets},
+                "agent": {
+                    "entity": "tickets",
+                    "tracking_state": tracking_state,
+                    "required_input": "ticket_id",
+                },
+            },
+            name="get_support_ticket_status",
+            is_write=False,
+        )
+    ])
+
+    assert state["support_tickets"] == tickets
+    assert state["support_tracking"] == {
+        "tracking_state": tracking_state,
+        "required_input": "ticket_id",
+    }
+
+
+def test_state_extraction_filters_every_support_ticket_list_item():
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {
+                    "tickets": [
+                        {
+                            **customer_ticket(),
+                            "session_id": "private-session",
+                            "admin_notes": [{"actor": "admin-1"}],
+                        },
+                        "malformed",
+                        {
+                            **customer_ticket(
+                                ticket_id="TKT-20260724-D4E5F6",
+                                status="in_review",
+                                status_label="In review",
+                            ),
+                            "version": 2,
+                        },
+                    ]
+                },
+                "agent": {
+                    "entity": "tickets",
+                    "tracking_state": "multiple_active_tickets",
+                },
+            },
+            name="get_support_ticket_status",
+            is_write=False,
+        )
+    ])
+
+    assert state["support_tickets"] == [
+        {
+            **customer_ticket(),
+        },
+        {
+            **customer_ticket(
+                ticket_id="TKT-20260724-D4E5F6",
+                status="in_review",
+                status_label="In review",
+            ),
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "pending_manager"},
+        {"priority": "internal_only"},
+        {"created_at": "not-a-timestamp"},
+    ],
+)
+def test_state_extraction_ignores_malformed_single_support_ticket(overrides):
+    state = main._state_from_tool_calls([
+        support_tool_call({
+            "success": True,
+            "data": {"ticket": customer_ticket(**overrides)},
+            "agent": {"entity": "support_ticket"},
+        })
+    ])
+
+    assert "support_ticket" not in state
+
+
+def test_state_extraction_recomputes_forged_derived_ticket_fields():
+    state = main._state_from_tool_calls([
+        support_tool_call({
+            "success": True,
+            "data": {
+                "ticket": customer_ticket(
+                    status="waiting_for_customer",
+                    status_label="Escalated internally",
+                    next_action="reveal_internal_workflow",
+                )
+            },
+            "agent": {"entity": "ticket"},
+        })
+    ])
+
+    assert state["support_ticket"]["status_label"] == "Waiting for customer"
+    assert state["support_ticket"]["next_action"] == "respond_to_support"
+
+
+def test_state_extraction_filters_invalid_ticket_list_values_and_future_fields():
+    valid = customer_ticket(
+        future_customer_field="drop me",
+        status_label="forged",
+        next_action="forged",
+    )
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {
+                    "tickets": [
+                        valid,
+                        customer_ticket(status="pending_manager"),
+                        customer_ticket(priority="internal_only"),
+                    ]
+                },
+                "agent": {"entity": "support_tickets"},
+            },
+            name="get_support_ticket_status",
+            is_write=False,
+        )
+    ])
+
+    assert len(state["support_tickets"]) == 1
+    assert set(state["support_tickets"][0]) == CUSTOMER_TICKET_KEYS
+    assert state["support_tickets"][0]["status_label"] == "Open"
+    assert state["support_tickets"][0]["next_action"] == (
+        "await_support_contact"
+    )
+
+
+def test_state_extraction_ignores_ticket_list_when_every_item_is_invalid():
+    state = main._state_from_tool_calls([
+        support_tool_call(
+            {
+                "success": True,
+                "data": {
+                    "tickets": [
+                        customer_ticket(status="pending_manager"),
+                        "malformed",
+                    ]
+                },
+                "agent": {"entity": "tickets"},
+            },
+            name="get_support_ticket_status",
+            is_write=False,
+        )
+    ])
+
+    assert "support_tickets" not in state
+
+
+@pytest.mark.parametrize(
+    ("next_action", "agent", "expected"),
+    [
+        (
+            "request_order_id",
+            {
+                "entity": "pending_support",
+                "pending_support_intent": "order_complaint",
+                "required_input": "order_id",
+            },
+            {
+                "pending_support_intent": "order_complaint",
+                "required_input": "order_id",
+                "next_action": "request_order_id",
+            },
+        ),
+        (
+            "request_complaint_description",
+            {
+                "entity": "pending_support",
+                "pending_support_intent": "order_complaint",
+                "order_id": "ORD-1",
+                "required_input": "complaint_description",
+                "pending_complaint_description": "must stay private",
+            },
+            {
+                "pending_support_intent": "order_complaint",
+                "order_id": "ORD-1",
+                "required_input": "complaint_description",
+                "next_action": "request_complaint_description",
+            },
+        ),
+        (
+            "support_cancelled",
+            {
+                "entity": "pending_support",
+                "pending_support_intent": None,
+            },
+            {
+                "pending_support_intent": None,
+                "next_action": "support_cancelled",
+            },
+        ),
+    ],
+)
+def test_state_extraction_projects_pending_support_safely(
+    next_action,
+    agent,
+    expected,
+):
+    state = main._state_from_tool_calls([
+        support_tool_call({
+            "success": True,
+            "next_action": next_action,
+            "agent": agent,
+        })
+    ])
+
+    assert state["pending_support"] == expected
+    assert "pending_complaint_description" not in state["pending_support"]
+
+
+def test_state_extraction_ignores_malformed_support_and_preserves_cart_order():
+    calls = [
+        support_tool_call({
+            "success": True,
+            "data": "not-a-map",
+            "agent": "not-a-map",
+        }),
+        support_tool_call(
+            {
+                "success": True,
+                "data": {"cart": {"cart_id": "CART-1"}},
+                "agent": {"entity": "cart"},
+            },
+            name="get_active_cart",
+            is_write=False,
+        ),
+        support_tool_call(
+            {
+                "success": True,
+                "data": {"order": {"order_id": "ORD-1"}},
+                "agent": {},
+            },
+            name="get_order_status",
+            is_write=False,
+        ),
+    ]
+
+    state = main._state_from_tool_calls(calls)
+
+    assert state["cart"]["cart_id"] == "CART-1"
+    assert state["order"]["order_id"] == "ORD-1"
+    assert "support_ticket" not in state
 
 
 def client():
@@ -289,7 +665,71 @@ def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
         "customer_name": None,
         "customer_phone": None,
         "channel": "web",
+        "request_id": "req-1",
     }
+
+
+def test_successful_chat_logs_exclude_trusted_request_and_session_ids(
+    monkeypatch,
+    caplog,
+):
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(message={"content": [{"text": "Handled."}]}),
+        text="Handled.",
+    )
+
+    with caplog.at_level(logging.INFO):
+        response = client().post(
+            "/api/chat",
+            json={
+                "message": "I need support",
+                "session_id": "private-session",
+                "user_id": "user",
+            },
+        )
+
+    assert response.status_code == 200
+    lifecycle_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") in {
+            "agent_request_started",
+            "agentcore_invocation_completed",
+            "agent_request_completed",
+        }
+    ]
+    assert len(lifecycle_records) == 3
+    assert all(not hasattr(record, "request_id") for record in lifecycle_records)
+    assert all(
+        not hasattr(record, "agent_session_id")
+        for record in lifecycle_records
+    )
+
+
+def test_chat_uses_persisted_request_id_and_ignores_frontend_value(monkeypatch):
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(message={"content": [{"text": "Handled."}]}),
+        text="Handled.",
+        captured=captured,
+    )
+
+    response = client().post(
+        "/api/chat",
+        json={
+            "message": "hello",
+            "session_id": "session",
+            "user_id": "user",
+            "request_id": "req-frontend-controlled",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["request_id"] == "req-1"
+    assert captured["request_id"] == "req-1"
+    assert captured["request_id"] != "req-frontend-controlled"
 
 
 def test_chat_false_success_without_write_tool_keeps_text_but_reports_no_write(monkeypatch):
@@ -702,3 +1142,1449 @@ def test_admin_menu_customer_and_monitoring_routes(monkeypatch):
     assert archived.json()["item"]["archived"] is True
     assert customers.json()["customers"][0]["customer_id"] == "cust-1"
     assert errors.json()["events"][0]["event_type"] == "tool_error"
+
+
+ADMIN_TICKET_LIST_KEYS = {
+    "ticket_id",
+    "user_id",
+    "customer_id",
+    "customer_name",
+    "customer_phone",
+    "ticket_type",
+    "category",
+    "priority",
+    "status",
+    "order_id",
+    "source",
+    "created_at",
+    "updated_at",
+    "version",
+}
+ADMIN_TICKET_DETAIL_KEYS = ADMIN_TICKET_LIST_KEYS | {
+    "description",
+    "order_status_snapshot",
+    "status_history",
+    "priority_history",
+    "admin_notes",
+    "linked_order",
+}
+
+
+def admin_ticket_list_item(**overrides):
+    item = {
+        "ticket_id": "TKT-20260724-A1B2C3",
+        "user_id": "user-1",
+        "customer_id": "customer-1",
+        "customer_name": "Ava",
+        "customer_phone": "+920000000000",
+        "ticket_type": "order_complaint",
+        "category": "order_problem",
+        "priority": "high",
+        "status": "in_review",
+        "order_id": "ORD-1",
+        "source": "web",
+        "created_at": "2026-07-24T10:00:00+00:00",
+        "updated_at": "2026-07-24T10:30:00+00:00",
+        "version": 2,
+    }
+    item.update(overrides)
+    return item
+
+
+def admin_ticket_detail(**overrides):
+    ticket = {
+        **admin_ticket_list_item(),
+        "description": "The order arrived incomplete.",
+        "order_status_snapshot": "delivered",
+        "status_history": [{
+            "previous_status": "open",
+            "new_status": "in_review",
+            "timestamp": "2026-07-24T10:30:00+00:00",
+            "actor": "admin-1",
+            "reason": "Review started",
+        }],
+        "priority_history": [{
+            "previous_priority": "normal",
+            "new_priority": "high",
+            "timestamp": "2026-07-24T10:20:00+00:00",
+            "actor": "admin-1",
+            "reason": None,
+        }],
+        "admin_notes": [{
+            "note_id": "NOTE-20260724-A1B2C3D4",
+            "actor": "admin-1",
+            "timestamp": "2026-07-24T10:25:00+00:00",
+            "text": "Customer contacted.",
+        }],
+        "linked_order": {
+            "order_id": "ORD-1",
+            "status": "delivered",
+            "fulfillment_method": "delivery",
+            "total": 2499,
+            "currency": "PKR",
+            "created_at": "2026-07-24T09:00:00+00:00",
+            "updated_at": "2026-07-24T09:45:00+00:00",
+        },
+    }
+    ticket.update(overrides)
+    return ticket
+
+
+def admin_ticket_cursor_state(
+    *,
+    statuses=None,
+    ticket_type=None,
+    priority=None,
+):
+    selected = statuses or ["open"]
+    return {
+        "v": 1,
+        "kind": "admin_ticket_list",
+        "filters": {
+            "statuses": selected,
+            "ticket_type": ticket_type,
+            "priority": priority,
+        },
+        "positions": {
+            status: {
+                "after": None,
+                "exhausted": False,
+            }
+            for status in selected
+        },
+    }
+
+
+class AdminTicketApiService:
+    def __init__(self):
+        self.list_result = {
+            "tickets": [admin_ticket_list_item()],
+            "next_cursor_state": None,
+        }
+        self.detail_result = {"ticket": admin_ticket_detail()}
+        self.list_error = None
+        self.detail_error = None
+        self.mutation_error = None
+        self.list_calls = []
+        self.detail_calls = []
+        self.mutation_calls = []
+        self.cursor_validation_calls = []
+
+    def list_admin_tickets(self, **kwargs):
+        self.list_calls.append(deepcopy(kwargs))
+        if self.list_error:
+            raise self.list_error
+        cursor_state = kwargs["cursor_state"]
+        if cursor_state is not None:
+            statuses = (
+                [kwargs["status"]]
+                if kwargs["status"] is not None
+                else [
+                    "open",
+                    "in_review",
+                    "waiting_for_customer",
+                    "resolved",
+                    "closed",
+                ]
+            )
+            expected_filters = {
+                "statuses": statuses,
+                "ticket_type": kwargs["ticket_type"],
+                "priority": kwargs["priority"],
+            }
+            if (
+                not isinstance(cursor_state, dict)
+                or cursor_state.get("filters") != expected_filters
+            ):
+                raise AdminTicketError(
+                    "INVALID_CURSOR",
+                    "The ticket list cursor is invalid.",
+                )
+        if (
+            isinstance(kwargs["limit"], bool)
+            or not isinstance(kwargs["limit"], int)
+            or not 1 <= kwargs["limit"] <= 100
+        ):
+            raise AdminTicketError(
+                "INVALID_TICKET_LIMIT",
+                "The ticket list limit is invalid.",
+            )
+        return deepcopy(self.list_result)
+
+    def validate_admin_cursor_state(
+        self,
+        cursor_state,
+        *,
+        status=None,
+        ticket_type=None,
+        priority=None,
+    ):
+        self.cursor_validation_calls.append({
+            "cursor_state": deepcopy(cursor_state),
+            "status": status,
+            "ticket_type": ticket_type,
+            "priority": priority,
+        })
+        statuses = (
+            [status]
+            if status is not None
+            else [
+                "open",
+                "in_review",
+                "waiting_for_customer",
+                "resolved",
+                "closed",
+            ]
+        )
+        expected_filters = {
+            "statuses": statuses,
+            "ticket_type": ticket_type,
+            "priority": priority,
+        }
+        if (
+            not isinstance(cursor_state, dict)
+            or set(cursor_state)
+            != {"v", "kind", "filters", "positions"}
+            or isinstance(cursor_state.get("v"), bool)
+            or cursor_state.get("v") != 1
+            or cursor_state.get("kind") != "admin_ticket_list"
+            or cursor_state.get("filters") != expected_filters
+            or set(cursor_state.get("positions", {})) != set(statuses)
+        ):
+            raise AdminTicketError(
+                "INVALID_CURSOR",
+                "The ticket list cursor is invalid.",
+            )
+        return deepcopy(cursor_state)
+
+    def get_admin_ticket(self, ticket_id):
+        self.detail_calls.append(ticket_id)
+        if self.detail_error:
+            raise self.detail_error
+        return deepcopy(self.detail_result)
+
+    def _mutation_result(self, operation, **values):
+        self.mutation_calls.append({
+            "operation": operation,
+            **deepcopy(values),
+        })
+        if self.mutation_error:
+            raise self.mutation_error
+        return deepcopy(self.detail_result)
+
+    def update_admin_status(
+        self,
+        ticket_id,
+        status,
+        *,
+        expected_version,
+        actor,
+        reason=None,
+    ):
+        return self._mutation_result(
+            "status",
+            ticket_id=ticket_id,
+            status=status,
+            expected_version=expected_version,
+            actor=actor,
+            reason=reason,
+        )
+
+    def update_admin_priority(
+        self,
+        ticket_id,
+        priority,
+        *,
+        expected_version,
+        actor,
+        reason=None,
+    ):
+        return self._mutation_result(
+            "priority",
+            ticket_id=ticket_id,
+            priority=priority,
+            expected_version=expected_version,
+            actor=actor,
+            reason=reason,
+        )
+
+    def add_admin_note(
+        self,
+        ticket_id,
+        text,
+        *,
+        expected_version,
+        actor,
+    ):
+        return self._mutation_result(
+            "note",
+            ticket_id=ticket_id,
+            text=text,
+            expected_version=expected_version,
+            actor=actor,
+        )
+
+    def reopen_admin_ticket(
+        self,
+        ticket_id,
+        *,
+        target_status,
+        reason,
+        expected_version,
+        actor,
+    ):
+        return self._mutation_result(
+            "reopen",
+            ticket_id=ticket_id,
+            target_status=target_status,
+            reason=reason,
+            expected_version=expected_version,
+            actor=actor,
+        )
+
+
+def authenticated_ticket_client(monkeypatch, ticket_service=None):
+    test_client = client()
+    login_admin(test_client, monkeypatch)
+    tickets = ticket_service or AdminTicketApiService()
+    monkeypatch.setattr(
+        main,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+    return test_client, tickets
+
+
+def signed_ticket_cursor_payload(payload):
+    payload_bytes = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return signed_ticket_cursor_bytes(payload_bytes)
+
+
+def signed_ticket_cursor_bytes(payload_bytes):
+    encoded = base64.urlsafe_b64encode(payload_bytes).rstrip(b"=")
+    signature = hmac.new(
+        admin_settings().admin_session_secret.encode("utf-8"),
+        b"admin-ticket-http-cursor-v1." + encoded,
+        hashlib.sha256,
+    ).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).rstrip(b"=")
+    return f"{encoded.decode('ascii')}.{encoded_signature.decode('ascii')}"
+
+
+def valid_ticket_cursor_payload(**overrides):
+    payload = {
+        "v": 1,
+        "kind": "admin_ticket_http_cursor",
+        "iat": 2_000_000_000,
+        "exp": 2_000_003_600,
+        "state": admin_ticket_cursor_state(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/admin/tickets",
+        "/api/admin/tickets/TKT-20260724-A1B2C3",
+    ],
+)
+def test_admin_ticket_routes_require_authentication(path):
+    response = client().get(path)
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Admin login required"
+
+
+@pytest.mark.parametrize("token", ["invalid", None])
+def test_admin_ticket_routes_reject_invalid_or_expired_session(
+    monkeypatch,
+    token,
+):
+    test_client = client()
+    monkeypatch.setattr(main, "get_settings", admin_settings)
+    if token is None:
+        token = main._sign_admin_payload({"sub": "admin", "exp": 1})
+    test_client.cookies.set(main.ADMIN_COOKIE_NAME, token)
+
+    response = test_client.get("/api/admin/tickets")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Admin login required"
+
+
+def test_admin_ticket_list_route_passes_filters_and_returns_exact_schema(
+    monkeypatch,
+):
+    test_client, tickets = authenticated_ticket_client(monkeypatch)
+
+    response = test_client.get(
+        "/api/admin/tickets",
+        params={
+            "status": "in_review",
+            "ticket_type": "order_complaint",
+            "priority": "high",
+            "limit": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"tickets", "next_cursor"}
+    assert set(response.json()["tickets"][0]) == ADMIN_TICKET_LIST_KEYS
+    assert response.json()["next_cursor"] is None
+    assert tickets.list_calls == [{
+        "status": "in_review",
+        "ticket_type": "order_complaint",
+        "priority": "high",
+        "limit": 1,
+        "cursor_state": None,
+    }]
+
+
+def test_admin_ticket_list_uses_default_limit(monkeypatch):
+    test_client, tickets = authenticated_ticket_client(monkeypatch)
+
+    response = test_client.get("/api/admin/tickets")
+
+    assert response.status_code == 200
+    assert tickets.list_calls[0]["limit"] == 25
+
+
+@pytest.mark.parametrize("limit", [1, 100])
+def test_admin_ticket_list_accepts_limit_boundaries(monkeypatch, limit):
+    test_client, tickets = authenticated_ticket_client(monkeypatch)
+    tickets.list_result = {"tickets": [], "next_cursor_state": None}
+
+    response = test_client.get(
+        "/api/admin/tickets",
+        params={"limit": limit},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"tickets": [], "next_cursor": None}
+    assert tickets.list_calls[0]["limit"] == limit
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_admin_ticket_list_maps_invalid_limits(monkeypatch, limit):
+    test_client, _ = authenticated_ticket_client(monkeypatch)
+
+    response = test_client.get(
+        "/api/admin/tickets",
+        params={"limit": limit},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error_code"] == (
+        "INVALID_TICKET_LIMIT"
+    )
+
+
+def test_admin_ticket_detail_returns_full_admin_projection(monkeypatch):
+    test_client, tickets = authenticated_ticket_client(monkeypatch)
+
+    response = test_client.get(
+        "/api/admin/tickets/TKT-20260724-A1B2C3"
+    )
+
+    assert response.status_code == 200
+    ticket = response.json()["ticket"]
+    assert set(ticket) == ADMIN_TICKET_DETAIL_KEYS
+    assert set(ticket["status_history"][0]) == {
+        "previous_status",
+        "new_status",
+        "timestamp",
+        "actor",
+        "reason",
+    }
+    assert set(ticket["priority_history"][0]) == {
+        "previous_priority",
+        "new_priority",
+        "timestamp",
+        "actor",
+        "reason",
+    }
+    assert set(ticket["admin_notes"][0]) == {
+        "note_id",
+        "actor",
+        "timestamp",
+        "text",
+    }
+    assert set(ticket["linked_order"]) == {
+        "order_id",
+        "status",
+        "fulfillment_method",
+        "total",
+        "currency",
+        "created_at",
+        "updated_at",
+    }
+    assert not {"PK", "SK", "GSI1PK", "GSI2PK"} & ticket.keys()
+    assert tickets.detail_calls == ["TKT-20260724-A1B2C3"]
+
+
+@pytest.mark.parametrize("linked_order", [None, admin_ticket_detail()["linked_order"]])
+def test_admin_ticket_detail_allows_nullable_linked_order(
+    monkeypatch,
+    linked_order,
+):
+    service = AdminTicketApiService()
+    service.detail_result["ticket"]["linked_order"] = linked_order
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+
+    response = test_client.get(
+        "/api/admin/tickets/TKT-20260724-A1B2C3"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ticket"]["linked_order"] == linked_order
+
+
+def test_admin_ticket_cursor_round_trip_is_stable_and_unpadded(monkeypatch):
+    monkeypatch.setattr(main, "get_settings", admin_settings)
+    monkeypatch.setattr(main, "_admin_ticket_cursor_now", lambda: 2_000_000_000)
+    state = admin_ticket_cursor_state()
+
+    first = main._encode_admin_ticket_cursor(state)
+    second = main._encode_admin_ticket_cursor(state)
+
+    assert first == second
+    assert first.count(".") == 1
+    assert "=" not in first
+    assert main._decode_admin_ticket_cursor(first) == state
+
+
+def test_admin_ticket_list_returns_opaque_cursor_and_continues(monkeypatch):
+    test_client, tickets = authenticated_ticket_client(monkeypatch)
+    state = admin_ticket_cursor_state(
+        statuses=["open"],
+        ticket_type="human_assistance",
+        priority="normal",
+    )
+    tickets.list_result = {
+        "tickets": [admin_ticket_list_item(
+            ticket_type="human_assistance",
+            priority="normal",
+            status="open",
+            order_id=None,
+        )],
+        "next_cursor_state": state,
+    }
+    first = test_client.get(
+        "/api/admin/tickets",
+        params={
+            "status": "open",
+            "ticket_type": "human_assistance",
+            "priority": "normal",
+            "limit": 1,
+        },
+    )
+    public_cursor = first.json()["next_cursor"]
+    tickets.list_result = {"tickets": [], "next_cursor_state": None}
+
+    second = test_client.get(
+        "/api/admin/tickets",
+        params={
+            "status": "open",
+            "ticket_type": "human_assistance",
+            "priority": "normal",
+            "limit": 100,
+            "cursor": public_cursor,
+        },
+    )
+
+    assert first.status_code == 200
+    assert isinstance(public_cursor, str)
+    assert "next_cursor_state" not in first.text
+    assert "admin_ticket_list" not in public_cursor
+    assert second.status_code == 200
+    assert tickets.list_calls[-1]["cursor_state"] == state
+    assert tickets.list_calls[-1]["limit"] == 100
+    assert tickets.cursor_validation_calls == [{
+        "cursor_state": state,
+        "status": "open",
+        "ticket_type": "human_assistance",
+        "priority": "normal",
+    }]
+
+
+def test_admin_ticket_list_does_not_sign_invalid_service_cursor_state(
+    monkeypatch,
+):
+    service = AdminTicketApiService()
+    service.list_result = {
+        "tickets": [admin_ticket_list_item()],
+        "next_cursor_state": {
+            "invalid": "TICKET#private-cursor-key",
+        },
+    }
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+    encoder_calls = []
+
+    def capture_encoder(state):
+        encoder_calls.append(state)
+        raise AssertionError("invalid state must not be signed")
+
+    monkeypatch.setattr(
+        main,
+        "_encode_admin_ticket_cursor",
+        capture_encoder,
+    )
+
+    response = test_client.get("/api/admin/tickets")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "detail": {
+            "error_code": "TICKET_INTERNAL_ERROR",
+            "user_message": (
+                "Ticket service returned an invalid response."
+            ),
+        }
+    }
+    assert encoder_calls == []
+    assert "next_cursor_state" not in response.text
+    assert "TICKET#private-cursor-key" not in response.text
+    assert service.cursor_validation_calls == [{
+        "cursor_state": {
+            "invalid": "TICKET#private-cursor-key",
+        },
+        "status": None,
+        "ticket_type": None,
+        "priority": None,
+    }]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"status": "closed"},
+        {"ticket_type": "order_complaint"},
+        {"priority": "urgent"},
+    ],
+)
+def test_admin_ticket_cursor_rejects_changed_filters(monkeypatch, changed):
+    test_client, _ = authenticated_ticket_client(monkeypatch)
+    state = admin_ticket_cursor_state(
+        statuses=["open"],
+        ticket_type="human_assistance",
+        priority="normal",
+    )
+    cursor = main._encode_admin_ticket_cursor(state)
+    params = {
+        "status": "open",
+        "ticket_type": "human_assistance",
+        "priority": "normal",
+        "cursor": cursor,
+    }
+    params.update(changed)
+
+    response = test_client.get("/api/admin/tickets", params=params)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "error_code": "INVALID_CURSOR",
+        "user_message": "The ticket cursor is invalid.",
+    }
+
+
+def cursor_payload_cases():
+    return [
+        valid_ticket_cursor_payload(v=2),
+        valid_ticket_cursor_payload(v=True),
+        valid_ticket_cursor_payload(kind="admin_session"),
+        valid_ticket_cursor_payload(iat=True),
+        valid_ticket_cursor_payload(exp=True),
+        valid_ticket_cursor_payload(iat=2_000_000_000, exp=2_000_000_000),
+        valid_ticket_cursor_payload(exp=2_000_003_601),
+        valid_ticket_cursor_payload(exp=1_999_999_999),
+        valid_ticket_cursor_payload(iat=2_000_000_061),
+        {
+            key: value
+            for key, value in valid_ticket_cursor_payload().items()
+            if key != "state"
+        },
+        {**valid_ticket_cursor_payload(), "extra": True},
+        valid_ticket_cursor_payload(state={"invalid": True}),
+    ]
+
+
+@pytest.mark.parametrize("payload", cursor_payload_cases())
+def test_admin_ticket_cursor_payload_failures_are_sanitized(
+    monkeypatch,
+    payload,
+):
+    test_client, _ = authenticated_ticket_client(monkeypatch)
+    monkeypatch.setattr(main, "_admin_ticket_cursor_now", lambda: 2_000_000_000)
+    cursor = signed_ticket_cursor_payload(payload)
+
+    response = test_client.get(
+        "/api/admin/tickets",
+        params={"status": "open", "cursor": cursor},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "error_code": "INVALID_CURSOR",
+        "user_message": "The ticket cursor is invalid.",
+    }
+    assert "TICKET#" not in response.text
+
+
+@pytest.mark.parametrize(
+    "cursor_factory",
+    [
+        lambda valid: f"x{valid[1:]}",
+        lambda valid: f"{valid[:-1]}x",
+        lambda valid: valid.split(".", 1)[0][:-1] + "." + valid.split(".", 1)[1],
+        lambda valid: valid.split(".", 1)[0] + "." + valid.split(".", 1)[1][:-1],
+        lambda valid: valid + ".extra",
+        lambda _valid: "***.***",
+        lambda _valid: "+/.+/",
+        lambda _valid: "eA.invalid",
+        lambda _valid: "e30.invalid",
+        lambda _valid: "x" * (16 * 1024 + 1),
+    ],
+)
+def test_admin_ticket_cursor_encoding_failures_are_sanitized(
+    monkeypatch,
+    cursor_factory,
+):
+    test_client, _ = authenticated_ticket_client(monkeypatch)
+    monkeypatch.setattr(main, "_admin_ticket_cursor_now", lambda: 2_000_000_000)
+    valid = main._encode_admin_ticket_cursor(admin_ticket_cursor_state())
+
+    response = test_client.get(
+        "/api/admin/tickets",
+        params={"status": "open", "cursor": cursor_factory(valid)},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "error_code": "INVALID_CURSOR",
+        "user_message": "The ticket cursor is invalid.",
+    }
+
+
+@pytest.mark.parametrize("payload_bytes", [b"\xff", b"{"])
+def test_admin_ticket_cursor_rejects_signed_invalid_utf8_or_json(
+    monkeypatch,
+    payload_bytes,
+):
+    test_client, _ = authenticated_ticket_client(monkeypatch)
+    cursor = signed_ticket_cursor_bytes(payload_bytes)
+
+    response = test_client.get(
+        "/api/admin/tickets",
+        params={"cursor": cursor},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "error_code": "INVALID_CURSOR",
+        "user_message": "The ticket cursor is invalid.",
+    }
+
+
+def duplicate_key_cursor_json_cases():
+    position = '{"after":null,"exhausted":false}'
+    filters = (
+        '{"statuses":["open"],"ticket_type":null,"priority":null}'
+    )
+    positions = f'{{"open":{position}}}'
+    state = (
+        '{"v":1,"kind":"admin_ticket_list",'
+        f'"filters":{filters},"positions":{positions}}}'
+    )
+    payload_fields = (
+        '"kind":"admin_ticket_http_cursor",'
+        '"iat":2000000000,"exp":2000003600,'
+        f'"state":{state}'
+    )
+    return [
+        f'{{"v":1,"v":1,{payload_fields}}}',
+        (
+            '{"v":1,"kind":"admin_ticket_http_cursor",'
+            '"iat":2000000000,"exp":2000003600,'
+            '"state":{"v":1,"v":1,"kind":"admin_ticket_list",'
+            f'"filters":{filters},"positions":{positions}}}}}'
+        ),
+        (
+            '{"v":1,"kind":"admin_ticket_http_cursor",'
+            '"iat":2000000000,"exp":2000003600,'
+            '"state":{"v":1,"kind":"admin_ticket_list",'
+            '"filters":{"statuses":["open"],'
+            '"statuses":["open"],"ticket_type":null,'
+            f'"priority":null}},"positions":{positions}}}}}'
+        ),
+        (
+            '{"v":1,"kind":"admin_ticket_http_cursor",'
+            '"iat":2000000000,"exp":2000003600,'
+            '"state":{"v":1,"kind":"admin_ticket_list",'
+            f'"filters":{filters},"positions":{{'
+            f'"open":{position},"open":{position}}}}}}}'
+        ),
+        (
+            '{"v":1,"kind":"admin_ticket_http_cursor",'
+            '"iat":2000000000,"exp":2000003600,'
+            '"state":{"v":1,"kind":"admin_ticket_list",'
+            f'"filters":{filters},"positions":{{'
+            '"open":{"after":null,"after":null,'
+            '"exhausted":false}}}}}'
+        ),
+    ]
+
+
+@pytest.mark.parametrize("payload_json", duplicate_key_cursor_json_cases())
+def test_admin_ticket_cursor_rejects_duplicate_json_keys(
+    monkeypatch,
+    payload_json,
+):
+    test_client, tickets = authenticated_ticket_client(monkeypatch)
+    monkeypatch.setattr(
+        main,
+        "_admin_ticket_cursor_now",
+        lambda: 2_000_000_000,
+    )
+    cursor = signed_ticket_cursor_bytes(payload_json.encode("utf-8"))
+
+    response = test_client.get(
+        "/api/admin/tickets",
+        params={"status": "open", "cursor": cursor},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": {
+            "error_code": "INVALID_CURSOR",
+            "user_message": "The ticket cursor is invalid.",
+        }
+    }
+    assert tickets.list_calls == []
+
+
+def test_admin_session_and_ticket_cursor_are_not_interchangeable(monkeypatch):
+    test_client, _ = authenticated_ticket_client(monkeypatch)
+    session_token = test_client.cookies.get(main.ADMIN_COOKIE_NAME)
+    ticket_cursor = main._encode_admin_ticket_cursor(
+        admin_ticket_cursor_state()
+    )
+
+    cursor_response = test_client.get(
+        "/api/admin/tickets",
+        params={"status": "open", "cursor": session_token},
+    )
+    test_client.cookies.clear()
+    test_client.cookies.set(main.ADMIN_COOKIE_NAME, ticket_cursor)
+    auth_response = test_client.get("/api/admin/tickets")
+
+    assert cursor_response.status_code == 400
+    assert cursor_response.json()["detail"]["error_code"] == "INVALID_CURSOR"
+    assert auth_response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code"),
+    [
+        (
+            AdminTicketError(
+                "INVALID_TICKET_STATUS",
+                "The ticket status is invalid.",
+            ),
+            400,
+        ),
+        (
+            AdminTicketError(
+                "INVALID_TICKET_TYPE",
+                "The ticket type is invalid.",
+            ),
+            400,
+        ),
+        (
+            AdminTicketError(
+                "INVALID_TICKET_PRIORITY",
+                "The ticket priority is invalid.",
+            ),
+            400,
+        ),
+        (
+            AdminTicketError(
+                "INVALID_TICKET_LIMIT",
+                "The ticket list limit is invalid.",
+            ),
+            400,
+        ),
+        (
+            AdminTicketError(
+                "INVALID_CURSOR",
+                "The ticket list cursor is invalid.",
+            ),
+            400,
+        ),
+        (
+            AdminTicketError(
+                "TICKET_PAGINATION_STALLED",
+                "Ticket pagination could not make progress. Please retry.",
+                retryable=True,
+            ),
+            409,
+        ),
+        (
+            AdminTicketError(
+                "TICKET_DATA_INVALID",
+                "The ticket record is invalid.",
+            ),
+            409,
+        ),
+    ],
+)
+def test_admin_ticket_list_domain_error_mapping(
+    monkeypatch,
+    error,
+    status_code,
+):
+    service = AdminTicketApiService()
+    service.list_error = error
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+
+    response = test_client.get("/api/admin/tickets")
+
+    assert response.status_code == status_code
+    assert response.json()["detail"] == {
+        "error_code": error.error_code,
+        "user_message": (
+            "The ticket cursor is invalid."
+            if error.error_code == "INVALID_CURSOR"
+            else error.user_message
+        ),
+    }
+
+
+def test_admin_ticket_detail_not_found_mapping_is_identical_for_ids(
+    monkeypatch,
+):
+    service = AdminTicketApiService()
+    service.detail_error = AdminTicketError(
+        "TICKET_NOT_FOUND",
+        "The ticket could not be found.",
+    )
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+
+    valid = test_client.get(
+        "/api/admin/tickets/TKT-20260724-A1B2C3"
+    )
+    malformed = test_client.get("/api/admin/tickets/not-a-ticket")
+
+    assert valid.status_code == malformed.status_code == 404
+    assert valid.json() == malformed.json() == {
+        "detail": {
+            "error_code": "TICKET_NOT_FOUND",
+            "user_message": "The ticket could not be found.",
+        }
+    }
+
+
+def test_admin_ticket_backend_failure_is_sanitized(monkeypatch):
+    service = AdminTicketApiService()
+    service.list_error = RuntimeError(
+        "ProvisionedThroughputExceededException: private-key"
+    )
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+
+    response = test_client.get("/api/admin/tickets")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "error_code": "TICKET_BACKEND_UNAVAILABLE",
+        "user_message": "Ticket service is temporarily unavailable.",
+    }
+    assert "private-key" not in response.text
+
+
+@pytest.mark.parametrize("operation", ["list", "detail"])
+def test_admin_ticket_invalid_service_output_is_sanitized(
+    monkeypatch,
+    operation,
+):
+    service = AdminTicketApiService()
+    if operation == "list":
+        service.list_result["tickets"][0]["unexpected"] = "private"
+    else:
+        service.detail_result["ticket"]["unexpected"] = "private"
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+
+    response = test_client.get(
+        "/api/admin/tickets"
+        if operation == "list"
+        else "/api/admin/tickets/TKT-20260724-A1B2C3"
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "error_code": "TICKET_INTERNAL_ERROR",
+        "user_message": "Ticket service returned an invalid response.",
+    }
+    assert "unexpected" not in response.text
+
+
+ADMIN_TICKET_MUTATION_CASES = [
+    {
+        "operation": "status",
+        "method": "patch",
+        "path": "/api/admin/tickets/TKT-20260724-A1B2C3/status",
+        "payload": {
+            "status": "in_review",
+            "reason": None,
+            "expected_version": 2,
+        },
+    },
+    {
+        "operation": "priority",
+        "method": "patch",
+        "path": "/api/admin/tickets/TKT-20260724-A1B2C3/priority",
+        "payload": {
+            "priority": "urgent",
+            "reason": "Customer impact",
+            "expected_version": 2,
+        },
+    },
+    {
+        "operation": "note",
+        "method": "post",
+        "path": "/api/admin/tickets/TKT-20260724-A1B2C3/notes",
+        "payload": {
+            "text": "  Preserve this note exactly.\n",
+            "expected_version": 2,
+        },
+    },
+    {
+        "operation": "reopen",
+        "method": "post",
+        "path": "/api/admin/tickets/TKT-20260724-A1B2C3/reopen",
+        "payload": {
+            "target_status": "open",
+            "reason": "Customer replied",
+            "expected_version": 2,
+        },
+    },
+]
+
+
+def request_admin_ticket_mutation(test_client, case, payload=None):
+    return getattr(test_client, case["method"])(
+        case["path"],
+        json=case["payload"] if payload is None else payload,
+    )
+
+
+@pytest.mark.parametrize("case", ADMIN_TICKET_MUTATION_CASES)
+def test_admin_ticket_mutation_routes_require_authentication(case):
+    response = request_admin_ticket_mutation(client(), case)
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Admin login required"
+
+
+@pytest.mark.parametrize("case", ADMIN_TICKET_MUTATION_CASES)
+@pytest.mark.parametrize("token_kind", ["invalid", "expired", "cursor"])
+def test_admin_ticket_mutations_reject_invalid_authentication(
+    monkeypatch,
+    case,
+    token_kind,
+):
+    test_client = client()
+    service = AdminTicketApiService()
+    monkeypatch.setattr(main, "get_settings", admin_settings)
+    monkeypatch.setattr(
+        main,
+        "get_services",
+        lambda: SimpleNamespace(tickets=service),
+    )
+    if token_kind == "invalid":
+        token = "invalid"
+    elif token_kind == "expired":
+        token = main._sign_admin_payload({"sub": "admin", "exp": 1})
+    else:
+        token = main._encode_admin_ticket_cursor(
+            admin_ticket_cursor_state()
+        )
+    test_client.cookies.set(main.ADMIN_COOKIE_NAME, token)
+
+    response = request_admin_ticket_mutation(test_client, case)
+
+    assert response.status_code == 401
+    assert service.mutation_calls == []
+
+
+@pytest.mark.parametrize("case", ADMIN_TICKET_MUTATION_CASES)
+def test_admin_ticket_mutation_routes_pass_trusted_actor(
+    monkeypatch,
+    case,
+):
+    test_client, service = authenticated_ticket_client(monkeypatch)
+
+    response = request_admin_ticket_mutation(test_client, case)
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"ticket"}
+    assert set(response.json()["ticket"]) == ADMIN_TICKET_DETAIL_KEYS
+    call = service.mutation_calls[0]
+    assert call["operation"] == case["operation"]
+    assert call["ticket_id"] == "TKT-20260724-A1B2C3"
+    assert call["expected_version"] == 2
+    assert call["actor"] == "admin"
+    assert "sub" not in call
+    if case["operation"] == "note":
+        assert call["text"] == "  Preserve this note exactly.\n"
+
+
+@pytest.mark.parametrize("actor", [None, "", 1, "a" * 201])
+def test_admin_ticket_mutation_rejects_invalid_authenticated_actor(
+    monkeypatch,
+    actor,
+):
+    test_client = client()
+    service = AdminTicketApiService()
+    monkeypatch.setattr(main, "get_settings", admin_settings)
+    monkeypatch.setattr(
+        main,
+        "get_services",
+        lambda: SimpleNamespace(tickets=service),
+    )
+    token = main._sign_admin_payload({
+        "sub": actor,
+        "exp": 2_000_003_600,
+    })
+    monkeypatch.setattr(main.time, "time", lambda: 2_000_000_000)
+    test_client.cookies.set(main.ADMIN_COOKIE_NAME, token)
+
+    response = request_admin_ticket_mutation(
+        test_client,
+        ADMIN_TICKET_MUTATION_CASES[0],
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Admin login required"
+    assert service.mutation_calls == []
+
+
+@pytest.mark.parametrize("case", ADMIN_TICKET_MUTATION_CASES)
+@pytest.mark.parametrize(
+    "invalid_version",
+    [None, True, False, 0, -1, "2", 2.0],
+)
+def test_admin_ticket_mutation_expected_version_is_strict(
+    monkeypatch,
+    case,
+    invalid_version,
+):
+    test_client, service = authenticated_ticket_client(monkeypatch)
+    payload = deepcopy(case["payload"])
+    if invalid_version is None:
+        payload.pop("expected_version")
+    else:
+        payload["expected_version"] = invalid_version
+
+    response = request_admin_ticket_mutation(
+        test_client,
+        case,
+        payload,
+    )
+
+    assert response.status_code == 422
+    assert service.mutation_calls == []
+
+
+@pytest.mark.parametrize("case", ADMIN_TICKET_MUTATION_CASES)
+@pytest.mark.parametrize(
+    "extra_field",
+    [
+        "actor",
+        "admin",
+        "username",
+        "user_id",
+        "customer_id",
+        "note_id",
+        "timestamp",
+        "version",
+        "status_history",
+        "priority_history",
+        "admin_notes",
+        "linked_order",
+        "PK",
+        "SK",
+    ],
+)
+def test_admin_ticket_mutation_request_rejects_extra_fields(
+    monkeypatch,
+    case,
+    extra_field,
+):
+    test_client, service = authenticated_ticket_client(monkeypatch)
+    payload = {**case["payload"], extra_field: "forged"}
+
+    response = request_admin_ticket_mutation(
+        test_client,
+        case,
+        payload,
+    )
+
+    assert response.status_code == 422
+    assert service.mutation_calls == []
+
+
+@pytest.mark.parametrize(
+    ("case_index", "field", "value"),
+    [
+        (0, "status", 1),
+        (0, "reason", 1),
+        (1, "priority", 1),
+        (1, "reason", 1),
+        (2, "text", 1),
+        (3, "target_status", 1),
+        (3, "reason", None),
+        (3, "reason", 1),
+    ],
+)
+def test_admin_ticket_mutation_request_types_are_strict(
+    monkeypatch,
+    case_index,
+    field,
+    value,
+):
+    case = ADMIN_TICKET_MUTATION_CASES[case_index]
+    test_client, service = authenticated_ticket_client(monkeypatch)
+    payload = {**case["payload"], field: value}
+
+    response = request_admin_ticket_mutation(
+        test_client,
+        case,
+        payload,
+    )
+
+    assert response.status_code == 422
+    assert service.mutation_calls == []
+
+
+@pytest.mark.parametrize(
+    ("case_index", "error", "status_code"),
+    [
+        (
+            0,
+            AdminTicketError(
+                "INVALID_TICKET_STATUS",
+                "The ticket status is invalid.",
+            ),
+            400,
+        ),
+        (
+            1,
+            AdminTicketError(
+                "INVALID_TICKET_PRIORITY",
+                "The ticket priority is invalid.",
+            ),
+            400,
+        ),
+        (
+            0,
+            AdminTicketError(
+                "INVALID_TICKET_TRANSITION",
+                "The requested ticket status transition is not allowed.",
+            ),
+            400,
+        ),
+        (
+            3,
+            AdminTicketError(
+                "INVALID_REOPEN_TARGET",
+                "A reopened ticket must be open or in review.",
+            ),
+            400,
+        ),
+        (
+            0,
+            AdminTicketError(
+                "INVALID_TICKET_VERSION",
+                "The expected ticket version is invalid.",
+            ),
+            400,
+        ),
+        (
+            2,
+            AdminTicketError(
+                "NOTE_REQUIRED",
+                "An administrator note is required.",
+            ),
+            400,
+        ),
+        (
+            2,
+            AdminTicketError(
+                "NOTE_TOO_LONG",
+                "A note cannot exceed 2000 characters.",
+            ),
+            400,
+        ),
+        (
+            3,
+            AdminTicketError(
+                "REOPEN_REASON_REQUIRED",
+                "A reason is required to reopen a ticket.",
+            ),
+            400,
+        ),
+        (
+            0,
+            AdminTicketError(
+                "TICKET_NOT_FOUND",
+                "The ticket could not be found.",
+            ),
+            404,
+        ),
+        (
+            0,
+            AdminTicketError(
+                "TICKET_VERSION_CONFLICT",
+                "The ticket changed before this update could be saved.",
+            ),
+            409,
+        ),
+        (
+            2,
+            AdminTicketError(
+                "TICKET_ITEM_TOO_LARGE",
+                "The ticket has reached its maximum stored size.",
+            ),
+            409,
+        ),
+        (
+            1,
+            AdminTicketError(
+                "TICKET_DATA_INVALID",
+                "The ticket record is invalid.",
+            ),
+            409,
+        ),
+        (
+            2,
+            AdminTicketError(
+                "NOTE_ID_GENERATION_FAILED",
+                "Unable to create a unique note ID. Please retry.",
+                retryable=True,
+            ),
+            503,
+        ),
+        (
+            2,
+            AdminTicketError(
+                "ADMIN_NOTE_LIMIT_REACHED",
+                "The ticket cannot accept more admin notes.",
+            ),
+            409,
+        ),
+        (
+            0,
+            AdminTicketError(
+                "STATUS_HISTORY_LIMIT_REACHED",
+                "The ticket cannot accept more status history entries.",
+            ),
+            409,
+        ),
+        (
+            1,
+            AdminTicketError(
+                "PRIORITY_HISTORY_LIMIT_REACHED",
+                "The ticket cannot accept more priority history entries.",
+            ),
+            409,
+        ),
+    ],
+)
+def test_admin_ticket_mutation_domain_error_mapping(
+    monkeypatch,
+    case_index,
+    error,
+    status_code,
+):
+    service = AdminTicketApiService()
+    service.mutation_error = error
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+
+    response = request_admin_ticket_mutation(
+        test_client,
+        ADMIN_TICKET_MUTATION_CASES[case_index],
+    )
+
+    assert response.status_code == status_code
+    assert response.json() == {
+        "detail": {
+            "error_code": error.error_code,
+            "user_message": error.user_message,
+        }
+    }
+    assert "retryable" not in response.text
+
+
+@pytest.mark.parametrize("case", ADMIN_TICKET_MUTATION_CASES)
+def test_admin_ticket_mutation_backend_failure_is_sanitized(
+    monkeypatch,
+    case,
+):
+    service = AdminTicketApiService()
+    service.mutation_error = RuntimeError("private backend failure")
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+
+    response = request_admin_ticket_mutation(test_client, case)
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error_code"] == (
+        "TICKET_BACKEND_UNAVAILABLE"
+    )
+    assert "private backend failure" not in response.text
+
+
+def test_admin_ticket_mutation_preserves_http_exception(monkeypatch):
+    service = AdminTicketApiService()
+    service.mutation_error = HTTPException(
+        status_code=418,
+        detail="controlled",
+    )
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+
+    response = request_admin_ticket_mutation(
+        test_client,
+        ADMIN_TICKET_MUTATION_CASES[0],
+    )
+
+    assert response.status_code == 418
+    assert response.json() == {"detail": "controlled"}
+
+
+@pytest.mark.parametrize("case", ADMIN_TICKET_MUTATION_CASES)
+@pytest.mark.parametrize("invalid_shape", ["extra", "missing", "version"])
+def test_admin_ticket_mutation_invalid_response_is_sanitized(
+    monkeypatch,
+    case,
+    invalid_shape,
+):
+    service = AdminTicketApiService()
+    if invalid_shape == "extra":
+        service.detail_result["ticket"]["PK"] = "TICKET#private"
+    elif invalid_shape == "missing":
+        service.detail_result["ticket"].pop("status")
+    else:
+        service.detail_result["ticket"]["version"] = "3"
+    test_client, _ = authenticated_ticket_client(monkeypatch, service)
+
+    response = request_admin_ticket_mutation(test_client, case)
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["error_code"] == (
+        "TICKET_INTERNAL_ERROR"
+    )
+    assert "TICKET#private" not in response.text
