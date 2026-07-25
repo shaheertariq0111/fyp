@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import secrets
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Callable
@@ -200,6 +199,7 @@ class TicketService:
         *,
         user_id: str,
         session_id: str,
+        idempotency_key: str,
         description: str | None = None,
         customer_id: str | None = None,
         customer_name: str | None = None,
@@ -207,7 +207,6 @@ class TicketService:
         category: str = "human_assistance",
         priority: str = DEFAULT_TICKET_PRIORITY,
         source: str = "web",
-        idempotency_key: str | None = None,
     ) -> ToolResponse:
         if not self._non_blank(user_id):
             return self._error("USER_ID_REQUIRED", "A trusted user ID is required.")
@@ -215,6 +214,9 @@ class TicketService:
             return self._error(
                 "SESSION_ID_REQUIRED", "A trusted session ID is required."
             )
+        idempotency_error = self._idempotency_key_error(idempotency_key)
+        if idempotency_error:
+            return idempotency_error
         validation = self._validate_creation_values(
             ticket_type="human_assistance",
             priority=priority,
@@ -232,7 +234,7 @@ class TicketService:
         idempotency_hash = self._idempotency_hash(
             user_id,
             operation,
-            idempotency_key or secrets.token_urlsafe(24),
+            idempotency_key,
         )
         existing = self._resolve_idempotency(
             user_id, operation, idempotency_hash, now
@@ -262,6 +264,7 @@ class TicketService:
         user_id: str,
         order_id: str,
         description: str,
+        idempotency_key: str,
         session_id: str | None = None,
         customer_id: str | None = None,
         customer_name: str | None = None,
@@ -269,7 +272,6 @@ class TicketService:
         category: str = "order_complaint",
         priority: str = DEFAULT_TICKET_PRIORITY,
         source: str = "web",
-        idempotency_key: str | None = None,
     ) -> ToolResponse:
         if not self._non_blank(user_id):
             return self._error("USER_ID_REQUIRED", "A trusted user ID is required.")
@@ -280,6 +282,9 @@ class TicketService:
                 "DESCRIPTION_REQUIRED",
                 "Please provide a description of the complaint.",
             )
+        idempotency_error = self._idempotency_key_error(idempotency_key)
+        if idempotency_error:
+            return idempotency_error
         validation = self._validate_creation_values(
             ticket_type="order_complaint",
             priority=priority,
@@ -303,7 +308,7 @@ class TicketService:
         idempotency_hash = self._idempotency_hash(
             user_id,
             operation,
-            idempotency_key or secrets.token_urlsafe(24),
+            idempotency_key,
         )
         existing = self._resolve_idempotency(
             user_id, operation, idempotency_hash, now
@@ -1669,6 +1674,15 @@ class TicketService:
     ) -> str:
         scoped = f"{user_id}\0{operation}\0{raw_key}".encode("utf-8")
         return hashlib.sha256(scoped).hexdigest()
+
+    @classmethod
+    def _idempotency_key_error(cls, value: object) -> ToolResponse | None:
+        if not isinstance(value, str) or not value.strip():
+            return cls._error(
+                "REQUEST_ID_REQUIRED",
+                "A trusted request ID is required.",
+            )
+        return None
 
     @classmethod
     def _validate_creation_values(

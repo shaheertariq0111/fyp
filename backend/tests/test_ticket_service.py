@@ -1,3 +1,4 @@
+import inspect
 import re
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -185,6 +186,99 @@ def test_create_human_assistance_and_deterministic_confirmation():
     assert stored["GSI1PK"] == "CUSTOMER#user-1"
     assert stored["GSI2PK"] == "STATUS#open"
     assert "expires_at" not in stored
+
+
+def test_ticket_creation_methods_require_idempotency_key_keyword():
+    for method in (
+        TicketService.create_human_assistance,
+        TicketService.create_order_complaint,
+    ):
+        parameter = inspect.signature(method).parameters["idempotency_key"]
+        assert parameter.default is inspect.Parameter.empty
+
+
+@pytest.mark.parametrize(
+    ("method_name", "idempotency_key"),
+    [
+        ("create_human_assistance", None),
+        ("create_human_assistance", ""),
+        ("create_human_assistance", " \n\t"),
+        ("create_human_assistance", 123),
+        ("create_order_complaint", None),
+        ("create_order_complaint", ""),
+        ("create_order_complaint", " \n\t"),
+        ("create_order_complaint", 123),
+    ],
+)
+def test_ticket_creation_rejects_invalid_idempotency_key_before_repository_access(
+    method_name,
+    idempotency_key,
+    monkeypatch,
+):
+    service, tickets, orders = build_service()
+
+    def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("repository access is not allowed")
+
+    service.ticket_id_factory = unexpected_call
+    for method in (
+        "create_with_idempotency",
+        "bind_human_reuse",
+        "get",
+        "get_idempotency_marker",
+        "get_human_session_guard",
+        "list_for_customer",
+        "query_status_page",
+        "save",
+    ):
+        monkeypatch.setattr(tickets, method, unexpected_call)
+    monkeypatch.setattr(orders, "get_by_order_id", unexpected_call)
+
+    kwargs = (
+        human_kwargs(idempotency_key=idempotency_key)
+        if method_name == "create_human_assistance"
+        else complaint_kwargs(idempotency_key=idempotency_key)
+    )
+    response = getattr(service, method_name)(**kwargs)
+
+    assert not response.success
+    assert response.error_code == "REQUEST_ID_REQUIRED"
+    assert response.user_message == "A trusted request ID is required."
+    assert tickets.data == {}
+    assert tickets.markers == {}
+    assert tickets.guards == {}
+    assert tickets.save_calls == []
+    assert tickets.query_status_calls == []
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ["create_human_assistance", "create_order_complaint"],
+)
+def test_ticket_creation_hashes_valid_idempotency_key_without_normalizing(
+    method_name,
+):
+    service, tickets, orders = build_service()
+    raw_key = "  trusted-request  "
+    if method_name == "create_order_complaint":
+        create_order(orders)
+        kwargs = complaint_kwargs(idempotency_key=raw_key)
+        operation = "order_complaint"
+    else:
+        kwargs = human_kwargs(idempotency_key=raw_key)
+        operation = "human_assistance"
+
+    response = getattr(service, method_name)(**kwargs)
+
+    assert response.success
+    expected_hash = service._idempotency_hash("user-1", operation, raw_key)
+    normalized_hash = service._idempotency_hash(
+        "user-1",
+        operation,
+        raw_key.strip(),
+    )
+    assert expected_hash in tickets.markers
+    assert normalized_hash not in tickets.markers
 
 
 def assert_customer_ticket_view(ticket, *, complaint=False):
