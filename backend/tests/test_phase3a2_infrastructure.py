@@ -28,7 +28,7 @@ TICKET_ACTIONS = {
     "dynamodb:PutItem",
     "dynamodb:UpdateItem",
     "dynamodb:Query",
-    "dynamodb:TransactWriteItems",
+    "dynamodb:ConditionCheckItem",
     "dynamodb:DescribeTable",
 }
 TICKET_TABLE_ARN = {
@@ -204,6 +204,9 @@ def test_ticket_iam_is_least_privilege_for_ecs_and_agentcore(policy_name):
 
     assert statement["Effect"] == "Allow"
     assert set(statement["Action"]) == TICKET_ACTIONS
+    assert "dynamodb:ConditionCheckItem" in statement["Action"]
+    assert "dynamodb:PutItem" in statement["Action"]
+    assert "dynamodb:TransactWriteItems" not in statement["Action"]
     assert statement["Resource"] == [TICKET_TABLE_ARN, TICKET_INDEX_ARN]
     serialized = json.dumps(statement)
     assert '"Resource": "*"' not in serialized
