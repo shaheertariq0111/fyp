@@ -1,5 +1,6 @@
 from collections.abc import Callable
 import logging
+import re
 from typing import Literal
 
 from strands import tool
@@ -11,6 +12,52 @@ from src.models.tool_responses import ToolResponse
 
 logger = logging.getLogger(__name__)
 MAX_AGENT_MENU_RESULTS = 5
+SUPPORT_INTENT_CLARIFICATION = (
+    "Is this about a problem with an order, or would you like to speak "
+    "to a person?"
+)
+
+_ORDER_COMPLAINT_PATTERNS = (
+    re.compile(r"\bcomplain(?:t|ing)?\b.*\border\b", re.IGNORECASE),
+    re.compile(r"\border\b.*\bcomplain(?:t|ing)?\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:order|food|delivery|item)\b.*"
+        r"\b(?:missing|wrong|cold|late|damaged|spilled|refund|replace|replacement)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:missing|wrong|cold|late|damaged|spilled|refund|replace|replacement)\b"
+        r".*\b(?:order|food|delivery|item|sauce|dip)\b",
+        re.IGNORECASE,
+    ),
+)
+_GENERIC_HUMAN_PATTERNS = (
+    re.compile(
+        r"\b(?:speak|talk|connect|transfer)\b.*"
+        r"\b(?:person|human|agent|staff|representative|manager)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:human|live)\s+(?:support\s+)?agent\b", re.IGNORECASE),
+    re.compile(r"\bcall\s+me\b", re.IGNORECASE),
+    re.compile(r"\b(?:i\s+)?need\s+(?:a|the)\s+manager\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:can|could|would)\s+(?:a|the)\s+manager\s+call\s+me\b",
+        re.IGNORECASE,
+    ),
+)
+_COMPLAINT_CONTROL_PREFIXES = (
+    re.compile(
+        r"^\s*i\s+have\s+a\s+complaint\s+about\s+"
+        r"(?:my|the|an?)\s+order\s*[.!?:;-]+\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:i\s+(?:want|would\s+like)\s+to|please\s+let\s+me)\s+"
+        r"(?:speak|talk)\s+to\s+(?:a\s+|the\s+)?"
+        r"(?:person|human|agent|staff|representative|manager)\s+because\s+",
+        re.IGNORECASE,
+    ),
+)
 
 WRITE_TOOLS = {
     "start_cart_item_customization",
@@ -227,7 +274,118 @@ def get_active_cart() -> dict:
 def get_order_status(order_id: str | None = None) -> dict:
     """Read one authorized order or the current user's active orders from DynamoDB."""
     context = get_request_context()
-    return _result("get_order_status", lambda: get_services().orders.get_order_status(context.user_id, order_id))
+
+    def get_and_remember_order() -> ToolResponse:
+        services = get_services()
+        response = services.orders.get_order_status(context.user_id, order_id)
+        selected = _selected_verified_order(response)
+        if selected is not None:
+            try:
+                services.agent_sessions.save_verified_order_context(
+                    context.user_id,
+                    context.agent_session_id,
+                    order_id=selected["order_id"],
+                    status=selected["status"],
+                )
+            except Exception as exc:
+                logger.error(
+                    "Verified order context could not be persisted",
+                    extra={
+                        "event": "verified_order_context_persistence_failed",
+                        "tool_name": "get_order_status",
+                        "actor_id": context.user_id,
+                        "agent_session_id": context.agent_session_id,
+                        "order_id": selected["order_id"],
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+        return response
+
+    return _result("get_order_status", get_and_remember_order)
+
+
+def _selected_verified_order(response: ToolResponse) -> dict | None:
+    if not response.success or not isinstance(response.agent, dict):
+        return None
+    selected_order_id = response.agent.get("selected_order_id")
+    if not isinstance(selected_order_id, str) or not selected_order_id.strip():
+        return None
+    data = response.data if isinstance(response.data, dict) else {}
+    candidates = []
+    order = data.get("order")
+    if isinstance(order, dict):
+        candidates.append(order)
+    orders = data.get("orders")
+    if isinstance(orders, list):
+        candidates.extend(item for item in orders if isinstance(item, dict))
+    matches = [
+        item
+        for item in candidates
+        if item.get("order_id") == selected_order_id
+        and isinstance(item.get("status"), str)
+        and item["status"].strip()
+    ]
+    if len(matches) != 1:
+        return None
+    return {
+        "order_id": selected_order_id,
+        "status": matches[0]["status"],
+    }
+
+
+def _support_write_intent(
+    current_message: str | None,
+    description: str | None,
+) -> str:
+    if current_message is None:
+        return "order_complaint" if (
+            isinstance(description, str)
+            and any(pattern.search(description) for pattern in _ORDER_COMPLAINT_PATTERNS)
+        ) else "human_assistance"
+    if any(pattern.search(current_message) for pattern in _ORDER_COMPLAINT_PATTERNS):
+        return "order_complaint"
+    if any(pattern.search(current_message) for pattern in _GENERIC_HUMAN_PATTERNS):
+        return "human_assistance"
+    return "ambiguous"
+
+
+def _complaint_description(
+    description: str | None,
+    current_message: str | None,
+) -> str | None:
+    if isinstance(description, str) and description.strip():
+        return description
+    if not isinstance(current_message, str) or not current_message.strip():
+        return current_message
+    original = current_message.strip()
+    for pattern in _COMPLAINT_CONTROL_PREFIXES:
+        cleaned = pattern.sub("", original, count=1).strip()
+        if cleaned != original and cleaned:
+            if cleaned[0].islower():
+                cleaned = cleaned[0].upper() + cleaned[1:]
+            return cleaned
+    return original
+
+
+def _log_support_write_guard(
+    context,
+    *,
+    effective_intent: str,
+    redirected: bool,
+    ticket_write_occurred: bool,
+) -> None:
+    logger.info(
+        "Support ticket write guard completed",
+        extra={
+            "event": "support_ticket_write_guard",
+            "tool_name": "create_human_assistance_ticket",
+            "effective_intent": effective_intent,
+            "redirected": redirected,
+            "ticket_write_occurred": ticket_write_occurred,
+            "actor_id": context.user_id,
+            "agent_session_id": context.agent_session_id,
+        },
+    )
 
 
 def _human_assistance_context_error() -> ToolResponse | None:
@@ -268,7 +426,55 @@ def create_human_assistance_ticket(
         error = _human_assistance_context_error()
         if error:
             return error
-        return get_services().tickets.create_human_assistance(
+        services = get_services()
+        effective_intent = _support_write_intent(
+            context.current_message,
+            description,
+        )
+        if effective_intent == "order_complaint":
+            effective_description = _complaint_description(
+                description,
+                context.current_message,
+            )
+            response = services.support_flow.handle_order_complaint(
+                user_id=context.user_id,
+                agent_session_id=context.agent_session_id,
+                request_id=context.request_id,
+                description=effective_description,
+                customer_id=context.customer_id,
+                customer_name=context.customer_name,
+                customer_phone=context.customer_phone,
+                source=context.channel,
+            )
+            _log_support_write_guard(
+                context,
+                effective_intent=effective_intent,
+                redirected=True,
+                ticket_write_occurred=(
+                    response.success
+                    and response.next_action not in {
+                        "request_order_id",
+                        "request_complaint_description",
+                    }
+                ),
+            )
+            return response
+        if effective_intent == "ambiguous":
+            _log_support_write_guard(
+                context,
+                effective_intent=effective_intent,
+                redirected=False,
+                ticket_write_occurred=False,
+            )
+            return ToolResponse.ok(
+                user_message=SUPPORT_INTENT_CLARIFICATION,
+                next_action="clarify_support_intent",
+                agent={
+                    "entity": "pending_support",
+                    "required_input": "support_intent",
+                },
+            )
+        response = services.tickets.create_human_assistance(
             user_id=context.user_id,
             session_id=context.agent_session_id,
             description=description,
@@ -278,6 +484,13 @@ def create_human_assistance_ticket(
             source=context.channel,
             idempotency_key=context.request_id,
         )
+        _log_support_write_guard(
+            context,
+            effective_intent=effective_intent,
+            redirected=False,
+            ticket_write_occurred=response.success,
+        )
+        return response
 
     return _result(
         "create_human_assistance_ticket",

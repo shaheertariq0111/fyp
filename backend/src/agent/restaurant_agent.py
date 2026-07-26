@@ -82,6 +82,7 @@ def invoke_restaurant_agent(
         customer_name=customer_name,
         customer_phone=customer_phone,
         channel=channel,
+        current_message=message,
     )
     runtime_agent = agent or build_restaurant_agent(
         session_manager=build_session_manager(agent_session_id)

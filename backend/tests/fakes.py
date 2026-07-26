@@ -136,6 +136,11 @@ class MemoryAgentSessionRepository:
         "pending_complaint_description",
         "pending_support_updated_at",
     }
+    VERIFIED_ORDER_FIELDS = {
+        "verified_order_id",
+        "verified_order_status",
+        "verified_order_at",
+    }
 
     def __init__(self):
         self.data = {}
@@ -177,6 +182,41 @@ class MemoryAgentSessionRepository:
             for key, value in session.items()
             if key in self.SUPPORT_FIELDS
         }
+
+    def get_verified_order_context(self, customer_id, agent_session_id):
+        session = self._get_owned_session(customer_id, agent_session_id)
+        return {
+            key: deepcopy(value)
+            for key, value in session.items()
+            if key in self.VERIFIED_ORDER_FIELDS
+        }
+
+    def update_verified_order_context(
+        self,
+        customer_id,
+        agent_session_id,
+        *,
+        order_id,
+        status,
+        verified_at,
+    ):
+        session = self._get_owned_session(customer_id, agent_session_id)
+        session["verified_order_id"] = order_id
+        session["verified_order_status"] = status
+        session["verified_order_at"] = verified_at
+
+    def clear_verified_order_context(
+        self,
+        customer_id,
+        agent_session_id,
+        *,
+        expected_verified_at,
+    ):
+        session = self._get_owned_session(customer_id, agent_session_id)
+        if session.get("verified_order_at") != expected_verified_at:
+            raise SupportStateConflictError
+        for field in self.VERIFIED_ORDER_FIELDS:
+            session.pop(field, None)
 
     def update_support_state(
         self,

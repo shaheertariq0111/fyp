@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -12,6 +13,10 @@ from src.repositories.agent_session_repository import SupportStateConflictError
 
 SUPPORT_STATE_TTL = timedelta(minutes=30)
 SUPPORT_STATE_MAX_CLOCK_SKEW = timedelta(seconds=5)
+VERIFIED_ORDER_TTL = SUPPORT_STATE_TTL
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentSessionService:
@@ -82,6 +87,82 @@ class AgentSessionService:
         agent_session_id: str,
     ) -> dict:
         return self.repository.get_support_state(customer_id, agent_session_id)
+
+    def save_verified_order_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        order_id: str,
+        status: str,
+    ) -> dict:
+        if not isinstance(order_id, str) or not order_id.strip():
+            raise ValueError("verified order ID is required")
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError("verified order status is required")
+        verified_at = self._now().isoformat()
+        self.repository.update_verified_order_context(
+            customer_id,
+            agent_session_id,
+            order_id=order_id,
+            status=status,
+            verified_at=verified_at,
+        )
+        return {
+            "verified_order_id": order_id,
+            "verified_order_status": status,
+            "verified_order_at": verified_at,
+        }
+
+    def get_active_verified_order_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> dict:
+        for attempt in range(2):
+            context = self.repository.get_verified_order_context(
+                customer_id,
+                agent_session_id,
+            )
+            if not context:
+                self._log_verified_order_rejection(
+                    customer_id,
+                    agent_session_id,
+                    "missing",
+                )
+                return {}
+            reason = self._verified_order_rejection_reason(context)
+            if reason is None:
+                return context
+            self._log_verified_order_rejection(
+                customer_id,
+                agent_session_id,
+                reason,
+            )
+            try:
+                self.repository.clear_verified_order_context(
+                    customer_id,
+                    agent_session_id,
+                    expected_verified_at=context.get("verified_order_at"),
+                )
+                return {}
+            except SupportStateConflictError:
+                if attempt:
+                    raise
+        return {}
+
+    def clear_verified_order_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        expected_verified_at: str,
+    ) -> None:
+        self.repository.clear_verified_order_context(
+            customer_id,
+            agent_session_id,
+            expected_verified_at=expected_verified_at,
+        )
 
     def save_support_state(
         self,
@@ -171,6 +252,47 @@ class AgentSessionService:
             if previous is not None and now <= previous:
                 now = previous + timedelta(microseconds=1)
         return now.isoformat()
+
+    def _verified_order_rejection_reason(self, context: dict) -> str | None:
+        order_id = context.get("verified_order_id")
+        status = context.get("verified_order_status")
+        verified_at = context.get("verified_order_at")
+        if (
+            not isinstance(order_id, str)
+            or not order_id.strip()
+            or not isinstance(status, str)
+            or not status.strip()
+        ):
+            return "malformed"
+        try:
+            normalized = normalize_ticket_timestamp(verified_at)
+        except (PydanticCustomError, TypeError, ValueError):
+            return "malformed"
+        if normalized != verified_at:
+            return "malformed"
+        timestamp = datetime.fromisoformat(normalized)
+        now = self._now()
+        if timestamp > now + SUPPORT_STATE_MAX_CLOCK_SKEW:
+            return "future_timestamp"
+        if now - timestamp >= VERIFIED_ORDER_TTL:
+            return "expired"
+        return None
+
+    @staticmethod
+    def _log_verified_order_rejection(
+        customer_id: str,
+        agent_session_id: str,
+        reason: str,
+    ) -> None:
+        logger.info(
+            "Verified order context was not used",
+            extra={
+                "event": "verified_order_context_rejected",
+                "actor_id": customer_id,
+                "agent_session_id": agent_session_id,
+                "verified_order_rejection_reason": reason,
+            },
+        )
 
     @staticmethod
     def _valid_support_state(state: dict) -> bool:

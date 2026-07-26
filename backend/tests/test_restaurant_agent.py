@@ -213,6 +213,7 @@ def test_invoke_restaurant_agent_injects_trusted_context():
             context = get_request_context()
             return {
                 "message": message,
+                "current_message": context.current_message,
                 "kwargs": kwargs,
                 "user_id": context.user_id,
                 "session_id": context.agent_session_id,
@@ -240,6 +241,7 @@ def test_invoke_restaurant_agent_injects_trusted_context():
 
     assert result == {
         "message": "hello",
+        "current_message": "hello",
         "kwargs": {"invocation_state": {"source": "test"}},
         "user_id": "trusted-user",
         "session_id": "trusted-session",

@@ -78,6 +78,22 @@ def state_at(sessions_repo, *, age, order_id="ORD-1", description="late"):
     )
 
 
+def verified_order_at(
+    sessions_repo,
+    *,
+    age,
+    order_id="ORD-1",
+    status="delivered",
+):
+    sessions_repo.data["session-1"].update(
+        {
+            "verified_order_id": order_id,
+            "verified_order_status": status,
+            "verified_order_at": (NOW - age).isoformat(),
+        }
+    )
+
+
 @pytest.mark.parametrize(
     ("kwargs", "error_code"),
     [
@@ -158,6 +174,284 @@ def test_valid_order_only_asks_for_description():
     assert response.agent["order_id"] == "ORD-1"
     assert response.user_message == "Please describe what went wrong with your order."
     assert repo.data["session-1"]["pending_order_id"] == "ORD-1"
+
+
+def test_recent_verified_order_is_revalidated_and_used_for_complaint():
+    flow, _, repo, orders, tickets = make_services()
+    put_order(orders)
+    orders.data["ORD-1"]["status"] = "delivered"
+    verified_order_at(repo, age=timedelta(minutes=1))
+
+    response = flow.handle_order_complaint(
+        user_id="user-1",
+        agent_session_id="session-1",
+        request_id="req-verified",
+        description="The order was missing sauce.",
+    )
+
+    assert response.success
+    assert tickets.calls[0]["order_id"] == "ORD-1"
+    assert tickets.calls[0]["description"] == "The order was missing sauce."
+
+
+def test_expired_verified_order_is_not_used_and_description_is_preserved():
+    flow, _, repo, orders, tickets = make_services()
+    put_order(orders)
+    verified_order_at(repo, age=timedelta(minutes=30))
+
+    response = flow.handle_order_complaint(
+        user_id="user-1",
+        agent_session_id="session-1",
+        request_id="req-expired",
+        description="  Missing dip.\nPlease investigate.  ",
+    )
+
+    assert response.next_action == "request_order_id"
+    assert tickets.calls == []
+    assert repo.data["session-1"]["pending_complaint_description"] == (
+        "  Missing dip.\nPlease investigate.  "
+    )
+
+
+def test_verified_order_ownership_mismatch_clears_exact_context(
+    monkeypatch,
+    caplog,
+):
+    flow, sessions, repo, orders, tickets = make_services()
+    put_order(orders, user_id="user-2")
+    verified_order_at(repo, age=timedelta(minutes=1))
+    expected_verified_at = repo.data["session-1"]["verified_order_at"]
+    cleanup_calls = []
+
+    def clear_verified_context(
+        customer_id,
+        agent_session_id,
+        *,
+        expected_verified_at,
+    ):
+        cleanup_calls.append(
+            (customer_id, agent_session_id, expected_verified_at)
+        )
+        repo.clear_verified_order_context(
+            customer_id,
+            agent_session_id,
+            expected_verified_at=expected_verified_at,
+        )
+
+    monkeypatch.setattr(
+        sessions,
+        "clear_verified_order_context",
+        clear_verified_context,
+        raising=False,
+    )
+
+    with caplog.at_level("INFO"):
+        response = flow.handle_order_complaint(
+            user_id="user-1",
+            agent_session_id="session-1",
+            request_id="req-mismatch",
+            description="Wrong item received.",
+        )
+
+    assert response.next_action == "request_order_id"
+    assert response.agent["required_input"] == "order_id"
+    assert tickets.calls == []
+    assert cleanup_calls == [
+        ("user-1", "session-1", expected_verified_at)
+    ]
+    assert "verified_order_id" not in repo.data["session-1"]
+    assert repo.data["session-1"]["pending_complaint_description"] == (
+        "Wrong item received."
+    )
+    rejection = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "complaint_order_context_rejected"
+    )
+    assert rejection.order_context_source == "verified_order_context"
+    assert rejection.order_context_rejection_reason == "ownership_mismatch"
+    assert rejection.verified_context_cleanup_outcome == "succeeded"
+    assert "Wrong item received." not in caplog.text
+
+
+def test_verified_order_cleanup_conflict_preserves_concurrent_replacement(
+    monkeypatch,
+    caplog,
+):
+    flow, sessions, repo, orders, tickets = make_services()
+    put_order(orders, user_id="user-2")
+    verified_order_at(repo, age=timedelta(minutes=1))
+    expected_verified_at = repo.data["session-1"]["verified_order_at"]
+    newer_verified_at = (NOW + timedelta(seconds=1)).isoformat()
+    cleanup_calls = []
+
+    def conflict_on_cleanup(
+        customer_id,
+        agent_session_id,
+        *,
+        expected_verified_at,
+    ):
+        cleanup_calls.append(
+            (customer_id, agent_session_id, expected_verified_at)
+        )
+        repo.data["session-1"].update(
+            {
+                "verified_order_id": "ORD-NEW",
+                "verified_order_status": "preparing",
+                "verified_order_at": newer_verified_at,
+            }
+        )
+        raise SupportStateConflictError
+
+    monkeypatch.setattr(
+        sessions,
+        "clear_verified_order_context",
+        conflict_on_cleanup,
+        raising=False,
+    )
+
+    with caplog.at_level("INFO"):
+        response = flow.handle_order_complaint(
+            user_id="user-1",
+            agent_session_id="session-1",
+            request_id="req-conflict",
+            description="The order was missing sauce.",
+        )
+
+    assert response.next_action == "request_order_id"
+    assert tickets.calls == []
+    assert cleanup_calls == [
+        ("user-1", "session-1", expected_verified_at)
+    ]
+    assert {
+        key: repo.data["session-1"][key]
+        for key in repo.VERIFIED_ORDER_FIELDS
+    } == {
+        "verified_order_id": "ORD-NEW",
+        "verified_order_status": "preparing",
+        "verified_order_at": newer_verified_at,
+    }
+    assert repo.data["session-1"]["pending_complaint_description"] == (
+        "The order was missing sauce."
+    )
+    rejection = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "complaint_order_context_rejected"
+    )
+    assert rejection.verified_context_cleanup_outcome == (
+        "compare_and_set_conflict"
+    )
+    assert "The order was missing sauce." not in caplog.text
+
+
+def test_invalid_pending_order_does_not_clear_verified_context(
+    monkeypatch,
+    caplog,
+):
+    flow, sessions, repo, orders, tickets = make_services()
+    state_at(
+        repo,
+        age=timedelta(minutes=1),
+        order_id="ORD-PENDING",
+        description="Missing sauce.",
+    )
+    verified_order_at(
+        repo,
+        age=timedelta(minutes=1),
+        order_id="ORD-VERIFIED",
+    )
+    verified_before = {
+        key: repo.data["session-1"][key]
+        for key in repo.VERIFIED_ORDER_FIELDS
+    }
+    cleanup_calls = []
+    monkeypatch.setattr(
+        sessions,
+        "clear_verified_order_context",
+        lambda *args, **kwargs: cleanup_calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    with caplog.at_level("INFO"):
+        response = flow.handle_order_complaint(
+            user_id="user-1",
+            agent_session_id="session-1",
+            request_id="req-pending",
+        )
+
+    assert response.next_action == "request_order_id"
+    assert tickets.calls == []
+    assert cleanup_calls == []
+    assert {
+        key: repo.data["session-1"][key]
+        for key in repo.VERIFIED_ORDER_FIELDS
+    } == verified_before
+    assert repo.data["session-1"]["pending_complaint_description"] == (
+        "Missing sauce."
+    )
+    rejection = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "complaint_order_context_rejected"
+    )
+    assert rejection.order_context_source == "pending_support"
+    assert rejection.verified_context_cleanup_outcome == "not_attempted"
+
+
+@pytest.mark.parametrize(
+    ("age", "active"),
+    [
+        (timedelta(minutes=29, seconds=59, milliseconds=999), True),
+        (timedelta(minutes=30), False),
+    ],
+)
+def test_verified_order_expiry_boundary(age, active):
+    _, sessions, repo, _, _ = make_services()
+    verified_order_at(repo, age=age)
+
+    context = sessions.get_active_verified_order_context(
+        "user-1",
+        "session-1",
+    )
+
+    assert bool(context) is active
+    assert ("verified_order_id" in repo.data["session-1"]) is active
+
+
+@pytest.mark.parametrize(
+    ("offset", "active"),
+    [
+        (timedelta(seconds=5), True),
+        (timedelta(seconds=5, microseconds=1), False),
+    ],
+)
+def test_verified_order_future_clock_skew_boundary(offset, active):
+    _, sessions, repo, _, _ = make_services()
+    verified_order_at(repo, age=-offset)
+
+    context = sessions.get_active_verified_order_context(
+        "user-1",
+        "session-1",
+    )
+
+    assert bool(context) is active
+    assert ("verified_order_id" in repo.data["session-1"]) is active
+
+
+def test_malformed_verified_order_context_is_cleared():
+    _, sessions, repo, _, _ = make_services()
+    verified_order_at(repo, age=timedelta(minutes=1))
+    repo.data["session-1"]["verified_order_at"] = "not-a-timestamp"
+
+    assert sessions.get_active_verified_order_context(
+        "user-1",
+        "session-1",
+    ) == {}
+    assert "verified_order_id" not in repo.data["session-1"]
 
 
 @pytest.mark.parametrize("owner", [None, "user-2"])
