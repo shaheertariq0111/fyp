@@ -10,6 +10,11 @@ SUPPORT_STATE_FIELDS = (
     "pending_complaint_description",
     "pending_support_updated_at",
 )
+VERIFIED_ORDER_FIELDS = (
+    "verified_order_id",
+    "verified_order_status",
+    "verified_order_at",
+)
 
 
 class SupportStateConflictError(RuntimeError):
@@ -55,6 +60,96 @@ class AgentSessionRepository:
             for field in SUPPORT_STATE_FIELDS
             if field in session
         }
+
+    def get_verified_order_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> dict:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        return {
+            field: session[field]
+            for field in VERIFIED_ORDER_FIELDS
+            if field in session
+        }
+
+    def update_verified_order_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        order_id: str,
+        status: str,
+        verified_at: str,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        names = {
+            "#pk": "PK",
+            "#customer_id": "customer_id",
+            "#agent_session_id": "agent_session_id",
+            "#order_id": "verified_order_id",
+            "#status": "verified_order_status",
+            "#verified_at": "verified_order_at",
+        }
+        values = {
+            ":customer_id": customer_id,
+            ":agent_session_id": agent_session_id,
+            ":order_id": order_id,
+            ":status": status,
+            ":verified_at": verified_at,
+        }
+        self._update_support_attributes(
+            session,
+            update_expression=(
+                "SET #order_id = :order_id, #status = :status, "
+                "#verified_at = :verified_at"
+            ),
+            condition_expression=(
+                "attribute_exists(#pk) "
+                "AND #customer_id = :customer_id "
+                "AND #agent_session_id = :agent_session_id"
+            ),
+            names=names,
+            values=values,
+        )
+
+    def clear_verified_order_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        expected_verified_at: str | None,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        names = {
+            "#pk": "PK",
+            "#customer_id": "customer_id",
+            "#agent_session_id": "agent_session_id",
+            "#order_id": "verified_order_id",
+            "#status": "verified_order_status",
+            "#verified_at": "verified_order_at",
+        }
+        values = {
+            ":customer_id": customer_id,
+            ":agent_session_id": agent_session_id,
+        }
+        condition = (
+            "attribute_exists(#pk) "
+            "AND #customer_id = :customer_id "
+            "AND #agent_session_id = :agent_session_id AND "
+        )
+        if expected_verified_at is None:
+            condition += "attribute_not_exists(#verified_at)"
+        else:
+            condition += "#verified_at = :expected_verified_at"
+            values[":expected_verified_at"] = expected_verified_at
+        self._update_support_attributes(
+            session,
+            update_expression="REMOVE #order_id, #status, #verified_at",
+            condition_expression=condition,
+            names=names,
+            values=values,
+        )
 
     def update_support_state(
         self,

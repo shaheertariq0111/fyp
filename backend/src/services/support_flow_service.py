@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from src.models.ticket import MAX_DESCRIPTION_LENGTH
 from src.models.tool_responses import ToolResponse
 from src.repositories.agent_session_repository import (
     SessionNotFoundError,
     SupportStateConflictError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SupportFlowService:
@@ -82,7 +86,11 @@ class SupportFlowService:
             merged_order_id = (
                 supplied_order_id
                 if supplied_order_id is not None
-                else state.get("pending_order_id")
+                else self._resolve_implicit_order_id(
+                    user_id,
+                    agent_session_id,
+                    state.get("pending_order_id"),
+                )
             )
             merged_description = (
                 supplied_description
@@ -155,6 +163,69 @@ class SupportFlowService:
                 )
             return response
         return self._conflict()
+
+    def _resolve_implicit_order_id(
+        self,
+        user_id: str,
+        agent_session_id: str,
+        pending_order_id: str | None,
+    ) -> str | None:
+        source = "pending_support"
+        candidate = pending_order_id
+        verified_at = None
+        if candidate is None:
+            source = "verified_order_context"
+            verified = self.agent_sessions.get_active_verified_order_context(
+                user_id,
+                agent_session_id,
+            )
+            candidate = verified.get("verified_order_id")
+            verified_at = verified.get("verified_order_at")
+        if not isinstance(candidate, str) or not candidate.strip():
+            return None
+        order = self.orders.get_by_order_id(candidate)
+        if not order or order.get("user_id") != user_id:
+            rejection_reason = (
+                "order_missing"
+                if not order
+                else "ownership_mismatch"
+            )
+            cleanup_outcome = "not_attempted"
+            if (
+                source == "verified_order_context"
+                and isinstance(verified_at, str)
+            ):
+                try:
+                    self.agent_sessions.clear_verified_order_context(
+                        user_id,
+                        agent_session_id,
+                        expected_verified_at=verified_at,
+                    )
+                    cleanup_outcome = "succeeded"
+                except SupportStateConflictError:
+                    cleanup_outcome = "compare_and_set_conflict"
+            logger.info(
+                "Implicit complaint order context was rejected",
+                extra={
+                    "event": "complaint_order_context_rejected",
+                    "actor_id": user_id,
+                    "agent_session_id": agent_session_id,
+                    "order_context_source": source,
+                    "order_context_rejection_reason": rejection_reason,
+                    "verified_context_cleanup_outcome": cleanup_outcome,
+                },
+            )
+            return None
+        logger.info(
+            "Implicit complaint order context was used",
+            extra={
+                "event": "complaint_order_context_used",
+                "actor_id": user_id,
+                "agent_session_id": agent_session_id,
+                "order_context_source": source,
+            },
+        )
+        return candidate
 
     def _cancel(
         self,

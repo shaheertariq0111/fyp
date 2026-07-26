@@ -14,6 +14,7 @@ class AgentRequestContext:
     customer_phone: str | None = None
     channel: str = "web"
     request_id: str | None = None
+    current_message: str | None = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 

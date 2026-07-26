@@ -105,6 +105,41 @@ class SupportFlowStub:
         return self.response
 
 
+class VerifiedSessionStub:
+    def __init__(self, error=None):
+        self.saved = []
+        self.error = error
+
+    def save_verified_order_context(
+        self,
+        customer_id,
+        agent_session_id,
+        *,
+        order_id,
+        status,
+    ):
+        if self.error:
+            raise self.error
+        self.saved.append(
+            {
+                "customer_id": customer_id,
+                "agent_session_id": agent_session_id,
+                "order_id": order_id,
+                "status": status,
+            }
+        )
+
+
+class OrderStatusStub:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def get_order_status(self, user_id, order_id=None):
+        self.calls.append((user_id, order_id))
+        return self.response
+
+
 def test_support_tool_signatures_expose_only_customer_inputs():
     assert list(inspect.signature(tools.create_human_assistance_ticket).parameters) == [
         "description"
@@ -121,6 +156,208 @@ def test_support_tool_signatures_expose_only_customer_inputs():
         "properties"
     ]["action"]
     assert action_schema["enum"] == ["continue", "cancel"]
+    assert "current_message" not in repr(
+        tools.create_human_assistance_ticket.tool_spec
+    )
+    assert "current_message" not in repr(tools.handle_order_complaint.tool_spec)
+
+
+@pytest.mark.parametrize(
+    ("data", "agent", "expected"),
+    [
+        (
+            {"order": {"order_id": "ORD-1", "status": "delivered"}},
+            {"selected_order_id": "ORD-1"},
+            ("ORD-1", "delivered"),
+        ),
+        (
+            {"orders": [{"order_id": "ORD-2", "status": "confirmed"}]},
+            {"selected_order_id": "ORD-2"},
+            ("ORD-2", "confirmed"),
+        ),
+        (
+            {
+                "orders": [
+                    {"order_id": "ORD-1", "status": "confirmed"},
+                    {"order_id": "ORD-2", "status": "preparing"},
+                ]
+            },
+            {"selected_order_id": None},
+            None,
+        ),
+    ],
+)
+def test_order_status_persists_only_one_deterministically_selected_order(
+    monkeypatch,
+    data,
+    agent,
+    expected,
+):
+    response = ToolResponse.ok(
+        data=data,
+        user_message="Order status.",
+        agent=agent,
+    )
+    sessions = VerifiedSessionStub()
+    orders = OrderStatusStub(response)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(orders=orders, agent_sessions=sessions),
+    )
+
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        result = tools.get_order_status()
+
+    assert result["success"] is True
+    if expected is None:
+        assert sessions.saved == []
+    else:
+        assert sessions.saved[0]["order_id"] == expected[0]
+        assert sessions.saved[0]["status"] == expected[1]
+
+
+def test_failed_order_status_does_not_persist_verified_context(monkeypatch):
+    sessions = VerifiedSessionStub()
+    orders = OrderStatusStub(
+        ToolResponse.error(
+            error_code="ORDER_NOT_FOUND",
+            user_message="I couldn't find that order.",
+        )
+    )
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(orders=orders, agent_sessions=sessions),
+    )
+
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        result = tools.get_order_status("ORD-UNOWNED")
+
+    assert result["error_code"] == "ORDER_NOT_FOUND"
+    assert sessions.saved == []
+
+
+def test_verified_context_persistence_failure_keeps_successful_order_status(
+    monkeypatch,
+    caplog,
+):
+    response = ToolResponse.ok(
+        data={"order": {"order_id": "ORD-1", "status": "delivered"}},
+        user_message="Your order has been delivered.",
+        agent={"selected_order_id": "ORD-1"},
+    )
+    sessions = VerifiedSessionStub(RuntimeError("private persistence detail"))
+    orders = OrderStatusStub(response)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(orders=orders, agent_sessions=sessions),
+    )
+    context = AgentRequestContext(
+        "user-1",
+        "session-1",
+        current_message="Where is my order?",
+        customer_phone="+10000000000",
+    )
+
+    with caplog.at_level(logging.ERROR), request_context(context):
+        result = tools.get_order_status("ORD-1")
+
+    assert result == response.model_dump(exclude_none=True)
+    failure = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "verified_order_context_persistence_failed"
+    )
+    assert failure.exception_type == "RuntimeError"
+    assert failure.actor_id == "user-1"
+    assert failure.agent_session_id == "session-1"
+    assert not hasattr(failure, "customer_message")
+    assert "private persistence detail" not in failure.getMessage()
+    assert "Where is my order?" not in caplog.text
+    assert "+10000000000" not in caplog.text
+
+
+def test_verified_status_context_redirects_wrong_human_tool_to_linked_complaint(
+    monkeypatch,
+):
+    now = datetime(2026, 7, 24, 10, 0, tzinfo=timezone.utc)
+    session_repository = MemoryAgentSessionRepository()
+    session_repository.data["session-1"] = {
+        "PK": "CUSTOMER#user-1",
+        "SK": "SESSION#session-1",
+        "agent_session_id": "session-1",
+        "customer_id": "user-1",
+    }
+    sessions = AgentSessionService(
+        session_repository,
+        SimpleNamespace(),
+        SimpleNamespace(agent_session_ttl_hours=24),
+        clock=lambda: now,
+    )
+    status = OrderStatusStub(ToolResponse.ok(
+        data={"order": {"order_id": "ORD-1", "status": "delivered"}},
+        user_message="Order status.",
+        agent={"selected_order_id": "ORD-1"},
+    ))
+    orders = MemoryOrderRepository()
+    orders.data["ORD-1"] = {
+        "order_id": "ORD-1",
+        "user_id": "user-1",
+        "status": "delivered",
+    }
+    tickets = TicketStub(ToolResponse.ok(
+        data={
+            "ticket": {
+                "ticket_id": "TKT-20260724-C0FFEE",
+                "ticket_type": "order_complaint",
+                "order_id": "ORD-1",
+                "order_status_snapshot": "delivered",
+            }
+        },
+        user_message="Exact complaint response.",
+    ))
+    flow = SupportFlowService(sessions, tickets, orders)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(
+            orders=status,
+            agent_sessions=sessions,
+            tickets=tickets,
+            support_flow=flow,
+        ),
+    )
+
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        tools.get_order_status("ORD-1")
+
+    assert session_repository.data["session-1"] == {
+        "PK": "CUSTOMER#user-1",
+        "SK": "SESSION#session-1",
+        "agent_session_id": "session-1",
+        "customer_id": "user-1",
+        "verified_order_id": "ORD-1",
+        "verified_order_status": "delivered",
+        "verified_order_at": "2026-07-24T10:00:00+00:00",
+    }
+
+    message = "My delivered order was missing two dips."
+    with request_context(AgentRequestContext(
+        "user-1",
+        "session-1",
+        request_id="request-1",
+        current_message=message,
+    )):
+        result = tools.create_human_assistance_ticket()
+
+    assert tickets.human_calls == []
+    assert tickets.complaint_calls[0]["order_id"] == "ORD-1"
+    assert tickets.complaint_calls[0]["description"] == message
+    assert result["data"]["ticket"]["order_status_snapshot"] == "delivered"
+    assert result["user_message"] == "Exact complaint response."
 
 
 def test_support_tool_descriptions_distinguish_complaints_from_generic_help():
@@ -184,6 +421,306 @@ def test_human_assistance_tool_uses_trusted_context_and_records_write(monkeypatc
     assert "trusted-request" not in repr(result)
     assert context.tool_calls[-1]["tool_name"] == "create_human_assistance_ticket"
     assert context.tool_calls[-1]["is_write"] is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "My order was missing sauce and dip.",
+        "I received the wrong item in my order.",
+        "The food in my order was cold.",
+        "My order arrived after a very late delivery.",
+        "The food arrived damaged and spilled.",
+        "I want a refund for this order.",
+        "Please replace the missing item from my order.",
+    ],
+)
+def test_human_tool_redirects_clear_order_complaints(
+    monkeypatch,
+    message,
+):
+    tickets = TicketStub()
+    authoritative = ToolResponse.ok(
+        data={
+            "ticket": {
+                "ticket_id": "TKT-20260724-C0FFEE",
+                "ticket_type": "order_complaint",
+                "order_id": "ORD-1",
+            }
+        },
+        user_message="Exact complaint response.",
+    )
+    flow = SupportFlowStub(authoritative)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets, support_flow=flow),
+    )
+    context = AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id="trusted-request",
+        current_message=message,
+    )
+
+    with request_context(context):
+        result = tools.create_human_assistance_ticket(description=message)
+
+    assert tickets.human_calls == []
+    assert flow.calls[0]["description"] == message
+    assert flow.calls[0]["request_id"] == "trusted-request"
+    assert result["user_message"] == "Exact complaint response."
+    assert result["data"]["ticket"]["ticket_type"] == "order_complaint"
+
+
+def test_reproduced_wrong_tool_uses_raw_message_when_description_was_omitted(
+    monkeypatch,
+):
+    tickets = TicketStub()
+    flow = SupportFlowStub(
+        ToolResponse.ok(user_message="Exact redirected complaint response.")
+    )
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets, support_flow=flow),
+    )
+    raw_message = (
+        "I have a complaint about my order. "
+        "The order was received but it was missing sauces."
+    )
+
+    with request_context(AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id="request-1",
+        current_message=raw_message,
+    )):
+        result = tools.create_human_assistance_ticket()
+
+    assert tickets.human_calls == []
+    assert flow.calls[0]["description"] == (
+        "The order was received but it was missing sauces."
+    )
+    assert result["user_message"] == "Exact redirected complaint response."
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_description"),
+    [
+        (
+            "I have a complaint about my order. The dip was missing.",
+            "The dip was missing.",
+        ),
+        (
+            "I want to speak to a person because my order arrived cold.",
+            "My order arrived cold.",
+        ),
+        (
+            "The order was received but it was missing sauces.",
+            "The order was received but it was missing sauces.",
+        ),
+    ],
+)
+def test_raw_complaint_description_uses_conservative_anchored_cleanup(
+    monkeypatch,
+    message,
+    expected_description,
+):
+    tickets = TicketStub()
+    flow = SupportFlowStub(
+        ToolResponse.ok(user_message="Exact complaint response.")
+    )
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets, support_flow=flow),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1",
+        "session-1",
+        request_id="request-1",
+        current_message=f"  {message}  ",
+    )):
+        tools.create_human_assistance_ticket()
+
+    assert flow.calls[0]["description"] == expected_description
+
+
+def test_order_complaint_precedes_request_to_speak_to_person(monkeypatch):
+    tickets = TicketStub()
+    flow = SupportFlowStub(
+        ToolResponse.ok(user_message="Exact complaint response.")
+    )
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets, support_flow=flow),
+    )
+    message = (
+        "Please let me speak to a person because my order was missing a dip."
+    )
+
+    with request_context(AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id="request-1",
+        current_message=message,
+    )):
+        tools.create_human_assistance_ticket(description=message)
+
+    assert tickets.human_calls == []
+    assert len(flow.calls) == 1
+
+
+def test_explicit_generic_human_request_is_not_redirected(monkeypatch):
+    tickets = TicketStub()
+    flow = SupportFlowStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets, support_flow=flow),
+    )
+    message = "Please connect me to a human support agent."
+
+    with request_context(AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id="request-1",
+        current_message=message,
+    )):
+        result = tools.create_human_assistance_ticket()
+
+    assert len(tickets.human_calls) == 1
+    assert flow.calls == []
+    assert result["user_message"] == "Authoritative ticket message."
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I need a manager.",
+        "Let me speak to a manager.",
+        "Connect me to the manager.",
+        "Can a manager call me?",
+        "Transfer me to a manager.",
+    ],
+)
+def test_explicit_manager_requests_create_human_assistance(
+    monkeypatch,
+    message,
+):
+    tickets = TicketStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1",
+        "session-1",
+        request_id="request-1",
+        current_message=message,
+    )):
+        tools.create_human_assistance_ticket()
+
+    assert len(tickets.human_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "What does the branch manager recommend?",
+        "Is the manager special available?",
+        "I received the message, but some information is missing.",
+    ],
+)
+def test_non_support_manager_and_received_missing_phrases_do_not_write(
+    monkeypatch,
+    message,
+):
+    tickets = TicketStub()
+    flow = SupportFlowStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets, support_flow=flow),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1",
+        "session-1",
+        request_id="request-1",
+        current_message=message,
+    )):
+        result = tools.create_human_assistance_ticket()
+
+    assert result["next_action"] == "clarify_support_intent"
+    assert tickets.human_calls == []
+    assert flow.calls == []
+
+
+def test_ambiguous_human_tool_request_does_not_write_ticket(monkeypatch):
+    tickets = TicketStub()
+    flow = SupportFlowStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets, support_flow=flow),
+    )
+
+    with request_context(AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        request_id="request-1",
+        current_message="I need help.",
+    )):
+        result = tools.create_human_assistance_ticket()
+
+    assert tickets.human_calls == []
+    assert flow.calls == []
+    assert result["next_action"] == "clarify_support_intent"
+    assert result["user_message"] == (
+        "Is this about a problem with an order, or would you like to speak "
+        "to a person?"
+    )
+
+
+def test_ambiguous_human_tool_preserves_existing_pending_complaint(monkeypatch):
+    tickets = TicketStub()
+    flow = SupportFlowStub()
+    sessions = MemoryAgentSessionRepository()
+    sessions.data["session-1"] = {
+        "PK": "CUSTOMER#user-1",
+        "SK": "SESSION#session-1",
+        "agent_session_id": "session-1",
+        "customer_id": "user-1",
+        "pending_support_intent": "order_complaint",
+        "pending_order_id": "ORD-1",
+        "pending_complaint_description": "Missing dip.",
+        "pending_support_updated_at": "2026-07-24T10:00:00+00:00",
+    }
+    before = dict(sessions.data["session-1"])
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(tickets=tickets, support_flow=flow),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1",
+        "session-1",
+        request_id="request-2",
+        current_message="I need help.",
+    )):
+        result = tools.create_human_assistance_ticket()
+
+    assert result["next_action"] == "clarify_support_intent"
+    assert sessions.data["session-1"] == before
+    assert tickets.human_calls == []
+    assert flow.calls == []
 
 
 def test_customer_ticket_tool_results_and_recording_preserve_safe_boundary(

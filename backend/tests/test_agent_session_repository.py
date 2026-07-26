@@ -328,3 +328,65 @@ def test_owner_bound_update_changes_only_pending_support_fields():
         "pending_complaint_description",
         "pending_support_updated_at",
     }
+
+
+def test_verified_order_context_uses_separate_owner_bound_fields():
+    repository, table = repository_with_session(
+        verified_order_id="ORD-1",
+        verified_order_status="delivered",
+        verified_order_at="2026-07-24T10:00:00+00:00",
+    )
+
+    assert repository.get_verified_order_context("cust-1", "session-1") == {
+        "verified_order_id": "ORD-1",
+        "verified_order_status": "delivered",
+        "verified_order_at": "2026-07-24T10:00:00+00:00",
+    }
+
+    repository.update_verified_order_context(
+        "cust-1",
+        "session-1",
+        order_id="ORD-2",
+        status="confirmed",
+        verified_at="2026-07-24T10:05:00+00:00",
+    )
+
+    call = table.update_calls[0]
+    assert set(call["ExpressionAttributeNames"].values()) == {
+        "PK",
+        "customer_id",
+        "agent_session_id",
+        "verified_order_id",
+        "verified_order_status",
+        "verified_order_at",
+    }
+    assert call["ExpressionAttributeValues"][":order_id"] == "ORD-2"
+    assert call["ExpressionAttributeValues"][":status"] == "confirmed"
+    assert call["ExpressionAttributeValues"][":verified_at"] == (
+        "2026-07-24T10:05:00+00:00"
+    )
+    assert "#customer_id = :customer_id" in call["ConditionExpression"]
+    assert "#agent_session_id = :agent_session_id" in call["ConditionExpression"]
+
+
+def test_verified_order_cleanup_is_compare_and_set():
+    repository, table = repository_with_session(
+        verified_order_id="ORD-1",
+        verified_order_status="delivered",
+        verified_order_at="2026-07-24T10:00:00+00:00",
+    )
+
+    repository.clear_verified_order_context(
+        "cust-1",
+        "session-1",
+        expected_verified_at="2026-07-24T10:00:00+00:00",
+    )
+
+    call = table.update_calls[0]
+    assert call["UpdateExpression"] == (
+        "REMOVE #order_id, #status, #verified_at"
+    )
+    assert "#verified_at = :expected_verified_at" in call["ConditionExpression"]
+    assert call["ExpressionAttributeValues"][":expected_verified_at"] == (
+        "2026-07-24T10:00:00+00:00"
+    )
