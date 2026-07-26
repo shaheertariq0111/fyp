@@ -123,6 +123,30 @@ def test_support_tool_signatures_expose_only_customer_inputs():
     assert action_schema["enum"] == ["continue", "cancel"]
 
 
+def test_support_tool_descriptions_distinguish_complaints_from_generic_help():
+    complaint_description = tools.handle_order_complaint.tool_spec[
+        "description"
+    ].lower()
+    human_description = tools.create_human_assistance_ticket.tool_spec[
+        "description"
+    ].lower()
+
+    for complaint_kind in (
+        "missing item",
+        "wrong item",
+        "damaged",
+        "cold",
+        "late delivery",
+        "refund",
+        "replacement",
+    ):
+        assert complaint_kind in complaint_description
+    assert "recent get_order_status" in complaint_description
+    assert "order complaint" in complaint_description
+    assert "not for complaints about an order" in human_description
+    assert "generic" in human_description
+
+
 def test_human_assistance_tool_uses_trusted_context_and_records_write(monkeypatch):
     tickets = TicketStub()
     monkeypatch.setattr(

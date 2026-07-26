@@ -257,7 +257,11 @@ def _human_assistance_context_error() -> ToolResponse | None:
 def create_human_assistance_ticket(
     description: str | None = None,
 ) -> dict:
-    """Create or reuse a human-assistance ticket for the trusted session."""
+    """Create generic human help for the trusted session.
+
+    Use for requests to speak to a person or obtain general assistance. This is
+    not for complaints about an order; use handle_order_complaint for those.
+    """
     context = get_request_context()
 
     def create_ticket() -> ToolResponse:
@@ -288,7 +292,16 @@ def handle_order_complaint(
     description: str | None = None,
     action: Literal["continue", "cancel"] = "continue",
 ) -> dict:
-    """Continue or cancel the trusted session's persisted complaint flow."""
+    """Create, continue, or cancel a trusted order complaint.
+
+    Use for an order-related missing item, wrong item, damaged food, cold food,
+    late delivery, quality complaint, or refund or replacement request. Reuse
+    the one selected order ID from a recent get_order_status result when
+    available, and pass complaint details from the same customer message.
+    Ownership is validated by the backend. If the order or description is
+    missing, this persists the complaint flow and safely requests only the
+    missing input.
+    """
     context = get_request_context()
     return _result(
         "handle_order_complaint",

@@ -289,6 +289,31 @@ def test_system_prompt_defines_deterministic_support_ticket_behavior():
     assert "Unrelated menu or order questions must be handled normally" in prompt
 
 
+def test_system_prompt_routes_order_problems_before_human_assistance():
+    prompt = " ".join(RESTAURANT_AGENT_SYSTEM_PROMPT.split()).lower()
+
+    assert "order complaint routing takes precedence" in prompt
+    assert "missing item" in prompt
+    assert "wrong item" in prompt
+    assert "damaged" in prompt
+    assert "cold" in prompt
+    assert "late delivery" in prompt
+    assert "refund or replacement" in prompt
+    assert "do not use create_human_assistance_ticket" in prompt
+    assert "generic requests to speak to a person" in prompt
+
+
+def test_system_prompt_reuses_only_unambiguous_trusted_order_context():
+    prompt = " ".join(RESTAURANT_AGENT_SYSTEM_PROMPT.split())
+
+    assert "selected_order_id" in prompt
+    assert "exactly one relevant order" in prompt
+    assert "same handle_order_complaint call" in prompt
+    assert "multiple plausible orders" in prompt
+    assert "ask the customer to identify the Order ID" in prompt
+    assert "Do not create an unlinked human-assistance ticket" in prompt
+
+
 def test_invoke_restaurant_agent_builds_session_scoped_agent(monkeypatch):
     captured = {}
 
