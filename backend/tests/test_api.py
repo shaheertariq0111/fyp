@@ -120,6 +120,54 @@ class IdentityServices:
         }
 
 
+class WhatsAppIdentityServices(IdentityServices):
+    def __init__(self):
+        super().__init__()
+        self.profiles = {}
+        self.customers = SimpleNamespace(update_profile=self.update_profile)
+
+    def update_profile(
+        self,
+        customer_id,
+        *,
+        display_name=None,
+        phone_number=None,
+        channel,
+        phone_verified,
+    ):
+        profile = {
+            "customer_id": customer_id,
+            "display_name": display_name,
+            "phone_e164": phone_number,
+            "phone_verified": phone_verified,
+        }
+        self.profiles[customer_id] = profile
+        return ToolResponse.ok(
+            data={"customer": profile},
+            user_message="Customer details were saved.",
+        )
+
+    def resolve(self, **kwargs):
+        customer_id = kwargs.get("customer_id") or "anonymous"
+        session_id = kwargs.get("requested_session_id") or "session"
+        customer = self.profiles.get(customer_id, {
+            "customer_id": customer_id,
+            "display_name": None,
+            "phone_e164": None,
+            "phone_verified": False,
+        })
+        return {
+            "session": {
+                "agent_session_id": session_id,
+                "customer_id": customer_id,
+                "channel": kwargs.get("channel", "web"),
+                "expires_at": 123,
+            },
+            "customer": customer,
+            "rotated": False,
+        }
+
+
 def support_tool_call(result, *, name="handle_order_complaint", is_write=True):
     return ToolCallResult(
         tool_name=name,
@@ -481,6 +529,7 @@ def stub_agent_client(monkeypatch, raw_result, text: str | None = None, captured
 def default_identity_services(monkeypatch):
     services = IdentityServices()
     monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(main, "get_settings", make_test_settings)
 
 
 def test_health_route():
@@ -554,6 +603,339 @@ def test_chat_route_invokes_agent_and_sanitizes(monkeypatch):
     assert payload["text"] == "Hello!"
     assert payload["tool_calls"] == []
     assert payload["write_succeeded"] is False
+
+
+def test_agentflo_whatsapp_meta_payload_invokes_existing_agent_flow(
+    monkeypatch,
+):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(message={"content": [{"text": "Welcome!"}]}),
+        text="Welcome!",
+        captured=captured,
+    )
+    payload = {
+        "entry": [{
+            "changes": [{
+                "value": {
+                    "metadata": {"phone_number_id": "sender-100"},
+                    "contacts": [{
+                        "wa_id": "10000000000",
+                        "profile": {"name": "Synthetic Customer"},
+                    }],
+                    "messages": [{
+                        "from": "10000000000",
+                        "id": "wamid.synthetic-1",
+                        "type": "text",
+                        "text": {"body": "Hello from WhatsApp"},
+                    }],
+                }
+            }]
+        }]
+    }
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "success": True,
+        "reply": "Welcome!",
+        "text": "Welcome!",
+        "request_id": "req-1",
+        "session_id": body["session_id"],
+    }
+    assert body["session_id"].startswith("whatsapp-")
+    assert "10000000000" not in body["session_id"]
+    assert captured["message"] == "Hello from WhatsApp"
+    assert captured["channel"] == "whatsapp"
+    assert captured["customer_name"] == "Synthetic Customer"
+    assert captured["customer_phone"] == "+10000000000"
+    assert captured["user_id"].startswith("whatsapp-")
+    assert captured["agent_session_id"] == body["session_id"]
+
+
+def test_agentflo_whatsapp_simple_payload_extracts_aliases(monkeypatch):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(),
+        text="Simple reply.",
+        captured=captured,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "content": "Track my order",
+            "user_number": "+10000000001",
+            "profile_name": "Synthetic User",
+            "sender_id": "sender-200",
+            "message_id": "simple-message-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Simple reply."
+    assert response.json()["text"] == "Simple reply."
+    assert captured["message"] == "Track my order"
+    assert captured["customer_phone"] == "+10000000001"
+    assert captured["customer_name"] == "Synthetic User"
+    assert captured["channel"] == "whatsapp"
+
+
+def test_agentflo_whatsapp_configured_secret_allows_correct_header(
+    monkeypatch,
+):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "get_settings",
+        lambda: make_test_settings(
+            agentflo_whatsapp_webhook_secret="configured-webhook-secret",
+        ),
+    )
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Authenticated.")
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Hello",
+            "from": "10000000000",
+            "id": "authenticated-message-1",
+        },
+        headers={
+            "X-Agentflo-Webhook-Secret": "configured-webhook-secret",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Authenticated."
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"X-Agentflo-Webhook-Secret": "wrong-webhook-secret"},
+    ],
+)
+def test_agentflo_whatsapp_configured_secret_rejects_missing_or_wrong_header(
+    monkeypatch,
+    headers,
+):
+    monkeypatch.setattr(
+        main,
+        "get_settings",
+        lambda: make_test_settings(
+            agentflo_whatsapp_webhook_secret="configured-webhook-secret",
+        ),
+    )
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(),
+        text="Must not run.",
+        captured=captured,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Hello",
+            "from": "10000000000",
+            "id": "unauthorized-message-1",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == {
+        "error_code": "AGENTFLO_WEBHOOK_UNAUTHORIZED",
+        "user_message": "Webhook authentication failed.",
+    }
+    assert captured == {}
+
+
+def test_agentflo_whatsapp_authentication_logs_exclude_secrets(
+    monkeypatch,
+    caplog,
+):
+    configured_secret = "configured-private-webhook-secret"
+    provided_secret = "provided-private-webhook-secret"
+    monkeypatch.setattr(
+        main,
+        "get_settings",
+        lambda: make_test_settings(
+            agentflo_whatsapp_webhook_secret=configured_secret,
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        response = client().post(
+            "/api/channels/agentflo/whatsapp",
+            json={"message": "Hello"},
+            headers={"X-Agentflo-Webhook-Secret": provided_secret},
+        )
+
+    assert response.status_code == 401
+    assert configured_secret not in caplog.text
+    assert provided_secret not in caplog.text
+
+
+def test_agentflo_whatsapp_without_configured_secret_warns_and_remains_open(
+    monkeypatch,
+    caplog,
+):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "get_settings",
+        lambda: make_test_settings(
+            agentflo_whatsapp_webhook_secret="",
+        ),
+    )
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Local response.")
+
+    with caplog.at_level(logging.WARNING):
+        response = client().post(
+            "/api/channels/agentflo/whatsapp",
+            json={
+                "message": "Hello",
+                "from": "10000000000",
+                "id": "local-message-1",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Local response."
+    warning = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "agentflo_whatsapp_unauthenticated"
+    )
+    assert warning.channel == "whatsapp"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"statuses": [{"id": "wamid.status-1", "status": "delivered"}]},
+        {"message": "   ", "from": "10000000000"},
+        {
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "metadata": {"phone_number_id": "sender-100"},
+                        "statuses": [{"id": "wamid.status-2"}],
+                    }
+                }]
+            }]
+        },
+    ],
+)
+def test_agentflo_whatsapp_non_text_events_are_ignored(monkeypatch, payload):
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(),
+        text="Must not be invoked.",
+        captured=captured,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "ignored": True,
+        "reason": "no_text_message",
+    }
+    assert captured == {}
+
+
+def test_agentflo_whatsapp_rejects_non_object_payload():
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=["not", "an", "object"],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "error_code": "INVALID_WEBHOOK_PAYLOAD",
+        "user_message": "The webhook payload is invalid.",
+    }
+
+
+def test_agentflo_whatsapp_runtime_failure_is_sanitized(monkeypatch):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+
+    class FailingAgentRuntimeClient:
+        def invoke(self, request):
+            raise RuntimeError("private provider failure")
+
+    monkeypatch.setattr(
+        main,
+        "get_agent_runtime_client",
+        lambda: FailingAgentRuntimeClient(),
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Hello",
+            "from": "10000000000",
+            "id": "simple-message-2",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": False,
+        "error_code": "AGENT_INVOCATION_FAILED",
+        "reply": "I couldn't complete that request right now.",
+    }
+    assert "private provider failure" not in response.text
+
+
+def test_agentflo_whatsapp_logs_do_not_include_message_or_full_phone(
+    monkeypatch,
+    caplog,
+):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Safe reply.")
+    private_message = "My private synthetic message"
+    full_phone = "+10000000000"
+
+    with caplog.at_level(logging.INFO):
+        response = client().post(
+            "/api/channels/agentflo/whatsapp",
+            json={
+                "body": private_message,
+                "phone_number": full_phone,
+                "id": "simple-message-3",
+            },
+        )
+
+    assert response.status_code == 200
+    assert private_message not in caplog.text
+    assert full_phone not in caplog.text
 
 
 def test_chat_dictionary_runtime_result_preserves_tool_calls(monkeypatch):

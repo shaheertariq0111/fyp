@@ -108,6 +108,30 @@ def test_valid_session_is_reused_and_last_seen_updates():
     assert second["rotated"] is False
 
 
+def test_trusted_channel_can_create_and_reuse_stable_requested_session():
+    _, sessions = services()
+    stable_session_id = "whatsapp-0123456789abcdef"
+
+    first = sessions.resolve(
+        requested_session_id=stable_session_id,
+        customer_id="cust-whatsapp",
+        channel="whatsapp",
+        allow_requested_session_creation=True,
+    )
+    second = sessions.resolve(
+        requested_session_id=stable_session_id,
+        customer_id="cust-whatsapp",
+        channel="whatsapp",
+        preserve_expired=True,
+        allow_requested_session_creation=True,
+    )
+
+    assert first["session"]["agent_session_id"] == stable_session_id
+    assert first["rotated"] is True
+    assert second["session"]["agent_session_id"] == stable_session_id
+    assert second["rotated"] is False
+
+
 def test_expired_idle_session_rotates():
     _, sessions = services()
     first = sessions.resolve(

@@ -155,6 +155,10 @@ Parameters:
   SessionTokenSecretArn:
     Type: String
     Default: ""
+  AgentfloWhatsAppWebhookSecretArn:
+    Type: String
+    Default: ""
+    Description: Optional Secrets Manager ARN for the Agentflo WhatsApp webhook shared secret.
   AdminUsername:
     Type: String
     Default: ""
@@ -174,6 +178,7 @@ Conditions:
   HasAgentCoreSessionTokenSecret: !Not [!Equals [!Ref AgentCoreSessionTokenSecretArn, ""]]
   HasKnowledgeBaseId: !Not [!Equals [!Ref KnowledgeBaseId, ""]]
   HasSessionTokenSecret: !Not [!Equals [!Ref SessionTokenSecretArn, ""]]
+  HasAgentfloWhatsAppWebhookSecret: !Not [!Equals [!Ref AgentfloWhatsAppWebhookSecretArn, ""]]
   HasAdminPasswordSecret: !Not [!Equals [!Ref AdminPasswordSecretArn, ""]]
   HasAdminSessionSecret: !Not [!Equals [!Ref AdminSessionSecretArn, ""]]
   HasAgentCoreGuardrailId: !Not [!Equals [!Ref AgentCoreGuardrailId, ""]]
@@ -365,6 +370,21 @@ Resources:
             Action:
               - secretsmanager:GetSecretValue
             Resource: !Ref SessionTokenSecretArn
+
+  EcsTaskExecutionAgentfloWhatsAppWebhookSecretPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAgentfloWhatsAppWebhookSecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-execution-agentflo-whatsapp-webhook-secret
+      Roles:
+        - !Ref EcsTaskExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref AgentfloWhatsAppWebhookSecretArn
 
   EcsTaskExecutionAdminPasswordPolicy:
     Type: AWS::IAM::Policy
@@ -888,6 +908,11 @@ Resources:
               - HasSessionTokenSecret
               - Name: SESSION_TOKEN_SECRET
                 ValueFrom: !Ref SessionTokenSecretArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasAgentfloWhatsAppWebhookSecret
+              - Name: AGENTFLO_WHATSAPP_WEBHOOK_SECRET
+                ValueFrom: !Ref AgentfloWhatsAppWebhookSecretArn
               - !Ref AWS::NoValue
             - !If
               - HasAdminPasswordSecret
