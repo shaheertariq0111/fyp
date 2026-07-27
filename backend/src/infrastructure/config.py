@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     audit_table_name: str = Field(min_length=1)
     tickets_table_name: str = Field(min_length=1)
     support_phone_number: str = ""
+    agentflo_whatsapp_webhook_secret: str = ""
 
     menu_site_base_url: HttpUrl
     session_token_secret: str = Field(min_length=16)

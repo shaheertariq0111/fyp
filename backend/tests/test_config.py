@@ -54,6 +54,21 @@ def test_ticket_settings_are_loaded():
     assert settings.support_phone_number == "+1 555 0100"
 
 
+def test_agentflo_webhook_secret_is_optional_and_configurable(monkeypatch):
+    assert make_test_settings().agentflo_whatsapp_webhook_secret == ""
+    assert make_test_settings(
+        agentflo_whatsapp_webhook_secret="synthetic-shared-secret",
+    ).agentflo_whatsapp_webhook_secret == "synthetic-shared-secret"
+    monkeypatch.setenv(
+        "AGENTFLO_WHATSAPP_WEBHOOK_SECRET",
+        "synthetic-environment-secret",
+    )
+    assert Settings(
+        _env_file=None,
+        **BASE,
+    ).agentflo_whatsapp_webhook_secret == "synthetic-environment-secret"
+
+
 def test_support_phone_has_no_invented_default():
     values = dict(BASE)
     values.pop("support_phone_number")
@@ -67,6 +82,13 @@ def test_backend_env_example_documents_ticket_configuration():
     ).read_text(encoding="utf-8")
     assert "TICKETS_TABLE_NAME=" in example
     assert "SUPPORT_PHONE_NUMBER=" in example
+
+
+def test_backend_env_example_documents_agentflo_webhook_secret():
+    example = (
+        Path(__file__).resolve().parents[1] / ".env.example"
+    ).read_text(encoding="utf-8")
+    assert "AGENTFLO_WHATSAPP_WEBHOOK_SECRET=" in example
 
 
 def test_frontend_cors_origins_default_to_local_in_tests():

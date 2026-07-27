@@ -110,6 +110,13 @@ def environment_map(template):
     }
 
 
+def container_secrets(template):
+    definitions = template["Resources"]["BackendTaskDefinition"]["Properties"][
+        "ContainerDefinitions"
+    ]
+    return definitions[0]["Secrets"]
+
+
 def ticket_statement(template, policy_name):
     statements = template["Resources"][policy_name]["Properties"][
         "PolicyDocument"
@@ -242,6 +249,52 @@ def test_ecs_environment_uses_effective_ticket_parameters():
         assert existing in environment
 
 
+def test_agentflo_whatsapp_webhook_secret_is_conditionally_injected():
+    template = load_template()
+    parameter = template["Parameters"]["AgentfloWhatsAppWebhookSecretArn"]
+
+    assert parameter["Type"] == "String"
+    assert parameter["Default"] == ""
+    assert template["Conditions"]["HasAgentfloWhatsAppWebhookSecret"] == {
+        "Fn::Not": [
+            {
+                "Fn::Equals": [
+                    {"Ref": "AgentfloWhatsAppWebhookSecretArn"},
+                    "",
+                ]
+            }
+        ]
+    }
+
+    assert {
+        "Fn::If": [
+            "HasAgentfloWhatsAppWebhookSecret",
+            {
+                "Name": "AGENTFLO_WHATSAPP_WEBHOOK_SECRET",
+                "ValueFrom": {"Ref": "AgentfloWhatsAppWebhookSecretArn"},
+            },
+            {"Ref": "AWS::NoValue"},
+        ]
+    } in container_secrets(template)
+    assert "AGENTFLO_WHATSAPP_WEBHOOK_SECRET" not in environment_map(template)
+
+    policy = template["Resources"][
+        "EcsTaskExecutionAgentfloWhatsAppWebhookSecretPolicy"
+    ]
+    assert policy["Condition"] == "HasAgentfloWhatsAppWebhookSecret"
+    statement = policy["Properties"]["PolicyDocument"]["Statement"]
+    assert statement == [
+        {
+            "Effect": "Allow",
+            "Action": ["secretsmanager:GetSecretValue"],
+            "Resource": {"Ref": "AgentfloWhatsAppWebhookSecretArn"},
+        }
+    ]
+    serialized = json.dumps(policy)
+    assert '"Resource": "*"' not in serialized
+    assert "secretsmanager:*" not in serialized
+
+
 def test_existing_table_mode_has_no_conditional_resource_reference():
     template = load_template()
 
@@ -264,6 +317,7 @@ def test_tracked_parameter_example_includes_ticket_configuration_without_phone()
     assert example["TicketsTableName"] == "fyp-dev-Tickets"
     assert example["CreateTicketsTable"] == "false"
     assert example["SupportPhoneNumber"] == ""
+    assert example["AgentfloWhatsAppWebhookSecretArn"] == ""
 
 
 def test_agentcore_example_and_deployment_wire_ticket_environment():

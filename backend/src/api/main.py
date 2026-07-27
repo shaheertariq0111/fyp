@@ -10,7 +10,16 @@ import time
 import uuid
 from typing import Any, Callable
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import (
+    Body,
+    Cookie,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
@@ -40,10 +49,12 @@ from src.api.schemas import (
     MenuOrderRequest,
     ToolCallResult,
 )
+from src.api.whatsapp import WhatsAppInboundMessage, extract_whatsapp_message
 from src.infrastructure.config import get_settings, parse_frontend_cors_origins
 from src.infrastructure.config import CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS
 from src.infrastructure.logging import configure_logging
 from src.models.ticket import MAX_ACTOR_LENGTH
+from src.services.customer_service import CustomerService
 from src.services.ticket_service import (
     AdminTicketError,
     project_customer_ticket_view,
@@ -634,13 +645,20 @@ def _has_active_state(services, user_id: str, session_id: str | None) -> bool:
     return False
 
 
-def _resolve_identity(request) -> tuple[AgentRequestContext, dict[str, Any]]:
+def _resolve_identity(
+    request,
+    *,
+    allow_requested_session_creation: bool = False,
+) -> tuple[AgentRequestContext, dict[str, Any]]:
     services = get_services()
     requested_customer_id = _customer_identity(request)
-    preserve_expired = _has_active_state(
-        services,
-        requested_customer_id or getattr(request, "user_id", "anonymous"),
-        getattr(request, "session_id", None),
+    preserve_expired = (
+        allow_requested_session_creation
+        or _has_active_state(
+            services,
+            requested_customer_id or getattr(request, "user_id", "anonymous"),
+            getattr(request, "session_id", None),
+        )
     )
     resolved = services.agent_sessions.resolve(
         requested_session_id=getattr(request, "session_id", None),
@@ -648,6 +666,7 @@ def _resolve_identity(request) -> tuple[AgentRequestContext, dict[str, Any]]:
         channel=getattr(request, "channel", "web") or "web",
         preserve_expired=preserve_expired,
         force_new=getattr(request, "force_new_session", False),
+        allow_requested_session_creation=allow_requested_session_creation,
     )
     session = resolved["session"]
     customer = resolved["customer"]
@@ -1098,10 +1117,16 @@ def admin_monitoring_failed_orders(
     return get_services().orders.admin_failed_orders(limit)
 
 
-@app.post("/api/chat", response_model=ChatSubmitResponse)
-def chat(payload: ChatRequest, http_request: Request, response: Response) -> ChatSubmitResponse:
-    http_request_id = getattr(http_request.state, "http_request_id", None)
-    context, identity_state = _resolve_identity(payload)
+def _process_chat_request(
+    payload: ChatRequest,
+    http_request_id: str | None,
+    *,
+    allow_requested_session_creation: bool = False,
+) -> tuple[dict[str, Any], AgentRequestContext, dict[str, Any]]:
+    context, identity_state = _resolve_identity(
+        payload,
+        allow_requested_session_creation=allow_requested_session_creation,
+    )
     agent_requests = get_services().agent_requests
     record = agent_requests.start_processing(
         actor_id=context.user_id,
@@ -1110,7 +1135,6 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
         channel=context.channel,
         request_payload=payload.model_dump(),
     )
-    response.headers["X-Agent-Request-ID"] = record["request_id"]
     logger.info(
         "Agent request processing started",
         extra={
@@ -1193,6 +1217,101 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
                 "error_code": record.get("error_code"),
             },
         )
+    return record, context, identity_state
+
+
+def _whatsapp_identity(
+    inbound: WhatsAppInboundMessage,
+) -> tuple[str, str]:
+    normalized_phone = (
+        CustomerService.normalize_phone(inbound.customer_number)
+        if inbound.customer_number is not None
+        else None
+    )
+    identity_parts = (
+        [normalized_phone]
+        if normalized_phone is not None
+        else [
+            part
+            for part in (inbound.sender_id, inbound.message_id)
+            if part is not None
+        ]
+    )
+    identity_seed = "|".join(identity_parts) or str(uuid.uuid4())
+    identity_hash = hashlib.sha256(identity_seed.encode()).hexdigest()[:32]
+    customer_id = f"whatsapp-{identity_hash}"
+    session_id = f"whatsapp-{identity_hash}"
+
+    if normalized_phone is not None or inbound.customer_name is not None:
+        profile_result = get_services().customers.update_profile(
+            customer_id,
+            display_name=inbound.customer_name,
+            phone_number=normalized_phone,
+            channel="whatsapp",
+            phone_verified=normalized_phone is not None,
+        )
+        if profile_result.success:
+            profile = profile_result.data.get("customer") or {}
+            actual_customer_id = profile.get("customer_id")
+            if isinstance(actual_customer_id, str) and actual_customer_id:
+                customer_id = actual_customer_id
+    return customer_id, session_id
+
+
+def _agentflo_failure_response() -> dict[str, Any]:
+    return {
+        "success": False,
+        "error_code": "AGENT_INVOCATION_FAILED",
+        "reply": "I couldn't complete that request right now.",
+    }
+
+
+def _require_agentflo_webhook_secret(
+    request: Request,
+    http_request_id: str | None,
+) -> None:
+    configured_secret = get_settings().agentflo_whatsapp_webhook_secret
+    if not configured_secret:
+        logger.warning(
+            "Agentflo WhatsApp webhook authentication is not configured",
+            extra={
+                "event": "agentflo_whatsapp_unauthenticated",
+                "http_request_id": http_request_id,
+                "channel": "whatsapp",
+            },
+        )
+        return
+    provided_secret = request.headers.get("X-Agentflo-Webhook-Secret")
+    if (
+        not isinstance(provided_secret, str)
+        or not hmac.compare_digest(provided_secret, configured_secret)
+    ):
+        logger.warning(
+            "Agentflo WhatsApp webhook authentication failed",
+            extra={
+                "event": "agentflo_whatsapp_authentication_failed",
+                "http_request_id": http_request_id,
+                "channel": "whatsapp",
+                "error_code": "AGENTFLO_WEBHOOK_UNAUTHORIZED",
+            },
+        )
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error_code": "AGENTFLO_WEBHOOK_UNAUTHORIZED",
+                "user_message": "Webhook authentication failed.",
+            },
+        )
+
+
+@app.post("/api/chat", response_model=ChatSubmitResponse)
+def chat(payload: ChatRequest, http_request: Request, response: Response) -> ChatSubmitResponse:
+    http_request_id = getattr(http_request.state, "http_request_id", None)
+    record, context, identity_state = _process_chat_request(
+        payload,
+        http_request_id,
+    )
+    response.headers["X-Agent-Request-ID"] = record["request_id"]
     return ChatSubmitResponse(
         request_id=record["request_id"],
         status=record["status"],
@@ -1201,6 +1320,92 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
         customer_id=context.customer_id,
         customer=identity_state["customer"],
     )
+
+
+@app.post("/api/channels/agentflo/whatsapp")
+def agentflo_whatsapp(
+    http_request: Request,
+    response: Response,
+    payload: Any = Body(...),
+) -> dict[str, Any]:
+    http_request_id = getattr(http_request.state, "http_request_id", None)
+    _require_agentflo_webhook_secret(http_request, http_request_id)
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "INVALID_WEBHOOK_PAYLOAD",
+                "user_message": "The webhook payload is invalid.",
+            },
+        )
+    inbound = extract_whatsapp_message(payload)
+    if inbound is None:
+        logger.info(
+            "Agentflo WhatsApp event ignored",
+            extra={
+                "event": "agentflo_whatsapp_ignored",
+                "http_request_id": http_request_id,
+                "channel": "whatsapp",
+                "reason": "no_text_message",
+            },
+        )
+        return {
+            "success": True,
+            "ignored": True,
+            "reason": "no_text_message",
+        }
+
+    try:
+        customer_id, session_id = _whatsapp_identity(inbound)
+        chat_payload = ChatRequest(
+            message=inbound.text,
+            session_id=session_id,
+            user_id=customer_id,
+            customer_id=customer_id,
+            channel="whatsapp",
+        )
+        record, context, _ = _process_chat_request(
+            chat_payload,
+            http_request_id,
+            allow_requested_session_creation=True,
+        )
+    except Exception as exc:
+        logger.error(
+            "Agentflo WhatsApp processing failed",
+            extra={
+                "event": "agentflo_whatsapp_failed",
+                "http_request_id": http_request_id,
+                "channel": "whatsapp",
+                "exception_type": type(exc).__name__,
+                "error_code": "AGENT_INVOCATION_FAILED",
+            },
+        )
+        return _agentflo_failure_response()
+
+    response.headers["X-Agent-Request-ID"] = record["request_id"]
+    if record.get("status") != "completed":
+        return _agentflo_failure_response()
+    completed = _status_response_from_record(record)
+    if not isinstance(completed.text, str) or not completed.text.strip():
+        return _agentflo_failure_response()
+    logger.info(
+        "Agentflo WhatsApp message completed",
+        extra={
+            "event": "agentflo_whatsapp_completed",
+            "http_request_id": http_request_id,
+            "request_id": record["request_id"],
+            "actor_id": context.user_id,
+            "agent_session_id": context.agent_session_id,
+            "channel": "whatsapp",
+        },
+    )
+    return {
+        "success": True,
+        "reply": completed.text,
+        "text": completed.text,
+        "request_id": record["request_id"],
+        "session_id": context.agent_session_id,
+    }
 
 
 @app.get("/api/chat/{request_id}", response_model=ChatRequestStatusResponse)

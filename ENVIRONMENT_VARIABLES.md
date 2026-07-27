@@ -47,9 +47,14 @@ Injected from Secrets Manager by ECS:
 
 ```text
 SESSION_TOKEN_SECRET
+AGENTFLO_WHATSAPP_WEBHOOK_SECRET
 ADMIN_PASSWORD
 ADMIN_SESSION_SECRET
 ```
+
+`AGENTFLO_WHATSAPP_WEBHOOK_SECRET` is optional in local development. Configure it
+for deployed ECS tasks by passing its Secrets Manager ARN through
+`AgentfloWhatsAppWebhookSecretArn`.
 
 ## AgentCore Runtime
 

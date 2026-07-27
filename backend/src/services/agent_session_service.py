@@ -47,6 +47,7 @@ class AgentSessionService:
         channel: str = "web",
         preserve_expired: bool = False,
         force_new: bool = False,
+        allow_requested_session_creation: bool = False,
     ) -> dict:
         existing = None if force_new or not requested_session_id else self.repository.get(requested_session_id)
         effective_customer_id = customer_id or (existing or {}).get("customer_id")
@@ -60,12 +61,29 @@ class AgentSessionService:
                 existing["expires_at"] = self._expires_at(now)
                 self.repository.save(existing)
                 return {"session": existing, "customer": customer, "rotated": False}
-        session = self._new_session(customer["customer_id"], channel, now)
+        stable_session_id = (
+            requested_session_id
+            if allow_requested_session_creation and not force_new
+            else None
+        )
+        session = self._new_session(
+            customer["customer_id"],
+            channel,
+            now,
+            session_id=stable_session_id,
+        )
         self.repository.create(session)
         return {"session": session, "customer": customer, "rotated": True}
 
-    def _new_session(self, customer_id: str, channel: str, now: datetime) -> dict:
-        session_id = f"{channel}-{uuid.uuid4()}"
+    def _new_session(
+        self,
+        customer_id: str,
+        channel: str,
+        now: datetime,
+        *,
+        session_id: str | None = None,
+    ) -> dict:
+        session_id = session_id or f"{channel}-{uuid.uuid4()}"
         return {
             "PK": f"CUSTOMER#{customer_id}",
             "SK": f"SESSION#{session_id}",

@@ -7,6 +7,7 @@ This file documents the deployment configuration that must be supplied before cr
 Store these sensitive backend values in AWS Secrets Manager:
 
 - `SESSION_TOKEN_SECRET`
+- `AGENTFLO_WHATSAPP_WEBHOOK_SECRET`
 - `ADMIN_PASSWORD`
 - `ADMIN_SESSION_SECRET`
 
@@ -24,6 +25,12 @@ aws secretsmanager create-secret `
   --name fyp-dev/session-token-secret `
   --description "FYP backend session token signing secret" `
   --secret-string "<replace-with-locally-generated-session-token-secret>"
+
+aws secretsmanager create-secret `
+  --region us-east-1 `
+  --name fyp-dev/agentflo-whatsapp-webhook-secret `
+  --description "FYP Agentflo WhatsApp webhook shared secret" `
+  --secret-string "<replace-with-locally-generated-webhook-secret>"
 
 aws secretsmanager create-secret `
   --region us-east-1 `
@@ -51,6 +58,7 @@ Expected output for each command:
 Capture the returned ARNs locally and pass them to the CloudFormation parameters:
 
 - `SessionTokenSecretArn`
+- `AgentfloWhatsAppWebhookSecretArn`
 - `AdminPasswordSecretArn`
 - `AdminSessionSecretArn`
 
@@ -65,6 +73,11 @@ aws secretsmanager put-secret-value `
   --region us-east-1 `
   --secret-id fyp-dev/session-token-secret `
   --secret-string "<replace-with-new-session-token-secret>"
+
+aws secretsmanager put-secret-value `
+  --region us-east-1 `
+  --secret-id fyp-dev/agentflo-whatsapp-webhook-secret `
+  --secret-string "<replace-with-new-webhook-secret>"
 
 aws secretsmanager put-secret-value `
   --region us-east-1 `
@@ -128,6 +141,7 @@ The ECS task execution role injects these secrets into the container:
 
 ```text
 SESSION_TOKEN_SECRET <- SessionTokenSecretArn
+AGENTFLO_WHATSAPP_WEBHOOK_SECRET <- AgentfloWhatsAppWebhookSecretArn
 ADMIN_PASSWORD <- AdminPasswordSecretArn
 ADMIN_SESSION_SECRET <- AdminSessionSecretArn
 ```
