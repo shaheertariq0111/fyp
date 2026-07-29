@@ -5,6 +5,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
+AGENTFLO_WHATSAPP_IDEMPOTENCY_TTL_HOURS = 24
+
+
 class AgentRequestService:
     def __init__(self, repository, settings):
         self.repository = repository
@@ -67,6 +70,22 @@ class AgentRequestService:
 
     def get(self, request_id: str) -> dict[str, Any] | None:
         return self.repository.get(request_id)
+
+    def claim_agentflo_whatsapp_message(self, message_id: str) -> bool:
+        now = self._now()
+        now_epoch = int(now.timestamp())
+        marker = {
+            "PK": f"agentflo-whatsapp-message:{message_id}",
+            "SK": "IDEMPOTENCY",
+            "record_type": "agentflo_whatsapp_message_idempotency",
+            "created_at": now.isoformat(),
+            "expires_at": now_epoch
+            + AGENTFLO_WHATSAPP_IDEMPOTENCY_TTL_HOURS * 60 * 60,
+        }
+        return self.repository.claim_idempotency_key(
+            marker,
+            now_epoch=now_epoch,
+        )
 
     def _get_required(self, request_id: str) -> dict[str, Any]:
         request = self.repository.get(request_id)

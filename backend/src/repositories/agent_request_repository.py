@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from botocore.exceptions import ClientError
+
 from .base import from_dynamodb, to_dynamodb
 
 
@@ -22,3 +24,28 @@ class AgentRequestRepository:
 
     def save(self, request: dict) -> None:
         self.table.put_item(Item=to_dynamodb(request))
+
+    def claim_idempotency_key(
+        self,
+        marker: dict,
+        *,
+        now_epoch: int,
+    ) -> bool:
+        try:
+            self.table.put_item(
+                Item=to_dynamodb(marker),
+                ConditionExpression=(
+                    "attribute_not_exists(PK) OR expires_at <= :now"
+                ),
+                ExpressionAttributeValues={
+                    ":now": now_epoch,
+                },
+            )
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return False
+            raise
+        return True
