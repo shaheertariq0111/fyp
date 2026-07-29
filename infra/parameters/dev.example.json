@@ -108,6 +108,26 @@
     "ParameterValue": ""
   },
   {
+    "ParameterKey": "AgentfloGatewayBaseUrl",
+    "ParameterValue": "https://communicationgateway.agentflo.com"
+  },
+  {
+    "ParameterKey": "AgentfloGatewayTenantId",
+    "ParameterValue": "fyp-dev"
+  },
+  {
+    "ParameterKey": "AgentfloGatewayAgentId",
+    "ParameterValue": "restaurant-agent"
+  },
+  {
+    "ParameterKey": "AgentfloGatewayActorId",
+    "ParameterValue": "restaurant-agent"
+  },
+  {
+    "ParameterKey": "AgentfloGatewayApiKeySecretArn",
+    "ParameterValue": ""
+  },
+  {
     "ParameterKey": "AdminUsername",
     "ParameterValue": ""
   },

@@ -295,6 +295,71 @@ def test_agentflo_whatsapp_webhook_secret_is_conditionally_injected():
     assert "secretsmanager:*" not in serialized
 
 
+def test_agentflo_gateway_configuration_and_secret_are_wired_to_ecs():
+    template = load_template()
+    parameters = template["Parameters"]
+    environment = environment_map(template)
+
+    assert parameters["AgentfloGatewayBaseUrl"]["Default"] == (
+        "https://communicationgateway.agentflo.com"
+    )
+    assert parameters["AgentfloGatewayTenantId"]["Default"] == "fyp-dev"
+    assert parameters["AgentfloGatewayAgentId"]["Default"] == (
+        "restaurant-agent"
+    )
+    assert parameters["AgentfloGatewayActorId"]["Default"] == (
+        "restaurant-agent"
+    )
+    assert parameters["AgentfloGatewayApiKeySecretArn"]["Default"] == ""
+    assert template["Conditions"]["HasAgentfloGatewayApiKeySecret"] == {
+        "Fn::Not": [
+            {
+                "Fn::Equals": [
+                    {"Ref": "AgentfloGatewayApiKeySecretArn"},
+                    "",
+                ]
+            }
+        ]
+    }
+
+    assert environment["AGENTFLO_GATEWAY_BASE_URL"] == {
+        "Ref": "AgentfloGatewayBaseUrl"
+    }
+    assert environment["AGENTFLO_GATEWAY_TENANT_ID"] == {
+        "Ref": "AgentfloGatewayTenantId"
+    }
+    assert environment["AGENTFLO_GATEWAY_AGENT_ID"] == {
+        "Ref": "AgentfloGatewayAgentId"
+    }
+    assert environment["AGENTFLO_GATEWAY_ACTOR_ID"] == {
+        "Ref": "AgentfloGatewayActorId"
+    }
+    assert "AGENTFLO_GATEWAY_API_KEY" not in environment
+    assert {
+        "Fn::If": [
+            "HasAgentfloGatewayApiKeySecret",
+            {
+                "Name": "AGENTFLO_GATEWAY_API_KEY",
+                "ValueFrom": {"Ref": "AgentfloGatewayApiKeySecretArn"},
+            },
+            {"Ref": "AWS::NoValue"},
+        ]
+    } in container_secrets(template)
+
+    policy = template["Resources"]["EcsTaskExecutionAgentfloGatewayApiKeyPolicy"]
+    assert policy["Condition"] == "HasAgentfloGatewayApiKeySecret"
+    assert policy["Properties"]["PolicyDocument"]["Statement"] == [
+        {
+            "Effect": "Allow",
+            "Action": ["secretsmanager:GetSecretValue"],
+            "Resource": {"Ref": "AgentfloGatewayApiKeySecretArn"},
+        }
+    ]
+    serialized = json.dumps(policy)
+    assert '"Resource": "*"' not in serialized
+    assert "secretsmanager:*" not in serialized
+
+
 def test_existing_table_mode_has_no_conditional_resource_reference():
     template = load_template()
 
@@ -318,6 +383,13 @@ def test_tracked_parameter_example_includes_ticket_configuration_without_phone()
     assert example["CreateTicketsTable"] == "false"
     assert example["SupportPhoneNumber"] == ""
     assert example["AgentfloWhatsAppWebhookSecretArn"] == ""
+    assert example["AgentfloGatewayBaseUrl"] == (
+        "https://communicationgateway.agentflo.com"
+    )
+    assert example["AgentfloGatewayTenantId"] == "fyp-dev"
+    assert example["AgentfloGatewayAgentId"] == "restaurant-agent"
+    assert example["AgentfloGatewayActorId"] == "restaurant-agent"
+    assert example["AgentfloGatewayApiKeySecretArn"] == ""
 
 
 def test_agentcore_example_and_deployment_wire_ticket_environment():
