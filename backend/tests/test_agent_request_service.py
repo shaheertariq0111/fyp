@@ -9,6 +9,8 @@ from src.services.agent_request_service import AgentRequestService
 class MemoryAgentRequestRepository:
     def __init__(self):
         self.data = {}
+        self.idempotency_claims = []
+        self.idempotency_result = True
 
     def create(self, request):
         assert request["request_id"] not in self.data
@@ -20,6 +22,10 @@ class MemoryAgentRequestRepository:
 
     def save(self, request):
         self.data[request["request_id"]] = deepcopy(request)
+
+    def claim_idempotency_key(self, marker, *, now_epoch):
+        self.idempotency_claims.append((deepcopy(marker), now_epoch))
+        return self.idempotency_result
 
 
 def service():
@@ -75,3 +81,29 @@ def test_agent_request_service_fails_with_safe_error_payload():
 def test_agent_request_service_missing_request_raises_structured_code():
     with pytest.raises(ValueError, match="AGENT_REQUEST_NOT_FOUND"):
         service().complete("missing", {"text": "hi"})
+
+
+def test_agentflo_whatsapp_message_claim_uses_exact_key_and_24_hour_ttl(
+    monkeypatch,
+):
+    requests = service()
+    now = requests._now()
+    monkeypatch.setattr(requests, "_now", lambda: now)
+
+    assert requests.claim_agentflo_whatsapp_message("wamid.synthetic-1")
+    marker, now_epoch = requests.repository.idempotency_claims[0]
+    assert marker == {
+        "PK": "agentflo-whatsapp-message:wamid.synthetic-1",
+        "SK": "IDEMPOTENCY",
+        "record_type": "agentflo_whatsapp_message_idempotency",
+        "created_at": now.isoformat(),
+        "expires_at": int(now.timestamp()) + 24 * 60 * 60,
+    }
+    assert now_epoch == int(now.timestamp())
+
+
+def test_agentflo_whatsapp_duplicate_claim_is_reported():
+    requests = service()
+    requests.repository.idempotency_result = False
+
+    assert not requests.claim_agentflo_whatsapp_message("wamid.synthetic-1")

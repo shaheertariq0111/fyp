@@ -49,6 +49,15 @@ class MemoryAgentRequestService:
     def __init__(self):
         self.requests = {}
         self.next_id = 1
+        self.agentflo_message_ids = set()
+        self.agentflo_claims = []
+
+    def claim_agentflo_whatsapp_message(self, message_id):
+        self.agentflo_claims.append(message_id)
+        if message_id in self.agentflo_message_ids:
+            return False
+        self.agentflo_message_ids.add(message_id)
+        return True
 
     def start_processing(self, **kwargs):
         request_id = f"req-{self.next_id}"
@@ -124,6 +133,8 @@ class WhatsAppIdentityServices(IdentityServices):
     def __init__(self):
         super().__init__()
         self.profiles = {}
+        self.profile_update_count = 0
+        self.resolve_count = 0
         self.customers = SimpleNamespace(update_profile=self.update_profile)
 
     def update_profile(
@@ -135,6 +146,7 @@ class WhatsAppIdentityServices(IdentityServices):
         channel,
         phone_verified,
     ):
+        self.profile_update_count += 1
         profile = {
             "customer_id": customer_id,
             "display_name": display_name,
@@ -148,6 +160,7 @@ class WhatsAppIdentityServices(IdentityServices):
         )
 
     def resolve(self, **kwargs):
+        self.resolve_count += 1
         customer_id = kwargs.get("customer_id") or "anonymous"
         session_id = kwargs.get("requested_session_id") or "session"
         customer = self.profiles.get(customer_id, {
@@ -679,6 +692,123 @@ def test_agentflo_whatsapp_meta_payload_invokes_existing_agent_flow(
     assert captured["customer_phone"] == "+10000000000"
     assert captured["user_id"].startswith("whatsapp-")
     assert captured["agent_session_id"] == body["session_id"]
+    assert services.agent_requests.agentflo_claims == ["wamid.synthetic-1"]
+
+
+def test_agentflo_whatsapp_duplicate_is_ignored_before_side_effects(
+    monkeypatch,
+    caplog,
+):
+    services = WhatsAppIdentityServices()
+    gateway = StubAgentfloGateway(configured=True)
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+    invocations = []
+
+    class CountingAgentRuntimeClient:
+        def invoke(self, request):
+            invocations.append(request)
+            return AgentInvocationResult(
+                text="Single synthetic reply.",
+                raw_result=SimpleNamespace(),
+            )
+
+    monkeypatch.setattr(
+        main,
+        "get_agent_runtime_client",
+        lambda: CountingAgentRuntimeClient(),
+    )
+    private_message = "Private duplicate synthetic message"
+    full_phone = "+10000000000"
+    payload = {
+        "message": private_message,
+        "from": full_phone,
+        "sender_id": "sender-synthetic-duplicate",
+        "message_id": "wamid.synthetic-duplicate",
+    }
+
+    first = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=payload,
+    )
+    with caplog.at_level(logging.INFO, logger="src.api.main"):
+        duplicate = client().post(
+            "/api/channels/agentflo/whatsapp",
+            json=payload,
+        )
+
+    assert first.status_code == 200
+    assert first.json()["success"] is True
+    assert duplicate.status_code == 200
+    assert duplicate.json() == {
+        "success": True,
+        "ignored": True,
+        "duplicate": True,
+        "reason": "duplicate_message",
+    }
+    assert len(invocations) == 1
+    assert len(gateway.calls) == 1
+    assert len(services.agent_requests.requests) == 1
+    assert services.profile_update_count == 1
+    assert services.resolve_count == 1
+    assert services.agent_requests.agentflo_claims == [
+        "wamid.synthetic-duplicate",
+        "wamid.synthetic-duplicate",
+    ]
+    assert private_message not in caplog.text
+    assert full_phone not in caplog.text
+    duplicate_log = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "agentflo_whatsapp_duplicate"
+    )
+    assert duplicate_log.idempotency_status == "duplicate"
+
+
+def test_agentflo_whatsapp_missing_message_id_processes_with_safe_warning(
+    monkeypatch,
+    caplog,
+):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(),
+        text="Processed without message ID.",
+        captured=captured,
+    )
+    private_message = "Private message without identifier"
+    full_phone = "+10000000000"
+
+    with caplog.at_level(logging.WARNING, logger="src.api.main"):
+        response = client().post(
+            "/api/channels/agentflo/whatsapp",
+            json={
+                "message": private_message,
+                "from": full_phone,
+                "sender_id": "sender-synthetic-no-id",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Processed without message ID."
+    assert captured["message"] == private_message
+    assert services.agent_requests.agentflo_claims == []
+    assert private_message not in caplog.text
+    assert full_phone not in caplog.text
+    warning = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "agentflo_whatsapp_idempotency_skipped"
+    )
+    assert warning.reason == "missing_message_id"
 
 
 def test_agentflo_whatsapp_sends_generated_reply_through_gateway(monkeypatch):

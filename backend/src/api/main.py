@@ -1387,6 +1387,53 @@ def agentflo_whatsapp(
             "reason": "no_text_message",
         }
 
+    if inbound.message_id is None:
+        logger.warning(
+            "Agentflo WhatsApp idempotency skipped",
+            extra={
+                "event": "agentflo_whatsapp_idempotency_skipped",
+                "http_request_id": http_request_id,
+                "channel": "whatsapp",
+                "reason": "missing_message_id",
+                "idempotency_status": "skipped",
+            },
+        )
+    else:
+        try:
+            claimed = get_services().agent_requests.claim_agentflo_whatsapp_message(
+                inbound.message_id
+            )
+        except Exception as exc:
+            logger.error(
+                "Agentflo WhatsApp idempotency claim failed",
+                extra={
+                    "event": "agentflo_whatsapp_idempotency_failed",
+                    "http_request_id": http_request_id,
+                    "channel": "whatsapp",
+                    "exception_type": type(exc).__name__,
+                    "idempotency_status": "failed",
+                    "error_code": "AGENT_INVOCATION_FAILED",
+                },
+            )
+            return _agentflo_failure_response()
+        if not claimed:
+            logger.info(
+                "Agentflo WhatsApp duplicate ignored",
+                extra={
+                    "event": "agentflo_whatsapp_duplicate",
+                    "http_request_id": http_request_id,
+                    "channel": "whatsapp",
+                    "reason": "duplicate_message",
+                    "idempotency_status": "duplicate",
+                },
+            )
+            return {
+                "success": True,
+                "ignored": True,
+                "duplicate": True,
+                "reason": "duplicate_message",
+            }
+
     try:
         customer_id, session_id = _whatsapp_identity(inbound)
         chat_payload = ChatRequest(
