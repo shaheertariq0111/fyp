@@ -54,6 +54,7 @@ from src.infrastructure.config import get_settings, parse_frontend_cors_origins
 from src.infrastructure.config import CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS
 from src.infrastructure.logging import configure_logging
 from src.models.ticket import MAX_ACTOR_LENGTH
+from src.services.agentflo_gateway_service import AgentfloGatewayService
 from src.services.customer_service import CustomerService
 from src.services.ticket_service import (
     AdminTicketError,
@@ -1266,6 +1267,37 @@ def _agentflo_failure_response() -> dict[str, Any]:
     }
 
 
+def _agentflo_gateway_service() -> AgentfloGatewayService:
+    settings = get_settings()
+    return AgentfloGatewayService(
+        base_url=settings.agentflo_gateway_base_url,
+        api_key=settings.agentflo_gateway_api_key,
+        tenant_id=settings.agentflo_gateway_tenant_id,
+        agent_id=settings.agentflo_gateway_agent_id,
+        actor_id=settings.agentflo_gateway_actor_id,
+    )
+
+
+def _agentflo_outbound_response(
+    *,
+    reply: str,
+    request_id: str,
+    session_id: str,
+    outbound: dict[str, Any],
+) -> dict[str, Any]:
+    response = {
+        "success": bool(outbound.get("sent") or outbound.get("skipped")),
+        "reply": reply,
+        "text": reply,
+        "request_id": request_id,
+        "session_id": session_id,
+        "outbound": outbound,
+    }
+    if not response["success"]:
+        response["error_code"] = "AGENTFLO_OUTBOUND_FAILED"
+    return response
+
+
 def _require_agentflo_webhook_secret(
     request: Request,
     http_request_id: str | None,
@@ -1388,6 +1420,59 @@ def agentflo_whatsapp(
     completed = _status_response_from_record(record)
     if not isinstance(completed.text, str) or not completed.text.strip():
         return _agentflo_failure_response()
+    gateway = _agentflo_gateway_service()
+    if not gateway.configured:
+        outbound = {
+            "sent": False,
+            "skipped": True,
+            "reason": "gateway_not_configured",
+        }
+    elif inbound.sender_id is None or inbound.customer_number is None:
+        outbound = {
+            "sent": False,
+            "error_code": "AGENTFLO_OUTBOUND_FAILED",
+        }
+        logger.warning(
+            "Agentflo outbound gateway request rejected",
+            extra={
+                "event": "agentflo_outbound_failed",
+                "http_request_id": http_request_id,
+                "request_id": record["request_id"],
+                "actor_id": context.user_id,
+                "agent_session_id": context.agent_session_id,
+                "channel": "whatsapp",
+                "gateway_stage": "validation",
+                "error_code": "AGENTFLO_OUTBOUND_FAILED",
+            },
+        )
+    else:
+        try:
+            outbound = gateway.send_text(
+                customer_number=inbound.customer_number,
+                conversation_id=context.agent_session_id,
+                sender_id=inbound.sender_id,
+                text=completed.text,
+                request_id=record["request_id"],
+            )
+        except Exception as exc:
+            outbound = {
+                "sent": False,
+                "error_code": "AGENTFLO_OUTBOUND_FAILED",
+            }
+            logger.error(
+                "Agentflo outbound gateway delivery failed",
+                extra={
+                    "event": "agentflo_outbound_failed",
+                    "http_request_id": http_request_id,
+                    "request_id": record["request_id"],
+                    "actor_id": context.user_id,
+                    "agent_session_id": context.agent_session_id,
+                    "channel": "whatsapp",
+                    "gateway_stage": "unexpected",
+                    "exception_type": type(exc).__name__,
+                    "error_code": "AGENTFLO_OUTBOUND_FAILED",
+                },
+            )
     logger.info(
         "Agentflo WhatsApp message completed",
         extra={
@@ -1399,13 +1484,12 @@ def agentflo_whatsapp(
             "channel": "whatsapp",
         },
     )
-    return {
-        "success": True,
-        "reply": completed.text,
-        "text": completed.text,
-        "request_id": record["request_id"],
-        "session_id": context.agent_session_id,
-    }
+    return _agentflo_outbound_response(
+        reply=completed.text,
+        request_id=record["request_id"],
+        session_id=context.agent_session_id,
+        outbound=outbound,
+    )
 
 
 @app.get("/api/chat/{request_id}", response_model=ChatRequestStatusResponse)

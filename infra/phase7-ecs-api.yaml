@@ -159,6 +159,22 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional Secrets Manager ARN for the Agentflo WhatsApp webhook shared secret.
+  AgentfloGatewayBaseUrl:
+    Type: String
+    Default: https://communicationgateway.agentflo.com
+  AgentfloGatewayTenantId:
+    Type: String
+    Default: fyp-dev
+  AgentfloGatewayAgentId:
+    Type: String
+    Default: restaurant-agent
+  AgentfloGatewayActorId:
+    Type: String
+    Default: restaurant-agent
+  AgentfloGatewayApiKeySecretArn:
+    Type: String
+    Default: ""
+    Description: Optional Secrets Manager ARN for the Agentflo Communication Gateway API key.
   AdminUsername:
     Type: String
     Default: ""
@@ -179,6 +195,7 @@ Conditions:
   HasKnowledgeBaseId: !Not [!Equals [!Ref KnowledgeBaseId, ""]]
   HasSessionTokenSecret: !Not [!Equals [!Ref SessionTokenSecretArn, ""]]
   HasAgentfloWhatsAppWebhookSecret: !Not [!Equals [!Ref AgentfloWhatsAppWebhookSecretArn, ""]]
+  HasAgentfloGatewayApiKeySecret: !Not [!Equals [!Ref AgentfloGatewayApiKeySecretArn, ""]]
   HasAdminPasswordSecret: !Not [!Equals [!Ref AdminPasswordSecretArn, ""]]
   HasAdminSessionSecret: !Not [!Equals [!Ref AdminSessionSecretArn, ""]]
   HasAgentCoreGuardrailId: !Not [!Equals [!Ref AgentCoreGuardrailId, ""]]
@@ -385,6 +402,21 @@ Resources:
             Action:
               - secretsmanager:GetSecretValue
             Resource: !Ref AgentfloWhatsAppWebhookSecretArn
+
+  EcsTaskExecutionAgentfloGatewayApiKeyPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAgentfloGatewayApiKeySecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-execution-agentflo-gateway-api-key
+      Roles:
+        - !Ref EcsTaskExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref AgentfloGatewayApiKeySecretArn
 
   EcsTaskExecutionAdminPasswordPolicy:
     Type: AWS::IAM::Policy
@@ -875,6 +907,14 @@ Resources:
               Value: !Ref TicketsTableName
             - Name: SUPPORT_PHONE_NUMBER
               Value: !Ref SupportPhoneNumber
+            - Name: AGENTFLO_GATEWAY_BASE_URL
+              Value: !Ref AgentfloGatewayBaseUrl
+            - Name: AGENTFLO_GATEWAY_TENANT_ID
+              Value: !Ref AgentfloGatewayTenantId
+            - Name: AGENTFLO_GATEWAY_AGENT_ID
+              Value: !Ref AgentfloGatewayAgentId
+            - Name: AGENTFLO_GATEWAY_ACTOR_ID
+              Value: !Ref AgentfloGatewayActorId
             - Name: MENU_TABLE_NAME
               Value: !Ref MenuTableName
             - Name: CARTS_TABLE_NAME
@@ -913,6 +953,11 @@ Resources:
               - HasAgentfloWhatsAppWebhookSecret
               - Name: AGENTFLO_WHATSAPP_WEBHOOK_SECRET
                 ValueFrom: !Ref AgentfloWhatsAppWebhookSecretArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasAgentfloGatewayApiKeySecret
+              - Name: AGENTFLO_GATEWAY_API_KEY
+                ValueFrom: !Ref AgentfloGatewayApiKeySecretArn
               - !Ref AWS::NoValue
             - !If
               - HasAdminPasswordSecret

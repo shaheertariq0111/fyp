@@ -168,6 +168,21 @@ class WhatsAppIdentityServices(IdentityServices):
         }
 
 
+class StubAgentfloGateway:
+    def __init__(self, *, configured, result=None):
+        self.configured = configured
+        self.result = result or {
+            "sent": True,
+            "status": "accepted",
+            "providerMessageId": "provider-synthetic-1",
+        }
+        self.calls = []
+
+    def send_text(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
+
+
 def support_tool_call(result, *, name="handle_order_complaint", is_write=True):
     return ToolCallResult(
         tool_name=name,
@@ -650,6 +665,11 @@ def test_agentflo_whatsapp_meta_payload_invokes_existing_agent_flow(
         "text": "Welcome!",
         "request_id": "req-1",
         "session_id": body["session_id"],
+        "outbound": {
+            "sent": False,
+            "skipped": True,
+            "reason": "gateway_not_configured",
+        },
     }
     assert body["session_id"].startswith("whatsapp-")
     assert "10000000000" not in body["session_id"]
@@ -659,6 +679,188 @@ def test_agentflo_whatsapp_meta_payload_invokes_existing_agent_flow(
     assert captured["customer_phone"] == "+10000000000"
     assert captured["user_id"].startswith("whatsapp-")
     assert captured["agent_session_id"] == body["session_id"]
+
+
+def test_agentflo_whatsapp_sends_generated_reply_through_gateway(monkeypatch):
+    services = WhatsAppIdentityServices()
+    gateway = StubAgentfloGateway(configured=True)
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(),
+        text="Synthetic outbound reply.",
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Synthetic inbound message",
+            "from": "+10000000000",
+            "sender_id": "sender-synthetic-1",
+            "message_id": "message-synthetic-1",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["outbound"] == {
+        "sent": True,
+        "status": "accepted",
+        "providerMessageId": "provider-synthetic-1",
+    }
+    assert gateway.calls == [{
+        "customer_number": "+10000000000",
+        "conversation_id": body["session_id"],
+        "sender_id": "sender-synthetic-1",
+        "text": "Synthetic outbound reply.",
+        "request_id": "req-1",
+    }]
+
+
+def test_agentflo_whatsapp_missing_sender_returns_safe_outbound_failure(
+    monkeypatch,
+):
+    services = WhatsAppIdentityServices()
+    gateway = StubAgentfloGateway(configured=True)
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Generated reply.")
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Synthetic inbound message",
+            "from": "10000000000",
+            "message_id": "message-synthetic-2",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": False,
+        "error_code": "AGENTFLO_OUTBOUND_FAILED",
+        "reply": "Generated reply.",
+        "text": "Generated reply.",
+        "request_id": "req-1",
+        "session_id": response.json()["session_id"],
+        "outbound": {
+            "sent": False,
+            "error_code": "AGENTFLO_OUTBOUND_FAILED",
+        },
+    }
+    assert gateway.calls == []
+
+
+def test_agentflo_whatsapp_gateway_not_configured_skips_delivery(monkeypatch):
+    services = WhatsAppIdentityServices()
+    gateway = StubAgentfloGateway(configured=False)
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Local reply.")
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Synthetic inbound message",
+            "from": "10000000000",
+            "sender_id": "sender-synthetic-2",
+            "message_id": "message-synthetic-3",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert response.json()["outbound"] == {
+        "sent": False,
+        "skipped": True,
+        "reason": "gateway_not_configured",
+    }
+    assert gateway.calls == []
+
+
+def test_agentflo_whatsapp_gateway_failure_preserves_reply_safely(monkeypatch):
+    services = WhatsAppIdentityServices()
+    gateway = StubAgentfloGateway(
+        configured=True,
+        result={
+            "sent": False,
+            "error_code": "AGENTFLO_OUTBOUND_FAILED",
+        },
+    )
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Generated reply.")
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Synthetic inbound message",
+            "from": "10000000000",
+            "sender_id": "sender-synthetic-3",
+            "message_id": "message-synthetic-4",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert response.json()["error_code"] == "AGENTFLO_OUTBOUND_FAILED"
+    assert response.json()["reply"] == "Generated reply."
+    assert response.json()["text"] == "Generated reply."
+    assert response.json()["outbound"] == {
+        "sent": False,
+        "error_code": "AGENTFLO_OUTBOUND_FAILED",
+    }
+
+
+def test_agentflo_whatsapp_unexpected_gateway_error_is_sanitized(monkeypatch):
+    services = WhatsAppIdentityServices()
+    gateway = StubAgentfloGateway(configured=True)
+
+    def fail_safely(**kwargs):
+        raise RuntimeError("private gateway failure")
+
+    gateway.send_text = fail_safely
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Generated reply.")
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Synthetic inbound message",
+            "from": "10000000000",
+            "sender_id": "sender-synthetic-4",
+            "message_id": "message-synthetic-5",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert response.json()["error_code"] == "AGENTFLO_OUTBOUND_FAILED"
+    assert response.json()["reply"] == "Generated reply."
+    assert "private gateway failure" not in response.text
 
 
 def test_agentflo_whatsapp_simple_payload_extracts_aliases(monkeypatch):

@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     tickets_table_name: str = Field(min_length=1)
     support_phone_number: str = ""
     agentflo_whatsapp_webhook_secret: str = ""
+    agentflo_gateway_base_url: str = ""
+    agentflo_gateway_api_key: str = ""
+    agentflo_gateway_tenant_id: str = "fyp-dev"
+    agentflo_gateway_agent_id: str = "restaurant-agent"
+    agentflo_gateway_actor_id: str = ""
 
     menu_site_base_url: HttpUrl
     session_token_secret: str = Field(min_length=16)

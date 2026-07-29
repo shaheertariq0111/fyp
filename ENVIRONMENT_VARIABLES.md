@@ -27,6 +27,10 @@ BEDROCK_GUARDRAIL_VERSION=
 KNOWLEDGE_BASE_ID=
 AGENTCORE_RUNTIME_ARN=<agentcore-runtime-arn-or-empty-during-bootstrap>
 AGENT_REQUESTS_TABLE_NAME=<agent-requests-table>
+AGENTFLO_GATEWAY_BASE_URL=https://communicationgateway.agentflo.com
+AGENTFLO_GATEWAY_TENANT_ID=fyp-dev
+AGENTFLO_GATEWAY_AGENT_ID=restaurant-agent
+AGENTFLO_GATEWAY_ACTOR_ID=restaurant-agent
 MENU_TABLE_NAME=<menu-table>
 CARTS_TABLE_NAME=<carts-table>
 ORDERS_TABLE_NAME=<orders-table>
@@ -48,6 +52,7 @@ Injected from Secrets Manager by ECS:
 ```text
 SESSION_TOKEN_SECRET
 AGENTFLO_WHATSAPP_WEBHOOK_SECRET
+AGENTFLO_GATEWAY_API_KEY
 ADMIN_PASSWORD
 ADMIN_SESSION_SECRET
 ```
@@ -55,6 +60,10 @@ ADMIN_SESSION_SECRET
 `AGENTFLO_WHATSAPP_WEBHOOK_SECRET` is optional in local development. Configure it
 for deployed ECS tasks by passing its Secrets Manager ARN through
 `AgentfloWhatsAppWebhookSecretArn`.
+
+`AGENTFLO_GATEWAY_API_KEY` is injected only through ECS Secrets Manager using
+`AgentfloGatewayApiKeySecretArn`. A blank actor ID falls back to the configured
+gateway agent ID.
 
 ## AgentCore Runtime
 

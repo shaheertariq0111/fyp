@@ -8,6 +8,7 @@ Store these sensitive backend values in AWS Secrets Manager:
 
 - `SESSION_TOKEN_SECRET`
 - `AGENTFLO_WHATSAPP_WEBHOOK_SECRET`
+- `AGENTFLO_GATEWAY_API_KEY`
 - `ADMIN_PASSWORD`
 - `ADMIN_SESSION_SECRET`
 
@@ -31,6 +32,12 @@ aws secretsmanager create-secret `
   --name fyp-dev/agentflo-whatsapp-webhook-secret `
   --description "FYP Agentflo WhatsApp webhook shared secret" `
   --secret-string "<replace-with-locally-generated-webhook-secret>"
+
+aws secretsmanager create-secret `
+  --region us-east-1 `
+  --name fyp-dev/agentflo-gateway-api-key `
+  --description "FYP Agentflo Communication Gateway API key" `
+  --secret-string "<replace-with-agentflo-gateway-api-key>"
 
 aws secretsmanager create-secret `
   --region us-east-1 `
@@ -59,6 +66,7 @@ Capture the returned ARNs locally and pass them to the CloudFormation parameters
 
 - `SessionTokenSecretArn`
 - `AgentfloWhatsAppWebhookSecretArn`
+- `AgentfloGatewayApiKeySecretArn`
 - `AdminPasswordSecretArn`
 - `AdminSessionSecretArn`
 
@@ -78,6 +86,11 @@ aws secretsmanager put-secret-value `
   --region us-east-1 `
   --secret-id fyp-dev/agentflo-whatsapp-webhook-secret `
   --secret-string "<replace-with-new-webhook-secret>"
+
+aws secretsmanager put-secret-value `
+  --region us-east-1 `
+  --secret-id fyp-dev/agentflo-gateway-api-key `
+  --secret-string "<replace-with-new-agentflo-gateway-api-key>"
 
 aws secretsmanager put-secret-value `
   --region us-east-1 `
@@ -105,6 +118,10 @@ BEDROCK_GUARDRAIL_VERSION=
 KNOWLEDGE_BASE_ID=
 AGENTCORE_RUNTIME_ARN=<empty-until-AgentCore-runtime-is-created>
 AGENT_REQUESTS_TABLE_NAME=<agent-requests-table>
+AGENTFLO_GATEWAY_BASE_URL=https://communicationgateway.agentflo.com
+AGENTFLO_GATEWAY_TENANT_ID=fyp-dev
+AGENTFLO_GATEWAY_AGENT_ID=restaurant-agent
+AGENTFLO_GATEWAY_ACTOR_ID=restaurant-agent
 MENU_TABLE_NAME=<menu-table>
 CARTS_TABLE_NAME=<carts-table>
 ORDERS_TABLE_NAME=<orders-table>
@@ -142,6 +159,7 @@ The ECS task execution role injects these secrets into the container:
 ```text
 SESSION_TOKEN_SECRET <- SessionTokenSecretArn
 AGENTFLO_WHATSAPP_WEBHOOK_SECRET <- AgentfloWhatsAppWebhookSecretArn
+AGENTFLO_GATEWAY_API_KEY <- AgentfloGatewayApiKeySecretArn
 ADMIN_PASSWORD <- AdminPasswordSecretArn
 ADMIN_SESSION_SECRET <- AdminSessionSecretArn
 ```

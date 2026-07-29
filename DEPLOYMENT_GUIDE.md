@@ -112,6 +112,7 @@ Run only when you are ready to create secrets.
 ```powershell
 aws secretsmanager create-secret --region us-east-1 --name fyp-dev/session-token-secret --description "FYP backend session token signing secret" --secret-string "<replace-with-locally-generated-session-token-secret>"
 aws secretsmanager create-secret --region us-east-1 --name fyp-dev/agentflo-whatsapp-webhook-secret --description "FYP Agentflo WhatsApp webhook shared secret" --secret-string "<replace-with-locally-generated-webhook-secret>"
+aws secretsmanager create-secret --region us-east-1 --name fyp-dev/agentflo-gateway-api-key --description "FYP Agentflo Communication Gateway API key" --secret-string "<replace-with-agentflo-gateway-api-key>"
 aws secretsmanager create-secret --region us-east-1 --name fyp-dev/admin-password --description "FYP admin dashboard password" --secret-string "<replace-with-admin-password>"
 aws secretsmanager create-secret --region us-east-1 --name fyp-dev/admin-session-secret --description "FYP admin session signing secret" --secret-string "<replace-with-locally-generated-admin-session-secret>"
 ```
@@ -152,6 +153,11 @@ aws cloudformation deploy `
     AgentCoreSessionTokenSecretArn= `
     SessionTokenSecretArn=<session-token-secret-arn> `
     AgentfloWhatsAppWebhookSecretArn=<agentflo-whatsapp-webhook-secret-arn> `
+    AgentfloGatewayBaseUrl=https://communicationgateway.agentflo.com `
+    AgentfloGatewayTenantId=fyp-dev `
+    AgentfloGatewayAgentId=restaurant-agent `
+    AgentfloGatewayActorId=restaurant-agent `
+    AgentfloGatewayApiKeySecretArn=<agentflo-gateway-api-key-secret-arn> `
     AdminPasswordSecretArn=<admin-password-secret-arn> `
     AdminSessionSecretArn=<admin-session-secret-arn>
 ```
@@ -272,6 +278,11 @@ aws cloudformation deploy `
     AgentCoreSessionTokenSecretArn=<session-token-secret-arn-if-agentcore-menu-links-are-enabled> `
     SessionTokenSecretArn=<session-token-secret-arn> `
     AgentfloWhatsAppWebhookSecretArn=<agentflo-whatsapp-webhook-secret-arn> `
+    AgentfloGatewayBaseUrl=https://communicationgateway.agentflo.com `
+    AgentfloGatewayTenantId=fyp-dev `
+    AgentfloGatewayAgentId=restaurant-agent `
+    AgentfloGatewayActorId=restaurant-agent `
+    AgentfloGatewayApiKeySecretArn=<agentflo-gateway-api-key-secret-arn> `
     AdminPasswordSecretArn=<admin-password-secret-arn> `
     AdminSessionSecretArn=<admin-session-secret-arn>
 ```
@@ -465,6 +476,11 @@ aws cloudformation deploy `
     AgentCoreSessionTokenSecretArn=<session-token-secret-arn-if-agentcore-menu-links-are-enabled> `
     SessionTokenSecretArn=<session-token-secret-arn> `
     AgentfloWhatsAppWebhookSecretArn=<agentflo-whatsapp-webhook-secret-arn> `
+    AgentfloGatewayBaseUrl=https://communicationgateway.agentflo.com `
+    AgentfloGatewayTenantId=fyp-dev `
+    AgentfloGatewayAgentId=restaurant-agent `
+    AgentfloGatewayActorId=restaurant-agent `
+    AgentfloGatewayApiKeySecretArn=<agentflo-gateway-api-key-secret-arn> `
     AdminPasswordSecretArn=<admin-password-secret-arn> `
     AdminSessionSecretArn=<admin-session-secret-arn>
 ```
@@ -646,6 +662,11 @@ aws cloudformation deploy `
     AgentCoreSessionTokenSecretArn=<session-token-secret-arn-if-agentcore-menu-links-are-enabled> `
     SessionTokenSecretArn=<session-token-secret-arn> `
     AgentfloWhatsAppWebhookSecretArn=<agentflo-whatsapp-webhook-secret-arn> `
+    AgentfloGatewayBaseUrl=https://communicationgateway.agentflo.com `
+    AgentfloGatewayTenantId=fyp-dev `
+    AgentfloGatewayAgentId=restaurant-agent `
+    AgentfloGatewayActorId=restaurant-agent `
+    AgentfloGatewayApiKeySecretArn=<agentflo-gateway-api-key-secret-arn> `
     AdminPasswordSecretArn=<admin-password-secret-arn> `
     AdminSessionSecretArn=<admin-session-secret-arn>
 ```

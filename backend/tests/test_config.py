@@ -69,6 +69,33 @@ def test_agentflo_webhook_secret_is_optional_and_configurable(monkeypatch):
     ).agentflo_whatsapp_webhook_secret == "synthetic-environment-secret"
 
 
+def test_agentflo_gateway_settings_are_optional_and_configurable(monkeypatch):
+    settings = make_test_settings()
+    assert settings.agentflo_gateway_base_url == ""
+    assert settings.agentflo_gateway_api_key == ""
+    assert settings.agentflo_gateway_tenant_id == "fyp-dev"
+    assert settings.agentflo_gateway_agent_id == "restaurant-agent"
+    assert settings.agentflo_gateway_actor_id == ""
+
+    monkeypatch.setenv(
+        "AGENTFLO_GATEWAY_BASE_URL",
+        "https://communicationgateway.agentflo.com",
+    )
+    monkeypatch.setenv("AGENTFLO_GATEWAY_API_KEY", "synthetic-api-key")
+    monkeypatch.setenv("AGENTFLO_GATEWAY_TENANT_ID", "tenant-synthetic")
+    monkeypatch.setenv("AGENTFLO_GATEWAY_AGENT_ID", "agent-synthetic")
+    monkeypatch.setenv("AGENTFLO_GATEWAY_ACTOR_ID", "actor-synthetic")
+    configured = Settings(_env_file=None, **BASE)
+
+    assert configured.agentflo_gateway_base_url == (
+        "https://communicationgateway.agentflo.com"
+    )
+    assert configured.agentflo_gateway_api_key == "synthetic-api-key"
+    assert configured.agentflo_gateway_tenant_id == "tenant-synthetic"
+    assert configured.agentflo_gateway_agent_id == "agent-synthetic"
+    assert configured.agentflo_gateway_actor_id == "actor-synthetic"
+
+
 def test_support_phone_has_no_invented_default():
     values = dict(BASE)
     values.pop("support_phone_number")
@@ -89,6 +116,20 @@ def test_backend_env_example_documents_agentflo_webhook_secret():
         Path(__file__).resolve().parents[1] / ".env.example"
     ).read_text(encoding="utf-8")
     assert "AGENTFLO_WHATSAPP_WEBHOOK_SECRET=" in example
+
+
+def test_backend_env_example_documents_agentflo_gateway_configuration():
+    example = (
+        Path(__file__).resolve().parents[1] / ".env.example"
+    ).read_text(encoding="utf-8")
+    assert (
+        "AGENTFLO_GATEWAY_BASE_URL="
+        "https://communicationgateway.agentflo.com"
+    ) in example
+    assert "AGENTFLO_GATEWAY_API_KEY=" in example
+    assert "AGENTFLO_GATEWAY_TENANT_ID=fyp-dev" in example
+    assert "AGENTFLO_GATEWAY_AGENT_ID=restaurant-agent" in example
+    assert "AGENTFLO_GATEWAY_ACTOR_ID=restaurant-agent" in example
 
 
 def test_frontend_cors_origins_default_to_local_in_tests():
