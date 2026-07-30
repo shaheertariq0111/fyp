@@ -99,6 +99,14 @@ class MemoryConversationHistoryService:
     def __init__(self):
         self.records = []
         self.fail_writes = False
+        self.admin_conversations_result = {"conversations": []}
+        self.admin_messages_result = {
+            "conversation_id": "conv-1",
+            "channel": "whatsapp",
+            "messages": [],
+        }
+        self.admin_list_calls = []
+        self.admin_message_calls = []
 
     def store_inbound_whatsapp_message(self, **kwargs):
         if self.fail_writes:
@@ -110,6 +118,16 @@ class MemoryConversationHistoryService:
         }
         self.records.append(record)
         return record
+
+    def admin_list_conversations(self, *, limit=50):
+        self.admin_list_calls.append({"limit": limit})
+        return deepcopy(self.admin_conversations_result)
+
+    def admin_list_messages(self, conversation_id):
+        self.admin_message_calls.append(conversation_id)
+        result = deepcopy(self.admin_messages_result)
+        result["conversation_id"] = conversation_id
+        return result
 
     def store_outbound_whatsapp_message(self, **kwargs):
         if self.fail_writes:
@@ -2161,6 +2179,107 @@ def test_admin_menu_customer_and_monitoring_routes(monkeypatch):
     assert archived.json()["item"]["archived"] is True
     assert customers.json()["customers"][0]["customer_id"] == "cust-1"
     assert errors.json()["events"][0]["event_type"] == "tool_error"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/admin/conversations",
+        "/api/admin/conversations/conv-1/messages",
+    ],
+)
+def test_admin_conversation_routes_require_authentication(path):
+    response = client().get(path)
+
+    assert response.status_code == 401
+
+
+def test_admin_conversation_list_route_returns_recent_conversations(monkeypatch):
+    test_client = client()
+    login_admin(test_client, monkeypatch)
+    services = IdentityServices()
+    services.conversation_history.admin_conversations_result = {
+        "conversations": [{
+            "conversation_id": "conv-1",
+            "channel": "whatsapp",
+            "latest_message_preview": "Your order is confirmed.",
+            "latest_timestamp_utc": "2026-07-30T10:02:00+00:00",
+            "message_count": 2,
+            "customer_message_count": 1,
+            "agent_message_count": 1,
+            "masked_customer_phone": "****1234",
+            "latest_delivery_status": "delivered",
+        }]
+    }
+    monkeypatch.setattr(main, "get_services", lambda: services)
+
+    response = test_client.get("/api/admin/conversations?limit=25")
+
+    assert response.status_code == 200
+    assert response.json() == services.conversation_history.admin_conversations_result
+    assert services.conversation_history.admin_list_calls == [{"limit": 25}]
+    assert "+10000001234" not in response.text
+
+
+def test_admin_conversation_messages_route_returns_ordered_safe_transcript(
+    monkeypatch,
+):
+    test_client = client()
+    login_admin(test_client, monkeypatch)
+    services = IdentityServices()
+    services.conversation_history.admin_messages_result = {
+        "conversation_id": "conv-1",
+        "channel": "whatsapp",
+        "messages": [
+            {
+                "timestamp_utc": "2026-07-30T10:01:00+00:00",
+                "direction": "inbound",
+                "sender_type": "customer",
+                "message_text": "session_token=[REDACTED]",
+                "masked_customer_phone": "****1234",
+            },
+            {
+                "timestamp_utc": "2026-07-30T10:02:00+00:00",
+                "direction": "outbound",
+                "sender_type": "agent",
+                "message_text": "Confirmed.",
+                "outbound_status": "accepted",
+                "delivery_status": "delivered",
+            },
+        ],
+    }
+    monkeypatch.setattr(main, "get_services", lambda: services)
+
+    response = test_client.get("/api/admin/conversations/conv-1/messages")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [message["timestamp_utc"] for message in body["messages"]] == [
+        "2026-07-30T10:01:00+00:00",
+        "2026-07-30T10:02:00+00:00",
+    ]
+    assert "session_token=abc123" not in response.text
+    assert "+10000001234" not in response.text
+    assert services.conversation_history.admin_message_calls == ["conv-1"]
+
+
+def test_admin_conversation_routes_return_empty_results(monkeypatch):
+    test_client = client()
+    login_admin(test_client, monkeypatch)
+    services = IdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+
+    conversations = test_client.get("/api/admin/conversations")
+    messages = test_client.get("/api/admin/conversations/missing/messages")
+
+    assert conversations.status_code == 200
+    assert conversations.json() == {"conversations": []}
+    assert messages.status_code == 200
+    assert messages.json() == {
+        "conversation_id": "missing",
+        "channel": "whatsapp",
+        "messages": [],
+    }
 
 
 ADMIN_TICKET_LIST_KEYS = {

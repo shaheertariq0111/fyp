@@ -6,9 +6,15 @@ from src.repositories.conversation_message_repository import ConversationMessage
 class FakeTable:
     def __init__(self):
         self.put_calls = []
+        self.query_calls = []
+        self.query_responses = []
 
     def put_item(self, **kwargs):
         self.put_calls.append(deepcopy(kwargs))
+
+    def query(self, **kwargs):
+        self.query_calls.append(deepcopy(kwargs))
+        return self.query_responses.pop(0)
 
 
 class FakeDynamo:
@@ -35,3 +41,27 @@ def test_conversation_message_repository_writes_expected_item_shape():
     repository.save(item)
 
     assert dynamo.table.put_calls == [{"Item": item}]
+
+
+def test_conversation_message_repository_queries_recent_whatsapp_gsi():
+    dynamo = FakeDynamo()
+    dynamo.table.query_responses = [{"Items": [{"conversation_id": "conv-1"}]}]
+    repository = ConversationMessageRepository(dynamo, "conversation-messages")
+
+    items = repository.list_recent_whatsapp_messages(limit=25)
+
+    assert items == [{"conversation_id": "conv-1"}]
+    assert dynamo.table.query_calls[0]["IndexName"] == "GSI1"
+    assert dynamo.table.query_calls[0]["ScanIndexForward"] is False
+    assert dynamo.table.query_calls[0]["Limit"] == 25
+
+
+def test_conversation_message_repository_queries_conversation_partition():
+    dynamo = FakeDynamo()
+    dynamo.table.query_responses = [{"Items": [{"conversation_id": "conv-1"}]}]
+    repository = ConversationMessageRepository(dynamo, "conversation-messages")
+
+    items = repository.list_for_conversation("conv-1")
+
+    assert items == [{"conversation_id": "conv-1"}]
+    assert dynamo.table.query_calls[0]["ScanIndexForward"] is True

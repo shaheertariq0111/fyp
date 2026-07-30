@@ -12,12 +12,13 @@ type AdminShellProps = {
   children: ReactNode;
 };
 
-type IconName = "overview" | "orders" | "tickets" | "menu" | "customers" | "monitoring" | "logout" | "menuToggle";
+type IconName = "overview" | "orders" | "tickets" | "conversations" | "menu" | "customers" | "monitoring" | "logout" | "menuToggle";
 
 const navigationItems: Array<{ href: string; label: string; icon: IconName }> = [
   { href: "/admin", label: "Overview", icon: "overview" },
   { href: "/admin/orders", label: "Live Orders", icon: "orders" },
   { href: "/admin/tickets", label: "Support Tickets", icon: "tickets" },
+  { href: "/admin/conversations", label: "Conversations", icon: "conversations" },
   { href: "/admin/menu", label: "Menu", icon: "menu" },
   { href: "/admin/customers", label: "Customers", icon: "customers" },
   { href: "/admin/monitoring", label: "Monitoring", icon: "monitoring" },
@@ -62,6 +63,14 @@ function AdminIcon({ name }: { name: IconName }) {
           <path d="M15 3v4h4" />
           <path d="M9 11h6" />
           <path d="M9 15h6" />
+        </svg>
+      );
+    case "conversations":
+      return (
+        <svg {...common}>
+          <path d="M4 5h16v10H8l-4 4z" />
+          <path d="M8 9h8" />
+          <path d="M8 12h5" />
         </svg>
       );
     case "menu":
