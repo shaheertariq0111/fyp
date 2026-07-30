@@ -118,6 +118,8 @@ BEDROCK_GUARDRAIL_VERSION=
 KNOWLEDGE_BASE_ID=
 AGENTCORE_RUNTIME_ARN=<empty-until-AgentCore-runtime-is-created>
 AGENT_REQUESTS_TABLE_NAME=<agent-requests-table>
+CONVERSATION_MESSAGES_TABLE_NAME=<conversation-messages-table>
+CONVERSATION_MESSAGE_TTL_DAYS=90
 AGENTFLO_GATEWAY_BASE_URL=https://communicationgateway.agentflo.com
 AGENTFLO_GATEWAY_TENANT_ID=fyp-dev
 AGENTFLO_GATEWAY_AGENT_ID=restaurant-agent
@@ -165,6 +167,11 @@ ADMIN_SESSION_SECRET <- AdminSessionSecretArn
 ```
 
 The ECS application task role does not need direct Secrets Manager read permissions for these values.
+
+Conversation history storage writes WhatsApp customer and agent message text to
+`CONVERSATION_MESSAGES_TABLE_NAME` by design. The backend still must not log
+message text, full phone numbers, API keys, tokens, webhook secrets, or delivery
+addresses.
 
 ## Amplify frontend environment variables
 

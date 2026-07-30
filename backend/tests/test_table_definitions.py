@@ -9,13 +9,47 @@ from test_config import make_test_settings
 def test_creates_customer_session_tables_and_lookup_indexes():
     settings = make_test_settings()
     definitions = table_definitions(settings)
-    assert len(definitions) == 9
+    assert len(definitions) == 10
     order = next(d for d in definitions if d["TableName"] == settings.orders_table_name)
     assert order["GlobalSecondaryIndexes"][0]["IndexName"] == "GSI1"
     customer = next(d for d in definitions if d["TableName"] == settings.customers_table_name)
     assert customer["GlobalSecondaryIndexes"][0]["IndexName"] == "GSI1"
     assert any(d["TableName"] == settings.agent_sessions_table_name for d in definitions)
     assert any(d["TableName"] == settings.agent_requests_table_name for d in definitions)
+    assert any(
+        d["TableName"] == settings.conversation_messages_table_name
+        for d in definitions
+    )
+
+
+def test_conversation_messages_table_has_channel_listing_index():
+    settings = make_test_settings()
+    conversation = next(
+        definition
+        for definition in table_definitions(settings)
+        if definition["TableName"] == settings.conversation_messages_table_name
+    )
+
+    assert conversation["KeySchema"] == [
+        {"AttributeName": "PK", "KeyType": "HASH"},
+        {"AttributeName": "SK", "KeyType": "RANGE"},
+    ]
+    assert conversation["AttributeDefinitions"] == [
+        {"AttributeName": "PK", "AttributeType": "S"},
+        {"AttributeName": "SK", "AttributeType": "S"},
+        {"AttributeName": "GSI1PK", "AttributeType": "S"},
+        {"AttributeName": "GSI1SK", "AttributeType": "S"},
+    ]
+    assert conversation["GlobalSecondaryIndexes"] == [
+        {
+            "IndexName": "GSI1",
+            "KeySchema": [
+                {"AttributeName": "GSI1PK", "KeyType": "HASH"},
+                {"AttributeName": "GSI1SK", "KeyType": "RANGE"},
+            ],
+            "Projection": {"ProjectionType": "ALL"},
+        }
+    ]
 
 
 def test_ticket_table_has_customer_and_status_indexes():
@@ -116,6 +150,13 @@ def test_ticket_ttl_uses_expires_at(monkeypatch):
     assert create_dynamodb_tables.create_tables() == []
     assert {
         "TableName": settings.tickets_table_name,
+        "TimeToLiveSpecification": {
+            "Enabled": True,
+            "AttributeName": "expires_at",
+        },
+    } in resource.meta.client.ttl_updates
+    assert {
+        "TableName": settings.conversation_messages_table_name,
         "TimeToLiveSpecification": {
             "Enabled": True,
             "AttributeName": "expires_at",

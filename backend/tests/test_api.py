@@ -95,6 +95,35 @@ class MemoryAgentRequestService:
         return self.requests.get(request_id)
 
 
+class MemoryConversationHistoryService:
+    def __init__(self):
+        self.records = []
+        self.fail_writes = False
+
+    def store_inbound_whatsapp_message(self, **kwargs):
+        if self.fail_writes:
+            raise RuntimeError("private history failure")
+        record = {
+            **kwargs,
+            "direction": "inbound",
+            "sender_type": "customer",
+        }
+        self.records.append(record)
+        return record
+
+    def store_outbound_whatsapp_message(self, **kwargs):
+        if self.fail_writes:
+            raise RuntimeError("private history failure")
+        record = {
+            **kwargs,
+            "direction": "outbound",
+            "sender_type": "agent",
+            "outbound_status": (kwargs.get("outbound") or {}).get("status"),
+        }
+        self.records.append(record)
+        return record
+
+
 class IdentityServices:
     def __init__(self, *, session_id="session", customer_id="user", rotated=False):
         self.session_id = session_id
@@ -110,6 +139,7 @@ class IdentityServices:
         )
         self.agent_sessions = SimpleNamespace(resolve=self.resolve)
         self.agent_requests = MemoryAgentRequestService()
+        self.conversation_history = MemoryConversationHistoryService()
 
     def resolve(self, **kwargs):
         return {
@@ -693,6 +723,19 @@ def test_agentflo_whatsapp_meta_payload_invokes_existing_agent_flow(
     assert captured["user_id"].startswith("whatsapp-")
     assert captured["agent_session_id"] == body["session_id"]
     assert services.agent_requests.agentflo_claims == ["wamid.synthetic-1"]
+    assert len(services.conversation_history.records) == 2
+    inbound_record, outbound_record = services.conversation_history.records
+    assert inbound_record["direction"] == "inbound"
+    assert inbound_record["conversation_id"] == body["session_id"]
+    assert inbound_record["customer_id"].startswith("whatsapp-")
+    assert inbound_record["message_text"] == "Hello from WhatsApp"
+    assert inbound_record["inbound_message_id"] == "wamid.synthetic-1"
+    assert inbound_record["customer_number"] == "10000000000"
+    assert outbound_record["direction"] == "outbound"
+    assert outbound_record["conversation_id"] == body["session_id"]
+    assert outbound_record["request_id"] == "req-1"
+    assert outbound_record["message_text"] == "Welcome!"
+    assert outbound_record["inbound_message_id"] == "wamid.synthetic-1"
 
 
 def test_agentflo_whatsapp_duplicate_is_ignored_before_side_effects(
@@ -755,6 +798,7 @@ def test_agentflo_whatsapp_duplicate_is_ignored_before_side_effects(
     assert len(services.agent_requests.requests) == 1
     assert services.profile_update_count == 1
     assert services.resolve_count == 1
+    assert len(services.conversation_history.records) == 2
     assert services.agent_requests.agentflo_claims == [
         "wamid.synthetic-duplicate",
         "wamid.synthetic-duplicate",
@@ -800,6 +844,9 @@ def test_agentflo_whatsapp_missing_message_id_processes_with_safe_warning(
     assert response.json()["reply"] == "Processed without message ID."
     assert captured["message"] == private_message
     assert services.agent_requests.agentflo_claims == []
+    assert len(services.conversation_history.records) == 2
+    assert services.conversation_history.records[0]["inbound_message_id"] is None
+    assert services.conversation_history.records[1]["inbound_message_id"] is None
     assert private_message not in caplog.text
     assert full_phone not in caplog.text
     warning = next(
@@ -955,6 +1002,12 @@ def test_agentflo_whatsapp_gateway_failure_preserves_reply_safely(monkeypatch):
     assert response.json()["reply"] == "Generated reply."
     assert response.json()["text"] == "Generated reply."
     assert response.json()["outbound"] == {
+        "sent": False,
+        "error_code": "AGENTFLO_OUTBOUND_FAILED",
+    }
+    assert len(services.conversation_history.records) == 2
+    assert services.conversation_history.records[1]["message_text"] == "Generated reply."
+    assert services.conversation_history.records[1]["outbound"] == {
         "sent": False,
         "error_code": "AGENTFLO_OUTBOUND_FAILED",
     }
@@ -1178,6 +1231,8 @@ def test_agentflo_whatsapp_without_configured_secret_warns_and_remains_open(
     ],
 )
 def test_agentflo_whatsapp_non_text_events_are_ignored(monkeypatch, payload):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
     captured = {}
     stub_agent_client(
         monkeypatch,
@@ -1198,6 +1253,7 @@ def test_agentflo_whatsapp_non_text_events_are_ignored(monkeypatch, payload):
         "reason": "no_text_message",
     }
     assert captured == {}
+    assert services.conversation_history.records == []
 
 
 def test_agentflo_whatsapp_rejects_non_object_payload():
@@ -1268,6 +1324,44 @@ def test_agentflo_whatsapp_logs_do_not_include_message_or_full_phone(
     assert response.status_code == 200
     assert private_message not in caplog.text
     assert full_phone not in caplog.text
+
+
+def test_agentflo_whatsapp_conversation_storage_failure_is_safe(
+    monkeypatch,
+    caplog,
+):
+    services = WhatsAppIdentityServices()
+    services.conversation_history.fail_writes = True
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Safe reply.")
+    private_message = "Private history message"
+    full_phone = "+10000000000"
+
+    with caplog.at_level(logging.WARNING, logger="src.api.main"):
+        response = client().post(
+            "/api/channels/agentflo/whatsapp",
+            json={
+                "message": private_message,
+                "from": full_phone,
+                "sender_id": "sender-history-failure",
+                "message_id": "history-failure-message-1",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Safe reply."
+    assert private_message not in caplog.text
+    assert full_phone not in caplog.text
+    assert "private history failure" not in caplog.text
+    failures = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "conversation_history_write_failed"
+    ]
+    assert [record.direction for record in failures] == ["inbound", "outbound"]
+    assert {record.error_code for record in failures} == {
+        "CONVERSATION_HISTORY_WRITE_FAILED"
+    }
 
 
 def test_chat_dictionary_runtime_result_preserves_tool_calls(monkeypatch):

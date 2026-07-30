@@ -1267,6 +1267,73 @@ def _agentflo_failure_response() -> dict[str, Any]:
     }
 
 
+def _store_whatsapp_inbound_history(
+    *,
+    inbound: WhatsAppInboundMessage,
+    customer_id: str,
+    session_id: str,
+    http_request_id: str | None,
+) -> None:
+    try:
+        get_services().conversation_history.store_inbound_whatsapp_message(
+            conversation_id=session_id,
+            customer_id=customer_id,
+            message_text=inbound.text,
+            inbound_message_id=inbound.message_id,
+            customer_number=inbound.customer_number,
+        )
+    except Exception as exc:
+        logger.warning(
+            "WhatsApp conversation history inbound write failed",
+            extra={
+                "event": "conversation_history_write_failed",
+                "http_request_id": http_request_id,
+                "actor_id": customer_id,
+                "agent_session_id": session_id,
+                "channel": "whatsapp",
+                "direction": "inbound",
+                "exception_type": type(exc).__name__,
+                "error_code": "CONVERSATION_HISTORY_WRITE_FAILED",
+            },
+        )
+
+
+def _store_whatsapp_outbound_history(
+    *,
+    inbound: WhatsAppInboundMessage,
+    customer_id: str,
+    session_id: str,
+    request_id: str,
+    reply: str,
+    outbound: dict[str, Any],
+    http_request_id: str | None,
+) -> None:
+    try:
+        get_services().conversation_history.store_outbound_whatsapp_message(
+            conversation_id=session_id,
+            customer_id=customer_id,
+            message_text=reply,
+            request_id=request_id,
+            inbound_message_id=inbound.message_id,
+            outbound=outbound,
+        )
+    except Exception as exc:
+        logger.warning(
+            "WhatsApp conversation history outbound write failed",
+            extra={
+                "event": "conversation_history_write_failed",
+                "http_request_id": http_request_id,
+                "request_id": request_id,
+                "actor_id": customer_id,
+                "agent_session_id": session_id,
+                "channel": "whatsapp",
+                "direction": "outbound",
+                "exception_type": type(exc).__name__,
+                "error_code": "CONVERSATION_HISTORY_WRITE_FAILED",
+            },
+        )
+
+
 def _agentflo_gateway_service() -> AgentfloGatewayService:
     settings = get_settings()
     return AgentfloGatewayService(
@@ -1436,6 +1503,12 @@ def agentflo_whatsapp(
 
     try:
         customer_id, session_id = _whatsapp_identity(inbound)
+        _store_whatsapp_inbound_history(
+            inbound=inbound,
+            customer_id=customer_id,
+            session_id=session_id,
+            http_request_id=http_request_id,
+        )
         chat_payload = ChatRequest(
             message=inbound.text,
             session_id=session_id,
@@ -1530,6 +1603,15 @@ def agentflo_whatsapp(
             "agent_session_id": context.agent_session_id,
             "channel": "whatsapp",
         },
+    )
+    _store_whatsapp_outbound_history(
+        inbound=inbound,
+        customer_id=context.customer_id,
+        session_id=context.agent_session_id,
+        request_id=record["request_id"],
+        reply=completed.text,
+        outbound=outbound,
+        http_request_id=http_request_id,
     )
     return _agentflo_outbound_response(
         reply=completed.text,
