@@ -1102,6 +1102,44 @@ def admin_customer(customer_id: str, _admin: dict[str, Any] = Depends(require_ad
         raise _admin_http_error(exc) from exc
 
 
+@app.get("/api/admin/conversations")
+def admin_conversations(
+    limit: int = Query(default=50, ge=1, le=100),
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    try:
+        return get_services().conversation_history.admin_list_conversations(
+            limit=limit,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": "CONVERSATION_HISTORY_UNAVAILABLE",
+                "user_message": "Conversation history is temporarily unavailable.",
+            },
+        ) from exc
+
+
+@app.get("/api/admin/conversations/{conversation_id}/messages")
+def admin_conversation_messages(
+    conversation_id: str,
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    try:
+        return get_services().conversation_history.admin_list_messages(
+            conversation_id,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": "CONVERSATION_HISTORY_UNAVAILABLE",
+                "user_message": "Conversation history is temporarily unavailable.",
+            },
+        ) from exc
+
+
 @app.get("/api/admin/monitoring/errors")
 def admin_monitoring_errors(
     limit: int = Query(default=50, ge=1, le=200),

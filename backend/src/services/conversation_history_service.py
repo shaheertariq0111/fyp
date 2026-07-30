@@ -7,6 +7,9 @@ from typing import Any
 
 
 CONVERSATION_HISTORY_TTL_DAYS = 90
+DEFAULT_ADMIN_CONVERSATION_LIMIT = 50
+ADMIN_CONVERSATION_SCAN_LIMIT = 1000
+MAX_ADMIN_MESSAGE_PREVIEW_LENGTH = 120
 
 
 class ConversationHistoryService:
@@ -86,6 +89,50 @@ class ConversationHistoryService:
         self.repository.save(item)
         return item
 
+    def admin_list_conversations(
+        self,
+        *,
+        limit: int = DEFAULT_ADMIN_CONVERSATION_LIMIT,
+    ) -> dict[str, Any]:
+        recent_messages = self.repository.list_recent_whatsapp_messages(
+            limit=ADMIN_CONVERSATION_SCAN_LIMIT,
+        )
+        conversation_ids: list[str] = []
+        seen: set[str] = set()
+        for message in recent_messages:
+            conversation_id = self._string_value(message.get("conversation_id"))
+            if conversation_id is None or conversation_id in seen:
+                continue
+            seen.add(conversation_id)
+            conversation_ids.append(conversation_id)
+            if len(conversation_ids) >= limit:
+                break
+
+        conversations = []
+        for conversation_id in conversation_ids:
+            messages = self.repository.list_for_conversation(conversation_id)
+            if not messages:
+                continue
+            conversations.append(self._conversation_summary(messages))
+        conversations.sort(
+            key=lambda item: item["latest_timestamp_utc"],
+            reverse=True,
+        )
+        return {"conversations": conversations[:limit]}
+
+    def admin_list_messages(
+        self,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        messages = self.repository.list_for_conversation(conversation_id)
+        projected = [self._project_admin_message(message) for message in messages]
+        projected.sort(key=lambda item: item["timestamp_utc"])
+        return {
+            "conversation_id": conversation_id,
+            "channel": "whatsapp",
+            "messages": projected,
+        }
+
     def _base_message(
         self,
         *,
@@ -118,6 +165,95 @@ class ConversationHistoryService:
 
     def _expires_at(self, now: datetime) -> int:
         return int((now + timedelta(days=self.ttl_days)).timestamp())
+
+    def _conversation_summary(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        ordered = sorted(messages, key=lambda item: self._timestamp(item))
+        latest = ordered[-1]
+        customer_messages = [
+            message
+            for message in ordered
+            if message.get("sender_type") == "customer"
+            or message.get("direction") == "inbound"
+        ]
+        agent_messages = [
+            message
+            for message in ordered
+            if message.get("sender_type") == "agent"
+            or message.get("direction") == "outbound"
+        ]
+        delivery_status = None
+        masked_phone = None
+        for message in reversed(ordered):
+            if delivery_status is None:
+                delivery_status = self._string_value(message.get("delivery_status"))
+            if masked_phone is None:
+                masked_phone = self._string_value(
+                    message.get("masked_customer_phone")
+                )
+            if delivery_status is not None and masked_phone is not None:
+                break
+        return {
+            "conversation_id": latest.get("conversation_id"),
+            "channel": latest.get("channel") or "whatsapp",
+            "latest_message_preview": self._preview(latest.get("message_text")),
+            "latest_timestamp_utc": self._timestamp(latest),
+            "message_count": len(ordered),
+            "customer_message_count": len(customer_messages),
+            "agent_message_count": len(agent_messages),
+            "masked_customer_phone": masked_phone,
+            "latest_delivery_status": delivery_status,
+        }
+
+    def _project_admin_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        projected = {
+            "timestamp_utc": self._timestamp(message),
+            "direction": message.get("direction"),
+            "sender_type": message.get("sender_type"),
+            "message_text": self._redact_message_text(message.get("message_text")),
+            "outbound_status": self._string_value(message.get("outbound_status")),
+            "delivery_status": self._string_value(message.get("delivery_status")),
+        }
+        masked_phone = self._string_value(message.get("masked_customer_phone"))
+        if masked_phone is not None:
+            projected["masked_customer_phone"] = masked_phone
+        return projected
+
+    def _preview(self, message_text: Any) -> str:
+        redacted = self._redact_message_text(message_text)
+        if len(redacted) <= MAX_ADMIN_MESSAGE_PREVIEW_LENGTH:
+            return redacted
+        return f"{redacted[:MAX_ADMIN_MESSAGE_PREVIEW_LENGTH - 1].rstrip()}..."
+
+    @classmethod
+    def _redact_message_text(cls, value: Any) -> str:
+        text = value if isinstance(value, str) else ""
+        text = re.sub(
+            r"(?i)(session_token\s*=\s*)[^\s&]+",
+            r"\1[REDACTED]",
+            text,
+        )
+        text = re.sub(
+            r"(?i)([\"']session_token[\"']\s*:\s*[\"'])[^\"']+([\"'])",
+            r"\1[REDACTED]\2",
+            text,
+        )
+        return re.sub(
+            r"(?<!\w)\+?\d[\d\s().-]{7,}\d(?!\w)",
+            cls._redact_phone_match,
+            text,
+        )
+
+    @staticmethod
+    def _redact_phone_match(match: re.Match[str]) -> str:
+        digits = re.sub(r"\D", "", match.group(0))
+        if len(digits) < 8:
+            return match.group(0)
+        return "[REDACTED_PHONE]"
+
+    @staticmethod
+    def _timestamp(message: dict[str, Any]) -> str:
+        timestamp = message.get("timestamp_utc")
+        return timestamp if isinstance(timestamp, str) else ""
 
     @staticmethod
     def _string_value(value: Any) -> str | None:

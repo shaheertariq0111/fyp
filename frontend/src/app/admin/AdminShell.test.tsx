@@ -28,12 +28,15 @@ describe("AdminShell ticket navigation", () => {
         "Overview",
         "Live Orders",
         "Support Tickets",
+        "Conversations",
         "Menu",
         "Customers",
         "Monitoring",
       ]);
       expect(within(navigation).getByRole("link", { name: "Support Tickets" }))
         .toHaveAttribute("href", "/admin/tickets");
+      expect(within(navigation).getByRole("link", { name: "Conversations" }))
+        .toHaveAttribute("href", "/admin/conversations");
     }
   });
 
@@ -41,12 +44,30 @@ describe("AdminShell ticket navigation", () => {
     ["/admin/tickets", true],
     ["/admin/tickets/", true],
     ["/admin/tickets/TKT-20260724-ABC123", true],
+    ["/admin/conversations", false],
     ["/admin/orders", false],
   ])("uses the existing active-route behavior for %s", (route, active) => {
     pathname = route;
     render(<AdminShell title="Test">Content</AdminShell>);
 
     for (const link of screen.getAllByRole("link", { name: "Support Tickets" })) {
+      if (active) {
+        expect(link).toHaveAttribute("aria-current", "page");
+      } else {
+        expect(link).not.toHaveAttribute("aria-current");
+      }
+    }
+  });
+
+  it.each([
+    ["/admin/conversations", true],
+    ["/admin/conversations/whatsapp-123", true],
+    ["/admin/tickets", false],
+  ])("marks Conversations active for %s", (route, active) => {
+    pathname = route;
+    render(<AdminShell title="Test">Content</AdminShell>);
+
+    for (const link of screen.getAllByRole("link", { name: "Conversations" })) {
       if (active) {
         expect(link).toHaveAttribute("aria-current", "page");
       } else {
