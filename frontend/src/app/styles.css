@@ -2755,7 +2755,7 @@ button.admin-customer-result-card {
 
 .admin-conversation-layout {
   display: grid;
-  grid-template-columns: minmax(420px, 0.92fr) minmax(420px, 1.08fr);
+  grid-template-columns: minmax(0, 0.95fr) minmax(380px, 1.05fr);
   gap: 18px;
   align-items: start;
 }
@@ -2767,13 +2767,29 @@ button.admin-customer-result-card {
 }
 
 .admin-conversation-table-wrap {
-  overflow-x: auto;
+  overflow: hidden;
 }
 
 .admin-conversation-table {
   width: 100%;
-  min-width: 760px;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+
+.admin-conversation-table th:nth-child(1) {
+  width: 31%;
+}
+
+.admin-conversation-table th:nth-child(2) {
+  width: 37%;
+}
+
+.admin-conversation-table th:nth-child(3) {
+  width: 18%;
+}
+
+.admin-conversation-table th:nth-child(4) {
+  width: 14%;
 }
 
 .admin-conversation-table th,
@@ -2798,7 +2814,6 @@ button.admin-customer-result-card {
 }
 
 .admin-conversation-table td p {
-  max-width: 280px;
   margin: 5px 0 0;
   color: var(--admin-muted);
   font-size: 13px;
@@ -2813,10 +2828,19 @@ button.admin-customer-result-card {
   font-size: 12px;
 }
 
+.admin-conversation-identity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+}
+
 .admin-conversation-select {
   display: grid;
   gap: 4px;
   width: 100%;
+  min-width: 0;
   padding: 0;
   color: inherit;
   background: transparent;
@@ -2828,7 +2852,51 @@ button.admin-customer-result-card {
 }
 
 .admin-conversation-select small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-conversation-copy {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  color: var(--admin-blue);
+  background: #ffffff;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.admin-conversation-copy:hover {
+  border-color: rgba(0, 100, 145, 0.32);
+  background: rgba(0, 100, 145, 0.07);
+}
+
+.admin-conversation-latest-cell,
+.admin-conversation-count-cell {
+  min-width: 0;
+}
+
+.admin-conversation-latest-cell > span,
+.admin-conversation-count-cell > span {
+  color: var(--admin-text);
+  font-weight: 800;
+}
+
+.admin-conversation-latest-cell p {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow-wrap: anywhere;
+}
+
+.admin-conversation-heading-id {
+  max-width: min(54vw, 520px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .admin-conversation-loading {
@@ -2845,10 +2913,10 @@ button.admin-customer-result-card {
 
 .admin-conversation-transcript {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   max-height: 68vh;
   overflow-y: auto;
-  padding: 4px 2px 8px;
+  padding: 6px 4px 10px;
 }
 
 .admin-message-row {
@@ -2865,8 +2933,8 @@ button.admin-customer-result-card {
 
 .admin-message-bubble {
   width: fit-content;
-  max-width: min(74%, 520px);
-  padding: 12px 13px 9px;
+  max-width: min(68%, 560px);
+  padding: 13px 14px 10px;
   border: 1px solid var(--admin-border);
   border-radius: 8px;
   background: #f8fafb;
@@ -2877,6 +2945,7 @@ button.admin-customer-result-card {
   border-color: rgba(0, 100, 145, 0.22);
   color: #ffffff;
   background: var(--admin-blue);
+  box-shadow: 0 8px 18px rgba(0, 100, 145, 0.14);
 }
 
 .admin-message-bubble p {
@@ -2919,6 +2988,10 @@ button.admin-customer-result-card {
     grid-template-columns: 1fr;
   }
 
+  .admin-conversation-heading-id {
+    max-width: 72vw;
+  }
+
   .admin-ticket-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2926,11 +2999,52 @@ button.admin-customer-result-card {
 
 @media (max-width: 720px) {
   .admin-message-bubble {
-    max-width: 88%;
+    max-width: 86%;
   }
 
-  .admin-conversation-table {
-    min-width: 680px;
+  .admin-conversation-table-wrap {
+    overflow: visible;
+  }
+
+  .admin-conversation-table,
+  .admin-conversation-table tbody,
+  .admin-conversation-table tr,
+  .admin-conversation-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .admin-conversation-table thead {
+    display: none;
+  }
+
+  .admin-conversation-table tr {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--admin-border);
+  }
+
+  .admin-conversation-table tr:last-child {
+    border-bottom: 0;
+  }
+
+  .admin-conversation-table td {
+    padding: 6px 0;
+    border-bottom: 0;
+  }
+
+  .admin-conversation-table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    color: var(--admin-muted);
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .admin-conversation-heading-id {
+    max-width: 68vw;
   }
 
   .admin-ticket-toolbar {

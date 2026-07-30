@@ -92,6 +92,20 @@ function ConversationList({
   onSelect: (conversation: AdminConversationSummary) => void;
   loading: boolean;
 }) {
+  const [copiedConversationId, setCopiedConversationId] = useState<string | null>(null);
+
+  async function copyConversationId(conversationId: string) {
+    try {
+      await navigator.clipboard.writeText(conversationId);
+      setCopiedConversationId(conversationId);
+      window.setTimeout(() => {
+        setCopiedConversationId((current) => current === conversationId ? null : current);
+      }, 1600);
+    } catch {
+      setCopiedConversationId(null);
+    }
+  }
+
   return (
     <section className="admin-panel admin-conversation-list-panel" aria-label="WhatsApp conversations">
       <div className="admin-section-heading">
@@ -115,26 +129,38 @@ function ConversationList({
               const selected = conversation.conversation_id === selectedConversationId;
               return (
                 <tr className={selected ? "is-selected" : ""} key={conversation.conversation_id}>
-                  <td>
-                    <button
-                      aria-current={selected ? "true" : undefined}
-                      className="admin-conversation-select"
-                      onClick={() => onSelect(conversation)}
-                      type="button"
-                    >
-                      <strong>{conversation.masked_customer_phone ?? "WhatsApp customer"}</strong>
-                      <small>{conversation.conversation_id}</small>
-                    </button>
+                  <td data-label="Conversation">
+                    <div className="admin-conversation-identity">
+                      <button
+                        aria-current={selected ? "true" : undefined}
+                        className="admin-conversation-select"
+                        onClick={() => onSelect(conversation)}
+                        title={conversation.conversation_id}
+                        type="button"
+                      >
+                        <strong>{conversation.masked_customer_phone ?? "WhatsApp customer"}</strong>
+                        <small>{conversation.conversation_id}</small>
+                      </button>
+                      <button
+                        aria-label="Copy conversation ID"
+                        className="admin-conversation-copy"
+                        onClick={() => void copyConversationId(conversation.conversation_id)}
+                        title="Copy conversation ID"
+                        type="button"
+                      >
+                        {copiedConversationId === conversation.conversation_id ? "Copied" : "Copy"}
+                      </button>
+                    </div>
                   </td>
-                  <td>
+                  <td className="admin-conversation-latest-cell" data-label="Latest">
                     <span>{formatTimestamp(conversation.latest_timestamp_utc)}</span>
                     <p>{conversation.latest_message_preview || "No message text"}</p>
                   </td>
-                  <td>
+                  <td className="admin-conversation-count-cell" data-label="Messages">
                     <span>{conversation.message_count}</span>
                     <small>{conversation.customer_message_count} customer / {conversation.agent_message_count} agent</small>
                   </td>
-                  <td>
+                  <td data-label="Status">
                     {conversation.latest_delivery_status ? (
                       <span className={`admin-status-badge ${statusClass(conversation.latest_delivery_status)}`}>
                         <span aria-hidden="true" />
@@ -172,7 +198,9 @@ function Transcript({
       <div className="admin-section-heading">
         <div>
           <h2>Transcript</h2>
-          <p>{selected ? selected.conversation_id : "No conversation selected"}</p>
+          <p className="admin-conversation-heading-id" title={selected?.conversation_id}>
+            {selected ? selected.conversation_id : "No conversation selected"}
+          </p>
         </div>
         {selected?.latest_delivery_status && (
           <span className={`admin-status-badge ${statusClass(selected.latest_delivery_status)}`}>

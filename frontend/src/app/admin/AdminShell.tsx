@@ -134,12 +134,37 @@ export function humanizeStatus(status: string) {
     .join(" ");
 }
 
-function formatEnvironmentLabel(branchId: string | undefined) {
+export function formatEnvironmentLabel(
+  branchId: string | undefined,
+  apiBaseUrl: string | undefined,
+) {
   const trimmed = branchId?.trim() ?? "";
-  if (!trimmed || trimmed.toLowerCase() === "default") {
+  if (trimmed && trimmed.toLowerCase() !== "default") {
+    return trimmed;
+  }
+  const apiUrl = apiBaseUrl?.trim() ?? "";
+  if (!apiUrl) {
     return "Local development";
   }
-  return trimmed;
+  try {
+    const hostname = new URL(apiUrl).hostname.toLowerCase();
+    if (
+      hostname === "localhost"
+      || hostname === "127.0.0.1"
+      || hostname.endsWith(".local")
+    ) {
+      return "Local development";
+    }
+    if (hostname.endsWith(".execute-api.us-east-1.amazonaws.com")) {
+      return "AWS deployment";
+    }
+    if (hostname.endsWith(".amplifyapp.com")) {
+      return "Amplify deployment";
+    }
+  } catch {
+    return "Configured deployment";
+  }
+  return "Deployed environment";
 }
 
 export function AdminShell({ title, subtitle, actions, children }: AdminShellProps) {
@@ -150,7 +175,8 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobileDrawerRef = useRef<HTMLDivElement>(null);
   const branchId = process.env.NEXT_PUBLIC_BRANCH_ID;
-  const environmentLabel = formatEnvironmentLabel(branchId);
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+  const environmentLabel = formatEnvironmentLabel(branchId, apiBaseUrl);
 
   useEffect(() => {
     if (!isDrawerOpen) {
