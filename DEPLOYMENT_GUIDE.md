@@ -42,6 +42,7 @@ $OrdersTableName = "<actual-orders-table>"
 $CustomersTableName = "<actual-customers-table>"
 $AgentSessionsTableName = "<actual-agent-sessions-table>"
 $AgentRequestsTableName = "<actual-agent-requests-table>"
+$ConversationMessagesTableName = "<actual-conversation-messages-table>"
 $MenuSessionsTableName = "<actual-menu-sessions-table>"
 $AuditTableName = "<actual-audit-table>"
 
@@ -52,6 +53,7 @@ $tables = @(
   $CustomersTableName,
   $AgentSessionsTableName,
   $AgentRequestsTableName,
+  $ConversationMessagesTableName,
   $MenuSessionsTableName,
   $AuditTableName
 )
@@ -146,6 +148,7 @@ aws cloudformation deploy `
     CustomersTableName=$CustomersTableName `
     AgentSessionsTableName=$AgentSessionsTableName `
     AgentRequestsTableName=$AgentRequestsTableName `
+    ConversationMessagesTableName=$ConversationMessagesTableName `
     MenuSessionsTableName=$MenuSessionsTableName `
     AuditTableName=$AuditTableName `
     AgentCoreRuntimeArn= `
@@ -189,6 +192,7 @@ $EcsClusterName = Get-StackOutput "EcsClusterName"
 $BackendCloudMapServiceId = Get-StackOutput "BackendCloudMapServiceId"
 $AgentCoreExecutionRoleArn = Get-StackOutput "AgentCoreExecutionRoleArn"
 $AgentRequestsTableName = Get-StackOutput "AgentRequestsTableName"
+$ConversationMessagesTableName = Get-StackOutput "ConversationMessagesTableName"
 $MenuTableName = Get-StackOutput "MenuTableName"
 $CartsTableName = Get-StackOutput "CartsTableName"
 $OrdersTableName = Get-StackOutput "OrdersTableName"
@@ -271,6 +275,7 @@ aws cloudformation deploy `
     CustomersTableName=$CustomersTableName `
     AgentSessionsTableName=$AgentSessionsTableName `
     AgentRequestsTableName=$AgentRequestsTableName `
+    ConversationMessagesTableName=$ConversationMessagesTableName `
     MenuSessionsTableName=$MenuSessionsTableName `
     AuditTableName=$AuditTableName `
     AgentCoreRuntimeArn= `
@@ -373,6 +378,8 @@ ORDERS_TABLE_NAME=$OrdersTableName
 CUSTOMERS_TABLE_NAME=$CustomersTableName
 AGENT_SESSIONS_TABLE_NAME=$AgentSessionsTableName
 AGENT_REQUESTS_TABLE_NAME=$AgentRequestsTableName
+CONVERSATION_MESSAGES_TABLE_NAME=$ConversationMessagesTableName
+CONVERSATION_MESSAGE_TTL_DAYS=90
 MENU_SESSIONS_TABLE_NAME=$MenuSessionsTableName
 AUDIT_TABLE_NAME=$AuditTableName
 MENU_SITE_BASE_URL=https://main.<app-id>.amplifyapp.com/menu
@@ -469,6 +476,7 @@ aws cloudformation deploy `
     CustomersTableName=$CustomersTableName `
     AgentSessionsTableName=$AgentSessionsTableName `
     AgentRequestsTableName=$AgentRequestsTableName `
+    ConversationMessagesTableName=$ConversationMessagesTableName `
     MenuSessionsTableName=$MenuSessionsTableName `
     AuditTableName=$AuditTableName `
     AgentCoreRuntimeArn=$AgentCoreRuntimeArn `
@@ -519,6 +527,7 @@ aws cloudformation deploy `
     BackendLogGroupName=/ecs/fyp-dev/backend `
     AgentCoreLogGroupName=<actual-agentcore-log-group-or-empty> `
     AgentRequestsTableName=$AgentRequestsTableName `
+    ConversationMessagesTableName=$ConversationMessagesTableName `
     MenuTableName=$MenuTableName `
     CartsTableName=$CartsTableName `
     OrdersTableName=$OrdersTableName `
@@ -655,6 +664,7 @@ aws cloudformation deploy `
     CustomersTableName=$CustomersTableName `
     AgentSessionsTableName=$AgentSessionsTableName `
     AgentRequestsTableName=$AgentRequestsTableName `
+    ConversationMessagesTableName=$ConversationMessagesTableName `
     MenuSessionsTableName=$MenuSessionsTableName `
     AuditTableName=$AuditTableName `
     AgentCoreRuntimeArn=$AgentCoreRuntimeArn `

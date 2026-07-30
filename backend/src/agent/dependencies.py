@@ -8,6 +8,7 @@ from src.repositories.audit_repository import AuditRepository
 from src.repositories.agent_session_repository import AgentSessionRepository
 from src.repositories.agent_request_repository import AgentRequestRepository
 from src.repositories.cart_repository import CartRepository
+from src.repositories.conversation_message_repository import ConversationMessageRepository
 from src.repositories.customer_repository import CustomerRepository
 from src.repositories.menu_repository import MenuRepository
 from src.repositories.order_repository import OrderRepository
@@ -17,6 +18,7 @@ from src.services.agent_session_service import AgentSessionService
 from src.services.agent_request_service import AgentRequestService
 from src.services.audit_service import AuditService
 from src.services.cart_service import CartService
+from src.services.conversation_history_service import ConversationHistoryService
 from src.services.customer_service import CustomerService
 from src.services.knowledge_service import KnowledgeService
 from src.services.menu_service import MenuService
@@ -35,6 +37,7 @@ class ServiceContainer:
     customers: CustomerService
     agent_sessions: AgentSessionService
     agent_requests: AgentRequestService
+    conversation_history: ConversationHistoryService
     tickets: TicketService
     support_flow: SupportFlowService
     knowledge: KnowledgeService
@@ -73,6 +76,13 @@ def get_services() -> ServiceContainer:
         agent_requests=AgentRequestService(
             AgentRequestRepository(dynamodb, settings.agent_requests_table_name),
             settings,
+        ),
+        conversation_history=ConversationHistoryService(
+            ConversationMessageRepository(
+                dynamodb,
+                settings.conversation_messages_table_name,
+            ),
+            ttl_days=settings.conversation_message_ttl_days,
         ),
         tickets=ticket_service,
         support_flow=SupportFlowService(

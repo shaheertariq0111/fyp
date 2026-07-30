@@ -43,6 +43,18 @@ TICKET_INDEX_ARN = {
         "${AWS::AccountId}:table/${TicketsTableName}/index/*"
     )
 }
+CONVERSATION_TABLE_ARN = {
+    "Fn::Sub": (
+        "arn:${AWS::Partition}:dynamodb:${AWS::Region}:"
+        "${AWS::AccountId}:table/${ConversationMessagesTableName}"
+    )
+}
+CONVERSATION_INDEX_ARN = {
+    "Fn::Sub": (
+        "arn:${AWS::Partition}:dynamodb:${AWS::Region}:"
+        "${AWS::AccountId}:table/${ConversationMessagesTableName}/index/*"
+    )
+}
 
 
 class CloudFormationLoader(yaml.SafeLoader):
@@ -124,6 +136,17 @@ def ticket_statement(template, policy_name):
     return next(statement for statement in statements if statement.get("Sid") == "UseTicketsTable")
 
 
+def conversation_statement(template):
+    statements = template["Resources"]["EcsTaskDynamoDbPolicy"]["Properties"][
+        "PolicyDocument"
+    ]["Statement"]
+    return next(
+        statement
+        for statement in statements
+        if statement.get("Sid") == "UseConversationMessagesTable"
+    )
+
+
 def workflow_step(workflow, name):
     steps = workflow["jobs"]["deploy"]["steps"]
     return next(step for step in steps if step.get("name") == name)
@@ -202,6 +225,87 @@ def test_phase7_ticket_table_matches_repository_schema_and_safety():
     assert "StreamSpecification" not in properties
 
 
+def test_phase7_conversation_messages_table_matches_history_schema_and_safety():
+    template = load_template()
+    parameters = template["Parameters"]
+    resource = template["Resources"]["ConversationMessagesTable"]
+    properties = resource["Properties"]
+
+    assert parameters["ConversationMessagesTableName"]["Default"] == (
+        "fyp-dev-ConversationMessages"
+    )
+    assert parameters["CreateConversationMessagesTable"]["Default"] == "false"
+    assert parameters["CreateConversationMessagesTable"]["AllowedValues"] == [
+        "true",
+        "false",
+    ]
+    assert template["Conditions"]["ShouldCreateConversationMessagesTable"] == {
+        "Fn::Equals": [{"Ref": "CreateConversationMessagesTable"}, "true"]
+    }
+    assert resource["Type"] == "AWS::DynamoDB::Table"
+    assert resource["Condition"] == "ShouldCreateConversationMessagesTable"
+    assert resource["DeletionPolicy"] == "Retain"
+    assert resource["UpdateReplacePolicy"] == "Retain"
+    assert properties["TableName"] == {"Ref": "ConversationMessagesTableName"}
+    assert properties["BillingMode"] == "PAY_PER_REQUEST"
+    assert properties["KeySchema"] == [
+        {"AttributeName": "PK", "KeyType": "HASH"},
+        {"AttributeName": "SK", "KeyType": "RANGE"},
+    ]
+    assert properties["AttributeDefinitions"] == [
+        {"AttributeName": "PK", "AttributeType": "S"},
+        {"AttributeName": "SK", "AttributeType": "S"},
+        {"AttributeName": "GSI1PK", "AttributeType": "S"},
+        {"AttributeName": "GSI1SK", "AttributeType": "S"},
+    ]
+    assert properties["GlobalSecondaryIndexes"] == [
+        {
+            "IndexName": "GSI1",
+            "KeySchema": [
+                {"AttributeName": "GSI1PK", "KeyType": "HASH"},
+                {"AttributeName": "GSI1SK", "KeyType": "RANGE"},
+            ],
+            "Projection": {"ProjectionType": "ALL"},
+        }
+    ]
+    assert properties["TimeToLiveSpecification"] == {
+        "AttributeName": "expires_at",
+        "Enabled": True,
+    }
+    assert properties["SSESpecification"] == {"SSEEnabled": True}
+    assert properties["PointInTimeRecoverySpecification"] == {
+        "PointInTimeRecoveryEnabled": True
+    }
+    assert template["Outputs"]["ConversationMessagesTableName"]["Value"] == {
+        "Ref": "ConversationMessagesTableName"
+    }
+    assert template["Outputs"]["ConversationMessagesTableArn"]["Value"] == (
+        CONVERSATION_TABLE_ARN
+    )
+
+
+def test_conversation_messages_iam_is_least_privilege_for_ecs():
+    statement = conversation_statement(load_template())
+
+    assert statement["Effect"] == "Allow"
+    assert set(statement["Action"]) == {
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:DescribeTable",
+    }
+    assert statement["Resource"] == [
+        CONVERSATION_TABLE_ARN,
+        CONVERSATION_INDEX_ARN,
+    ]
+    serialized = json.dumps(statement)
+    assert '"Resource": "*"' not in serialized
+    assert "dynamodb:*" not in serialized
+    assert "dynamodb:Scan" not in serialized
+    assert "dynamodb:DeleteItem" not in serialized
+    assert "dynamodb:BatchWriteItem" not in serialized
+
+
 @pytest.mark.parametrize(
     "policy_name",
     ["EcsTaskDynamoDbPolicy", "AgentCoreExecutionDynamoDbPolicy"],
@@ -231,6 +335,10 @@ def test_ecs_environment_uses_effective_ticket_parameters():
     environment = environment_map(load_template())
 
     assert environment["TICKETS_TABLE_NAME"] == {"Ref": "TicketsTableName"}
+    assert environment["CONVERSATION_MESSAGES_TABLE_NAME"] == {
+        "Ref": "ConversationMessagesTableName"
+    }
+    assert environment["CONVERSATION_MESSAGE_TTL_DAYS"] == "90"
     assert environment["SUPPORT_PHONE_NUMBER"] == {
         "Ref": "SupportPhoneNumber"
     }
@@ -238,6 +346,7 @@ def test_ecs_environment_uses_effective_ticket_parameters():
         "ENVIRONMENT",
         "AWS_REGION",
         "AGENT_REQUESTS_TABLE_NAME",
+        "CONVERSATION_MESSAGES_TABLE_NAME",
         "MENU_TABLE_NAME",
         "CARTS_TABLE_NAME",
         "ORDERS_TABLE_NAME",
@@ -379,6 +488,10 @@ def test_existing_table_mode_has_no_conditional_resource_reference():
 def test_tracked_parameter_example_includes_ticket_configuration_without_phone():
     example = parameter_map(EXAMPLE_PARAMETERS)
 
+    assert example["ConversationMessagesTableName"] == (
+        "fyp-dev-ConversationMessages"
+    )
+    assert example["CreateConversationMessagesTable"] == "false"
     assert example["TicketsTableName"] == "fyp-dev-Tickets"
     assert example["CreateTicketsTable"] == "false"
     assert example["SupportPhoneNumber"] == ""
@@ -487,6 +600,31 @@ def test_backend_settings_and_local_ticket_schema_stay_consistent():
         if definition["TableName"] == settings.tickets_table_name
     )
     production = load_template()["Resources"]["TicketsTable"]["Properties"]
+    for key in (
+        "KeySchema",
+        "AttributeDefinitions",
+        "GlobalSecondaryIndexes",
+        "BillingMode",
+    ):
+        assert local[key] == production[key]
+    assert production["TimeToLiveSpecification"]["AttributeName"] == "expires_at"
+
+
+def test_backend_settings_and_local_conversation_schema_stay_consistent():
+    missing = dict(BASE)
+    missing.pop("conversation_messages_table_name")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **missing)
+
+    settings = make_test_settings()
+    local = next(
+        definition
+        for definition in table_definitions(settings)
+        if definition["TableName"] == settings.conversation_messages_table_name
+    )
+    production = load_template()["Resources"]["ConversationMessagesTable"][
+        "Properties"
+    ]
     for key in (
         "KeySchema",
         "AttributeDefinitions",

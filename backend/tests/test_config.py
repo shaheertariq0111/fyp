@@ -12,6 +12,7 @@ BASE = {
     "customers_table_name": "customers-test",
     "agent_sessions_table_name": "agent-sessions-test",
     "agent_requests_table_name": "agent-requests-test",
+    "conversation_messages_table_name": "conversation-messages-test",
     "menu_sessions_table_name": "sessions-test",
     "audit_table_name": "audit-test",
     "tickets_table_name": "tickets-test",
@@ -52,6 +53,12 @@ def test_ticket_settings_are_loaded():
     settings = make_test_settings()
     assert settings.tickets_table_name == "tickets-test"
     assert settings.support_phone_number == "+1 555 0100"
+
+
+def test_conversation_history_settings_are_loaded():
+    settings = make_test_settings()
+    assert settings.conversation_messages_table_name == "conversation-messages-test"
+    assert settings.conversation_message_ttl_days == 90
 
 
 def test_agentflo_webhook_secret_is_optional_and_configurable(monkeypatch):
@@ -109,6 +116,14 @@ def test_backend_env_example_documents_ticket_configuration():
     ).read_text(encoding="utf-8")
     assert "TICKETS_TABLE_NAME=" in example
     assert "SUPPORT_PHONE_NUMBER=" in example
+
+
+def test_backend_env_example_documents_conversation_history_configuration():
+    example = (
+        Path(__file__).resolve().parents[1] / ".env.example"
+    ).read_text(encoding="utf-8")
+    assert "CONVERSATION_MESSAGES_TABLE_NAME=" in example
+    assert "CONVERSATION_MESSAGE_TTL_DAYS=90" in example
 
 
 def test_backend_env_example_documents_agentflo_webhook_secret():

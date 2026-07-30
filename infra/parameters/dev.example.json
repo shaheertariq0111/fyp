@@ -40,6 +40,14 @@
     "ParameterValue": "fyp-dev-AgentRequests"
   },
   {
+    "ParameterKey": "CreateConversationMessagesTable",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "ConversationMessagesTableName",
+    "ParameterValue": "fyp-dev-ConversationMessages"
+  },
+  {
     "ParameterKey": "CreateTicketsTable",
     "ParameterValue": "false"
   },

@@ -76,6 +76,16 @@ Parameters:
   AgentRequestsTableName:
     Type: String
     Default: fyp-dev-AgentRequests
+  CreateConversationMessagesTable:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Set true only if the ConversationMessages table does not already exist.
+  ConversationMessagesTableName:
+    Type: String
+    Default: fyp-dev-ConversationMessages
   CreateTicketsTable:
     Type: String
     Default: "false"
@@ -188,6 +198,7 @@ Parameters:
 Conditions:
   HasBackendImageUri: !Not [!Equals [!Ref BackendImageUri, ""]]
   ShouldCreateAgentRequestsTable: !Equals [!Ref CreateAgentRequestsTable, "true"]
+  ShouldCreateConversationMessagesTable: !Equals [!Ref CreateConversationMessagesTable, "true"]
   ShouldCreateTicketsTable: !Equals [!Ref CreateTicketsTable, "true"]
   HasAgentCoreRuntimeArn: !Not [!Equals [!Ref AgentCoreRuntimeArn, ""]]
   HasAgentCoreMemoryArn: !Not [!Equals [!Ref AgentCoreMemoryArn, ""]]
@@ -500,6 +511,16 @@ Resources:
               - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MenuSessionsTableName}/index/*
               - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}
               - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuditTableName}/index/*
+          - Sid: UseConversationMessagesTable
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:DescribeTable
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConversationMessagesTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConversationMessagesTableName}/index/*
           - Sid: UseTicketsTable
             Effect: Allow
             Action:
@@ -809,6 +830,48 @@ Resources:
         - Key: Project
           Value: !Ref ProjectName
 
+  ConversationMessagesTable:
+    Type: AWS::DynamoDB::Table
+    Condition: ShouldCreateConversationMessagesTable
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref ConversationMessagesTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
   TicketsTable:
     Type: AWS::DynamoDB::Table
     Condition: ShouldCreateTicketsTable
@@ -903,6 +966,10 @@ Resources:
               Value: !Ref AgentCoreRuntimeArn
             - Name: AGENT_REQUESTS_TABLE_NAME
               Value: !Ref AgentRequestsTableName
+            - Name: CONVERSATION_MESSAGES_TABLE_NAME
+              Value: !Ref ConversationMessagesTableName
+            - Name: CONVERSATION_MESSAGE_TTL_DAYS
+              Value: "90"
             - Name: TICKETS_TABLE_NAME
               Value: !Ref TicketsTableName
             - Name: SUPPORT_PHONE_NUMBER
@@ -1112,6 +1179,10 @@ Outputs:
     Value: !GetAtt AgentCoreExecutionRole.Arn
   AgentRequestsTableName:
     Value: !Ref AgentRequestsTableName
+  ConversationMessagesTableName:
+    Value: !Ref ConversationMessagesTableName
+  ConversationMessagesTableArn:
+    Value: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConversationMessagesTableName}
   TicketsTableName:
     Value: !Ref TicketsTableName
   TicketsTableArn:
