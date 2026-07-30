@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AdminShell } from "@/app/admin/AdminShell";
+import { AdminShell, formatEnvironmentLabel } from "@/app/admin/AdminShell";
 
 let pathname = "/admin/tickets";
 
@@ -74,5 +74,14 @@ describe("AdminShell ticket navigation", () => {
         expect(link).not.toHaveAttribute("aria-current");
       }
     }
+  });
+
+  it.each([
+    [undefined, undefined, "Local development"],
+    ["default", "http://localhost:8001", "Local development"],
+    ["default", "https://abc123.execute-api.us-east-1.amazonaws.com", "AWS deployment"],
+    ["main", "https://abc123.execute-api.us-east-1.amazonaws.com", "main"],
+  ])("formats environment labels for branch %s and API %s", (branchId, apiBaseUrl, expected) => {
+    expect(formatEnvironmentLabel(branchId, apiBaseUrl)).toBe(expected);
   });
 });
