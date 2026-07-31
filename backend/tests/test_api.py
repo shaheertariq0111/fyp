@@ -1739,6 +1739,136 @@ def test_chat_replaces_waiting_menu_response_with_actionable_options(monkeypatch
     assert "Which item and size would you like?" in final_text
 
 
+def test_chat_deterministically_searches_menu_when_whatsapp_pizza_intent_waits(monkeypatch):
+    services = IdentityServices()
+    captured_menu_calls = []
+
+    def search_menu(**kwargs):
+        captured_menu_calls.append(kwargs)
+        return ToolResponse.ok(
+            data={
+                "items": [
+                    {
+                        "product_id": "mushroom-pepperoni",
+                        "name": "Mushroom & Pepperoni",
+                        "currency": "PKR",
+                        "base_prices": {
+                            "small": 850,
+                            "medium": 1700,
+                            "large": 2400,
+                        },
+                    },
+                    {
+                        "product_id": "pepperoni-hot",
+                        "name": "Pepperoni Hot",
+                        "currency": "PKR",
+                        "base_prices": {
+                            "small": 850,
+                            "medium": 1700,
+                            "large": 2400,
+                        },
+                    },
+                    {
+                        "product_id": "pepperoni-passion",
+                        "name": "Pepperoni Passion",
+                        "currency": "PKR",
+                        "base_prices": {
+                            "small": 850,
+                            "medium": 1700,
+                            "large": 2400,
+                        },
+                    },
+                ],
+            },
+            user_message="I found current menu options.",
+            next_action="present_menu_results",
+        )
+
+    services.menu = SimpleNamespace(search_menu=search_menu)
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(tool_calls=[]),
+        text=(
+            "Hello again! I see you're interested in ordering a pepperoni pizza. "
+            "Let me check if there's an existing order or cart for you. Please give me "
+            "a moment while I retrieve that information."
+        ),
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "hello I would like to order a pepperoni pizza",
+            "session_id": "session",
+            "user_id": "user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+    final_text = completed["text"]
+    lowered = final_text.lower()
+
+    assert captured_menu_calls == [{
+        "query": "pepperoni pizza",
+        "available_only": True,
+        "limit": 5,
+    }]
+    for forbidden in (
+        "please hold",
+        "hold on",
+        "please wait",
+        "give me a moment",
+        "let me check",
+        "i'll check",
+        "i will check",
+        "retrieve that information",
+    ):
+        assert forbidden not in lowered
+    assert "Mushroom & Pepperoni" in final_text
+    assert "Pepperoni Hot" in final_text
+    assert "Pepperoni Passion" in final_text
+    assert "small PKR 850, medium PKR 1700, large PKR 2400" in final_text
+    assert "Which item and size would you like?" in final_text
+
+
+def test_chat_does_not_deterministically_override_non_menu_waiting_text(monkeypatch):
+    services = IdentityServices()
+    captured_menu_calls = []
+    services.menu = SimpleNamespace(
+        search_menu=lambda **kwargs: captured_menu_calls.append(kwargs)
+    )
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    model_text = "Let me check that for you. Please give me a moment."
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(tool_calls=[]),
+        text=model_text,
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "hello how are you",
+            "session_id": "session",
+            "user_id": "user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == model_text
+    assert captured_menu_calls == []
+
+
 def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
     captured = {}
 

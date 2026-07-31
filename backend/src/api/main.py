@@ -79,10 +79,49 @@ AUTHORITATIVE_SUPPORT_TICKET_TOOLS = frozenset({
 })
 WAITING_FINAL_RESPONSE_PATTERN = re.compile(
     r"\b(?:please\s+hold|hold\s+on|please\s+wait|i['’]ll\s+check|"
-    r"i\s+will\s+check|let\s+me\s+retrieve|retrieve\s+that\s+information|"
-    r"give\s+me\s+(?:a\s+)?moment)\b",
+    r"i\s+will\s+check|let\s+me\s+check|let\s+me\s+retrieve|"
+    r"retrieve\s+that\s+information|give\s+me\s+(?:a\s+)?moment)\b",
     re.IGNORECASE,
 )
+MENU_ITEM_REQUEST_PATTERN = re.compile(
+    r"\b(?:order|want|would\s+like|like\s+to|can\s+i|could\s+i|show\s+me|"
+    r"menu|options?|have|get|need|one|1|small|medium|large)\b",
+    re.IGNORECASE,
+)
+MENU_ITEM_WORD_PATTERN = re.compile(r"\b(?:pizza|pepperoni)\b", re.IGNORECASE)
+NON_MENU_CUSTOMER_SERVICE_PATTERN = re.compile(
+    r"\b(?:complain|complaint|refund|support|human|agent|manager|status|"
+    r"track|tracking|where\s+is|cancel|cancellation|wrong|missing|late|cold|"
+    r"damaged|issue|problem)\b",
+    re.IGNORECASE,
+)
+MENU_QUERY_STOPWORDS = frozenset({
+    "a",
+    "an",
+    "and",
+    "can",
+    "could",
+    "get",
+    "have",
+    "hello",
+    "hey",
+    "hi",
+    "i",
+    "large",
+    "like",
+    "medium",
+    "me",
+    "need",
+    "one",
+    "options",
+    "order",
+    "please",
+    "show",
+    "small",
+    "to",
+    "want",
+    "would",
+})
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_frontend_cors_origins(
@@ -566,9 +605,21 @@ def _price_label(item: dict[str, Any]) -> str:
         return f"from {currency} {item['starting_price']}".strip()
     base_prices = item.get("base_prices")
     if isinstance(base_prices, dict):
-        prices = [value for value in base_prices.values() if value is not None]
-        if prices:
-            return f"from {currency} {min(prices)}".strip()
+        ordered_sizes = [
+            size
+            for size in ("small", "medium", "large")
+            if base_prices.get(size) is not None
+        ]
+        ordered_sizes.extend(
+            size
+            for size in base_prices
+            if size not in ordered_sizes and base_prices.get(size) is not None
+        )
+        if ordered_sizes:
+            return ", ".join(
+                f"{size} {currency} {base_prices[size]}".strip()
+                for size in ordered_sizes
+            )
     return "price shown on menu"
 
 
@@ -601,9 +652,81 @@ def _menu_results_response_from_tool(call: ToolCallResult) -> str | None:
     )
 
 
+def _deterministic_menu_query_from_message(message: str | None) -> str | None:
+    if not message:
+        return None
+    if NON_MENU_CUSTOMER_SERVICE_PATTERN.search(message):
+        return None
+    if not MENU_ITEM_REQUEST_PATTERN.search(message):
+        return None
+    if not MENU_ITEM_WORD_PATTERN.search(message):
+        return None
+
+    normalized = re.sub(r"[^a-z0-9\s]", " ", message.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if "pepperoni" in normalized and "pizza" in normalized:
+        return "pepperoni pizza"
+    if "pepperoni" in normalized:
+        return "pepperoni"
+    if "pizza" not in normalized:
+        return None
+
+    before_pizza = normalized.split("pizza", 1)[0]
+    tokens = [
+        token
+        for token in before_pizza.split()
+        if token and token not in MENU_QUERY_STOPWORDS and not token.isdigit()
+    ]
+    if tokens:
+        return f"{' '.join(tokens[-3:])} pizza"
+    return "pizza"
+
+
+def _deterministic_menu_response_for_waiting_text(
+    context: AgentRequestContext,
+    tool_calls: list[ToolCallResult],
+) -> str | None:
+    if context.channel != "whatsapp":
+        return None
+    if any(call.tool_name == "search_menu" and call.success for call in tool_calls):
+        return None
+
+    query = _deterministic_menu_query_from_message(context.current_message)
+    if not query:
+        return None
+
+    try:
+        result = get_services().menu.search_menu(
+            query=query,
+            available_only=True,
+            limit=5,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Deterministic menu lookup failed",
+            extra={
+                "event": "deterministic_menu_lookup_failed",
+                "request_id": context.request_id,
+                "channel": context.channel,
+                "error_type": type(exc).__name__,
+            },
+        )
+        return None
+
+    call = ToolCallResult(
+        tool_name="search_menu",
+        success=result.success,
+        is_write=False,
+        result=result.model_dump(exclude_none=True),
+        error_code=result.error_code,
+    )
+    return _menu_results_response_from_tool(call)
+
+
 def _actionable_response_from_tool_results(
     text: str,
     tool_calls: list[ToolCallResult],
+    context: AgentRequestContext | None = None,
 ) -> str:
     if not _is_waiting_final_response(text):
         return text
@@ -612,6 +735,10 @@ def _actionable_response_from_tool_results(
             menu_response = _menu_results_response_from_tool(call)
             if menu_response:
                 return menu_response
+    if context is not None:
+        menu_response = _deterministic_menu_response_for_waiting_text(context, tool_calls)
+        if menu_response:
+            return menu_response
     for call in reversed(tool_calls):
         result = call.result if isinstance(call.result, dict) else {}
         agent = result.get("agent")
@@ -646,7 +773,7 @@ def _chat_response_from_invocation(
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
     response_text = _authoritative_ticket_message(tool_calls) or (
-        _actionable_response_from_tool_results(invocation.text, tool_calls)
+        _actionable_response_from_tool_results(invocation.text, tool_calls, context)
     )
     return ChatResponse(
         text=response_text,
@@ -1253,6 +1380,7 @@ def _process_chat_request(
         payload,
         allow_requested_session_creation=allow_requested_session_creation,
     )
+    context.current_message = payload.message
     agent_requests = get_services().agent_requests
     record = agent_requests.start_processing(
         actor_id=context.user_id,
@@ -1261,6 +1389,7 @@ def _process_chat_request(
         channel=context.channel,
         request_payload=payload.model_dump(),
     )
+    context.request_id = record["request_id"]
     logger.info(
         "Agent request processing started",
         extra={
