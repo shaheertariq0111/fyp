@@ -29,6 +29,12 @@ from src.services.ticket_service import TicketService
 from src.services.whatsapp_order_flow_service import WhatsAppOrderFlowService
 
 
+def _get_agent_runtime_client():
+    from src.agent_client import get_agent_runtime_client
+
+    return get_agent_runtime_client()
+
+
 @dataclass
 class ServiceContainer:
     menu: MenuService
@@ -104,5 +110,6 @@ def get_services() -> ServiceContainer:
             cart_service,
             order_service,
             agent_session_service,
+            intent_client_factory=_get_agent_runtime_client,
         ),
     )

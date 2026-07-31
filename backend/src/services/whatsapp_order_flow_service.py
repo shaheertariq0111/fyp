@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
 from src.models.tool_responses import ToolResponse
 
 
@@ -35,6 +37,10 @@ SKIP_PATTERN = re.compile(
 )
 DELIVERY_PATTERN = re.compile(r"\bdelivery\b", re.IGNORECASE)
 TAKEAWAY_PATTERN = re.compile(r"\b(?:takeaway|take\s*away|pickup|pick\s*up)\b", re.IGNORECASE)
+ORDER_INTENT_CONFIDENCE_THRESHOLD = 0.85
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -46,11 +52,21 @@ class WhatsAppOrderFlowResult:
 class WhatsAppOrderFlowService:
     """Translate WhatsApp choices into the existing menu, cart, and order services."""
 
-    def __init__(self, menu, carts, orders, agent_sessions):
+    def __init__(
+        self,
+        menu,
+        carts,
+        orders,
+        agent_sessions,
+        intent_client=None,
+        intent_client_factory=None,
+    ):
         self.menu = menu
         self.carts = carts
         self.orders = orders
         self.agent_sessions = agent_sessions
+        self.intent_client = intent_client
+        self.intent_client_factory = intent_client_factory
 
     def handle(
         self,
@@ -79,17 +95,52 @@ class WhatsAppOrderFlowService:
             "awaiting_delivery_address",
             "pending_confirmation",
         }:
-            return self._handle_order(user_id, order, normalized, message, request_id)
+            return self._handle_order(
+                user_id,
+                session_id,
+                order,
+                normalized,
+                message,
+                request_id,
+            )
 
         cart_response = self.carts.get_active_cart(user_id, session_id)
         cart = (cart_response.data or {}).get("cart") if cart_response.success else None
         if isinstance(cart, dict):
-            return self._handle_cart(cart_response, cart, normalized)
+            return self._handle_cart(
+                cart_response,
+                cart,
+                normalized,
+                message,
+                user_id,
+                session_id,
+                request_id,
+            )
 
         menu_state = self.agent_sessions.get_whatsapp_order_state(user_id, session_id)
         offered_items = menu_state.get("offered_menu_items", [])
         if offered_items:
             selected = self._select(offered_items, normalized, ("name", "product_id"))
+            if selected is None:
+                intent = self._interpret(
+                    state="menu_selection",
+                    allowed_actions=["select_menu_item"],
+                    message=message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                    options=self._intent_options(
+                        offered_items,
+                        id_field="product_id",
+                        label_field="name",
+                    ),
+                )
+                selected = self._selected_by_intent(
+                    intent,
+                    action="select_menu_item",
+                    choices=offered_items,
+                    id_field="product_id",
+                )
             if selected is not None:
                 self.agent_sessions.clear_whatsapp_order_state(user_id, session_id)
                 response = self.carts.start_item_customization(
@@ -142,6 +193,10 @@ class WhatsAppOrderFlowService:
         cart_response: ToolResponse,
         cart: dict[str, Any],
         normalized: str,
+        message: str,
+        user_id: str,
+        session_id: str,
+        request_id: str,
     ) -> WhatsAppOrderFlowResult:
         status = cart.get("status")
         cart_id = cart.get("cart_id")
@@ -154,7 +209,34 @@ class WhatsAppOrderFlowService:
             ]
             selected = self._select(choices, normalized, ("label", "value"))
             if selected is None:
-                return self._result("get_active_cart", cart_response, is_write=False)
+                intent = self._interpret(
+                    state="customization_mode",
+                    allowed_actions=["select_customization_mode"],
+                    message=message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                    options=self._intent_options(
+                        choices,
+                        id_field="value",
+                        label_field="label",
+                    ),
+                )
+                selected = self._selected_by_intent(
+                    intent,
+                    action="select_customization_mode",
+                    choices=choices,
+                    id_field="value",
+                )
+            if selected is None:
+                return WhatsAppOrderFlowResult(
+                    text=(
+                        "Please choose how to customize these items:\n"
+                        "1. Same customization\n"
+                        "2. Customize separately"
+                    ),
+                    tool_calls=[],
+                )
             response = self.carts.set_customization_mode(cart_id, selected["value"])
             return self._cart_result("set_customization_mode", response)
 
@@ -166,6 +248,26 @@ class WhatsAppOrderFlowService:
                 normalized,
                 ("display_label", "label", "option_id"),
             )
+            if selected is None:
+                intent = self._interpret(
+                    state="customization_choice",
+                    allowed_actions=["select_option"],
+                    message=message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                    options=self._intent_options(
+                        options,
+                        id_field="option_id",
+                        label_field="display_label",
+                    ),
+                )
+                selected = self._selected_by_intent(
+                    intent,
+                    action="select_option",
+                    choices=options,
+                    id_field="option_id",
+                )
             if selected is None:
                 return WhatsAppOrderFlowResult(
                     text=(
@@ -194,6 +296,29 @@ class WhatsAppOrderFlowService:
             upsell_items = (options_response.data or {}).get("upsell_items", [])
             selected = self._select(upsell_items, normalized, ("name", "product_id"))
             if selected is None:
+                intent = self._interpret(
+                    state="upsell",
+                    allowed_actions=["skip_upsell", "select_upsell"],
+                    message=message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                    options=self._intent_options(
+                        upsell_items,
+                        id_field="product_id",
+                        label_field="name",
+                    ),
+                )
+                if intent is not None and intent.action == "skip_upsell":
+                    response = self.carts.handle_upsell(cart_id, "skip")
+                    return self._cart_result("handle_cart_upsell", response)
+                selected = self._selected_by_intent(
+                    intent,
+                    action="select_upsell",
+                    choices=upsell_items,
+                    id_field="product_id",
+                )
+            if selected is None:
                 return self._cart_result("handle_cart_upsell", options_response)
             response = self.carts.handle_upsell(
                 cart_id,
@@ -204,7 +329,18 @@ class WhatsAppOrderFlowService:
             return self._cart_result("handle_cart_upsell", response)
 
         if status == "cart_ready":
-            if not CHECKOUT_PATTERN.search(normalized):
+            checkout = bool(CHECKOUT_PATTERN.search(normalized))
+            if not checkout:
+                intent = self._interpret(
+                    state="cart_ready",
+                    allowed_actions=["checkout"],
+                    message=message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                )
+                checkout = intent is not None and intent.action == "checkout"
+            if not checkout:
                 return WhatsAppOrderFlowResult(
                     text="Your cart is ready. Reply checkout to continue.",
                     tool_calls=[],
@@ -222,6 +358,7 @@ class WhatsAppOrderFlowService:
     def _handle_order(
         self,
         user_id: str,
+        session_id: str,
         order: dict[str, Any],
         normalized: str,
         original_message: str,
@@ -230,23 +367,54 @@ class WhatsAppOrderFlowService:
         order_id = order["order_id"]
         status = order.get("status")
         if status == "awaiting_fulfillment_method":
+            action = None
             if DELIVERY_PATTERN.search(normalized) or normalized == "1":
+                action = "delivery"
+            elif TAKEAWAY_PATTERN.search(normalized) or normalized == "2":
+                action = "takeaway"
+            elif CANCEL_PATTERN.search(normalized):
+                action = "cancel"
+            else:
+                intent = self._interpret(
+                    state="awaiting_fulfillment_method",
+                    allowed_actions=["delivery", "takeaway", "cancel"],
+                    message=original_message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                )
+                action = intent.action if intent is not None else None
+            if action == "delivery":
                 response = self.orders.update_order_flow(order_id, "set_delivery")
                 tool_name = "update_order_flow"
                 is_write = True
-            elif TAKEAWAY_PATTERN.search(normalized) or normalized == "2":
+            elif action == "takeaway":
                 response = self.orders.update_order_flow(order_id, "set_takeaway")
+                tool_name = "update_order_flow"
+                is_write = True
+            elif action == "cancel":
+                response = self.orders.update_order_flow(order_id, "cancel")
                 tool_name = "update_order_flow"
                 is_write = True
             else:
                 response = self.orders.get_order_status(user_id, order_id)
                 tool_name = "get_order_status"
                 is_write = False
+                clarification = (
+                    "Please choose fulfilment:\n"
+                    "1. Delivery\n"
+                    "2. Takeaway\n"
+                    "Or reply cancel."
+                )
             return self._result(
                 tool_name,
                 response,
                 is_write=is_write,
-                text=self._order_step_text(response),
+                text=(
+                    clarification
+                    if action is None
+                    else self._order_step_text(response)
+                ),
             )
 
         if status == "awaiting_delivery_address":
@@ -266,7 +434,22 @@ class WhatsAppOrderFlowService:
             )
 
         if status == "pending_confirmation":
+            action = None
             if CONFIRM_PATTERN.search(normalized):
+                action = "confirm"
+            elif CANCEL_PATTERN.search(normalized):
+                action = "cancel"
+            else:
+                intent = self._interpret(
+                    state="pending_confirmation",
+                    allowed_actions=["confirm", "cancel"],
+                    message=original_message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                )
+                action = intent.action if intent is not None else None
+            if action == "confirm":
                 response = self.orders.update_order_flow(
                     order_id,
                     "confirm",
@@ -274,7 +457,7 @@ class WhatsAppOrderFlowService:
                 )
                 tool_name = "update_order_flow"
                 is_write = True
-            elif CANCEL_PATTERN.search(normalized):
+            elif action == "cancel":
                 response = self.orders.update_order_flow(order_id, "cancel")
                 tool_name = "update_order_flow"
                 is_write = True
@@ -291,6 +474,92 @@ class WhatsAppOrderFlowService:
 
         response = self.orders.get_order_status(user_id, order_id)
         return self._result("get_order_status", response, is_write=False)
+
+    def _interpret(
+        self,
+        *,
+        state: str,
+        allowed_actions: list[str],
+        message: str,
+        user_id: str,
+        session_id: str,
+        request_id: str,
+        options: list[dict[str, str]] | None = None,
+    ) -> OrderIntentClassification | None:
+        if state != "upsell" and SKIP_PATTERN.search(self._normalize(message)):
+            return None
+        try:
+            intent_client = self.intent_client
+            if intent_client is None and self.intent_client_factory is not None:
+                intent_client = self.intent_client_factory()
+            if intent_client is None:
+                return None
+            intent = intent_client.classify_order_intent(
+                OrderIntentRequest(
+                    message=message,
+                    state=state,
+                    allowed_actions=allowed_actions,
+                    available_options=options or [],
+                    user_id=user_id,
+                    agent_session_id=session_id,
+                    request_id=request_id,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "WhatsApp order intent classification failed",
+                extra={
+                    "event": "order_intent_classification_failed",
+                    "request_id": request_id,
+                    "actor_id": user_id,
+                    "agent_session_id": session_id,
+                    "channel": "whatsapp",
+                    "order_state": state,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return None
+        if (
+            intent.action not in allowed_actions
+            or intent.confidence < ORDER_INTENT_CONFIDENCE_THRESHOLD
+        ):
+            return None
+        return intent
+
+    @staticmethod
+    def _intent_options(
+        choices: list[dict[str, Any]],
+        *,
+        id_field: str,
+        label_field: str,
+    ) -> list[dict[str, str]]:
+        return [
+            {
+                "id": str(choice[id_field]),
+                "label": str(choice.get(label_field) or choice[id_field]),
+            }
+            for choice in choices
+            if choice.get(id_field)
+        ]
+
+    @staticmethod
+    def _selected_by_intent(
+        intent: OrderIntentClassification | None,
+        *,
+        action: str,
+        choices: list[dict[str, Any]],
+        id_field: str,
+    ) -> dict[str, Any] | None:
+        if intent is None or intent.action != action or not intent.selected_option:
+            return None
+        return next(
+            (
+                choice
+                for choice in choices
+                if str(choice.get(id_field)) == intent.selected_option
+            ),
+            None,
+        )
 
     def _cart_result(self, tool_name: str, response: ToolResponse) -> WhatsAppOrderFlowResult:
         return self._result(

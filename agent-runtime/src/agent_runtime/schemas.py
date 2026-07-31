@@ -1,9 +1,12 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from src.agent.order_intent import OrderIntentClassification
+
 
 class RuntimeRequest(BaseModel):
+    task: Literal["conversation", "classify_order_intent"] = "conversation"
     message: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
     agent_session_id: str = Field(min_length=1)
@@ -13,6 +16,9 @@ class RuntimeRequest(BaseModel):
     customer_name: str | None = None
     customer_phone: str | None = None
     channel: str = "web"
+    state: str | None = None
+    allowed_actions: list[str] = Field(default_factory=list)
+    available_options: list[dict[str, str]] = Field(default_factory=list)
 
 
 class ToolCallResult(BaseModel):
@@ -27,3 +33,4 @@ class RuntimeResponse(BaseModel):
     text: str
     tool_calls: list[ToolCallResult] = Field(default_factory=list)
     memory: dict[str, str] = Field(default_factory=dict)
+    intent: OrderIntentClassification | None = None

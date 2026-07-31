@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from agent_runtime import handler
 from agent_runtime.server import app
 from agent_runtime.schemas import RuntimeRequest
+from src.agent.order_intent import OrderIntentClassification
 
 
 class FakeMemoryConfig:
@@ -141,6 +142,56 @@ def test_runtime_request_accepts_missing_request_id():
     request = RuntimeRequest.model_validate(payload)
 
     assert request.request_id is None
+
+
+def test_handler_classifies_order_intent_without_tools_or_conversation_memory(monkeypatch):
+    captured = {}
+
+    def fake_classify_order_intent(**kwargs):
+        captured.update(kwargs)
+        return OrderIntentClassification(
+            action="checkout",
+            confidence=0.95,
+        )
+
+    monkeypatch.setattr(handler, "classify_order_intent", fake_classify_order_intent)
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda **kwargs: pytest.fail("transactional agent must not be built"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "get_agentcore_runtime_settings",
+        lambda: settings(),
+    )
+
+    response = handler.invoke(runtime_payload(
+        task="classify_order_intent",
+        message="checkouttt",
+        state="cart_ready",
+        allowed_actions=["checkout"],
+        available_options=[],
+        channel="whatsapp",
+    ))
+
+    assert response == {
+        "text": "",
+        "tool_calls": [],
+        "memory": {},
+        "intent": {
+            "action": "checkout",
+            "confidence": 0.95,
+        },
+    }
+    assert captured == {
+        "message": "checkouttt",
+        "state": "cart_ready",
+        "allowed_actions": ["checkout"],
+        "available_options": [],
+    }
+    assert FakeMemoryConfig.created == []
+    assert FakeMemorySessionManager.created == []
 
 
 def test_handler_forwards_missing_request_id_without_substitute(monkeypatch):

@@ -3,8 +3,16 @@ from __future__ import annotations
 import logging
 import time
 
+from src.agent.order_intent import (
+    OrderIntentClassification,
+    OrderIntentRequest,
+    classify_order_intent,
+)
 from src.agent.restaurant_agent import agent_result_text, invoke_restaurant_agent
-from src.agent_client.schemas import AgentInvocationRequest, AgentInvocationResult
+from src.agent_client.schemas import (
+    AgentInvocationRequest,
+    AgentInvocationResult,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -65,6 +73,17 @@ class LocalStrandsAgentRuntimeClient:
         return AgentInvocationResult(
             text=agent_result_text(raw_result),
             raw_result=raw_result,
+        )
+
+    def classify_order_intent(
+        self,
+        request: OrderIntentRequest,
+    ) -> OrderIntentClassification:
+        return classify_order_intent(
+            message=request.message,
+            state=request.state,
+            allowed_actions=request.allowed_actions,
+            available_options=request.available_options,
         )
 
     async def start_request(self, request: AgentInvocationRequest) -> dict:

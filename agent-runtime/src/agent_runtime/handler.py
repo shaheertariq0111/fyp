@@ -6,6 +6,7 @@ import os
 import time
 from typing import Any
 
+from src.agent.order_intent import classify_order_intent
 from src.agent.restaurant_agent import agent_result_text, build_restaurant_agent, invoke_restaurant_agent
 from src.agent.dependencies import get_services
 from src.infrastructure.config import get_settings
@@ -45,6 +46,48 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     request = RuntimeRequest.model_validate(event)
     settings = get_agentcore_runtime_settings()
     configure_logging(settings.log_level)
+    if request.task == "classify_order_intent":
+        if not request.state or not request.allowed_actions:
+            raise ValueError(
+                "Intent classification requires state and allowed_actions"
+            )
+        started = time.perf_counter()
+        logger.info(
+            "Classifying WhatsApp order intent",
+            extra={
+                "event": "order_intent_classification_started",
+                "actor_id": request.user_id,
+                "agent_session_id": request.agent_session_id,
+                "channel": request.channel,
+                "order_state": request.state,
+            },
+        )
+        intent = classify_order_intent(
+            message=request.message,
+            state=request.state,
+            allowed_actions=request.allowed_actions,
+            available_options=request.available_options,
+        )
+        logger.info(
+            "WhatsApp order intent classified",
+            extra={
+                "event": "order_intent_classification_completed",
+                "actor_id": request.user_id,
+                "agent_session_id": request.agent_session_id,
+                "channel": request.channel,
+                "order_state": request.state,
+                "interpreted_action": intent.action,
+                "intent_confidence": intent.confidence,
+                "response_time_ms": round(
+                    (time.perf_counter() - started) * 1000,
+                    2,
+                ),
+            },
+        )
+        return RuntimeResponse(
+            text="",
+            intent=intent,
+        ).model_dump(exclude_none=True)
     ensure_session_token_secret(settings)
     memory_id = require_agentcore_memory_id(settings)
     actor_id = agentcore_actor_id(customer_id=request.customer_id, user_id=request.user_id)

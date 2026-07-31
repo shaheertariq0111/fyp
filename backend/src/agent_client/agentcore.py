@@ -8,7 +8,11 @@ from typing import Any
 import boto3
 from botocore.config import Config
 
-from src.agent_client.schemas import AgentInvocationRequest, AgentInvocationResult
+from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
+from src.agent_client.schemas import (
+    AgentInvocationRequest,
+    AgentInvocationResult,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -32,25 +36,66 @@ class AgentCoreRuntimeClient:
         )
 
     def invoke(self, request: AgentInvocationRequest) -> AgentInvocationResult:
+        result = self._invoke_payload(
+            payload=self._payload(request),
+            user_id=request.user_id,
+            agent_session_id=request.agent_session_id,
+            channel=request.channel,
+        )
+        return AgentInvocationResult(
+            text=str(result.get("text") or ""),
+            raw_result=result,
+        )
+
+    def classify_order_intent(
+        self,
+        request: OrderIntentRequest,
+    ) -> OrderIntentClassification:
+        result = self._invoke_payload(
+            payload={
+                "task": "classify_order_intent",
+                "message": request.message,
+                "state": request.state,
+                "allowed_actions": request.allowed_actions,
+                "available_options": request.available_options,
+                "user_id": request.user_id,
+                "agent_session_id": request.agent_session_id,
+                "request_id": request.request_id,
+                "channel": request.channel,
+            },
+            user_id=request.user_id,
+            agent_session_id=request.agent_session_id,
+            channel=request.channel,
+        )
+        return OrderIntentClassification.model_validate(result.get("intent"))
+
+    def _invoke_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        user_id: str,
+        agent_session_id: str,
+        channel: str,
+    ) -> dict[str, Any]:
         started = time.perf_counter()
         logger.info(
             "AgentCore runtime invocation started",
             extra={
                 "event": "agentcore_invocation_started",
-                "actor_id": request.user_id,
-                "agent_session_id": request.agent_session_id,
-                "channel": request.channel,
+                "actor_id": user_id,
+                "agent_session_id": agent_session_id,
+                "channel": channel,
                 "agentcore_invocation_status": "started",
             },
         )
         try:
             response = self.client.invoke_agent_runtime(
                 agentRuntimeArn=self.runtime_arn,
-                runtimeSessionId=request.agent_session_id,
-                runtimeUserId=request.user_id,
+                runtimeSessionId=agent_session_id,
+                runtimeUserId=user_id,
                 contentType="application/json",
                 accept="application/json",
-                payload=json.dumps(self._payload(request)).encode("utf-8"),
+                payload=json.dumps(payload).encode("utf-8"),
             )
             status_code = int(response.get("statusCode") or 200)
             result = self._read_response(response)
@@ -61,9 +106,9 @@ class AgentCoreRuntimeClient:
                 "AgentCore runtime invocation failed",
                 extra={
                     "event": "agentcore_invocation_failed",
-                    "actor_id": request.user_id,
-                    "agent_session_id": request.agent_session_id,
-                    "channel": request.channel,
+                    "actor_id": user_id,
+                    "agent_session_id": agent_session_id,
+                    "channel": channel,
                     "agentcore_invocation_status": "failed",
                     "error_code": "AGENT_INVOCATION_FAILED",
                     "exception_message": str(exc),
@@ -75,17 +120,14 @@ class AgentCoreRuntimeClient:
             "AgentCore runtime invocation finished",
             extra={
                 "event": "agentcore_invocation_completed",
-                "actor_id": request.user_id,
-                "agent_session_id": request.agent_session_id,
-                "channel": request.channel,
+                "actor_id": user_id,
+                "agent_session_id": agent_session_id,
+                "channel": channel,
                 "agentcore_invocation_status": "completed",
                 "response_time_ms": round((time.perf_counter() - started) * 1000, 2),
             },
         )
-        return AgentInvocationResult(
-            text=str(result.get("text") or ""),
-            raw_result=result,
-        )
+        return result
 
     async def start_request(self, request: AgentInvocationRequest) -> dict:
         raise NotImplementedError("Durable AgentCore async requests are handled by request service")
