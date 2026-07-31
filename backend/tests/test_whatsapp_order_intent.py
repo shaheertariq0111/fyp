@@ -4,6 +4,7 @@ import pytest
 
 from src.agent.order_intent import OrderIntentClassification
 from src.models.tool_responses import ToolResponse
+from src.services.order_service import OrderService
 from src.services.whatsapp_order_flow_service import WhatsAppOrderFlowService
 
 
@@ -35,24 +36,37 @@ class FakeOrders:
     def __init__(self, order=None):
         self.order = deepcopy(order)
         self.updates = []
+        self.saved_addresses = []
 
     def get_active_order_for_session(self, user_id, session_id):
         return deepcopy(self.order)
 
     def update_order_flow(self, order_id, action, value=None, idempotency_key=None):
         self.updates.append((order_id, action, value, idempotency_key))
+        if action == "save_address" and not OrderService.is_valid_delivery_address(value):
+            return ToolResponse.error(
+                error_code="INVALID_DELIVERY_ADDRESS",
+                user_message=(
+                    "I still need a valid delivery address for delivery. Please "
+                    "send your full address, or reply takeaway to switch to pickup."
+                ),
+            )
         status = {
             "confirm": "submitted_to_restaurant",
             "set_delivery": "awaiting_delivery_address",
             "set_takeaway": "pending_confirmation",
+            "save_address": "pending_confirmation",
             "cancel": "cancelled",
         }[action]
+        if action == "save_address":
+            self.saved_addresses.append(value)
         data = {
             **(self.order or {}),
             "order_id": order_id,
             "status": status,
             "total": 850,
             "currency": "PKR",
+            "delivery_address": value if action == "save_address" else None,
         }
         return ToolResponse.ok(
             data=data,
@@ -284,3 +298,57 @@ def test_support_and_complaint_messages_never_reach_order_interpreter(message):
     assert carts.checkout_calls == []
     assert orders.updates == []
     assert intent.requests == []
+
+
+@pytest.mark.parametrize("message", ["No", "nah", "none", "n/a", "skip", "Ok"])
+def test_delivery_address_step_rejects_invalid_reply_without_saving(message):
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_delivery_address",
+        "fulfillment_method": "delivery",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, message)
+
+    assert orders.saved_addresses == []
+    assert result.tool_calls[0]["success"] is False
+    assert result.tool_calls[0]["error_code"] == "INVALID_DELIVERY_ADDRESS"
+    assert result.text == (
+        "I still need a valid delivery address for delivery. Please send your "
+        "full address, or reply takeaway to switch to pickup."
+    )
+
+
+def test_delivery_address_step_accepts_realistic_address():
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_delivery_address",
+        "fulfillment_method": "delivery",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, "D-07-07, Flexis, One South")
+
+    assert orders.saved_addresses == ["D-07-07, Flexis, One South"]
+    assert result.tool_calls[0]["success"] is True
+    assert result.tool_calls[0]["result"]["data"]["status"] == (
+        "pending_confirmation"
+    )
+
+
+@pytest.mark.parametrize("message", ["takeaway", "pickup", "collect"])
+def test_delivery_address_step_can_switch_to_takeaway(message):
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_delivery_address",
+        "fulfillment_method": "delivery",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, message)
+
+    assert orders.updates == [("ORD-REAL", "set_takeaway", None, None)]
+    assert result.tool_calls[0]["result"]["data"]["status"] == (
+        "pending_confirmation"
+    )

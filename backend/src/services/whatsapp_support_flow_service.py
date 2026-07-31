@@ -36,6 +36,16 @@ TICKET_STATUS_PATTERN = re.compile(
     r"\b(?:ticket|complaint|support\s+request)\b",
     re.IGNORECASE,
 )
+DELAY_COMPLAINT_PATTERN = re.compile(
+    r"\b(?:tired\s+of\s+waiting|waiting\s+(?:too\s+)?long|"
+    r"taking\s+(?:too\s+)?long|order\s+(?:is\s+)?delayed)\b",
+    re.IGNORECASE,
+)
+DELAY_TICKET_CONFIRMATION_PATTERN = re.compile(
+    r"\b(?:create|open|raise)\b.*\b(?:delay|waiting)\b.*"
+    r"\b(?:ticket|complaint|support)\b",
+    re.IGNORECASE,
+)
 COMPLAINT_CANCEL_PATTERN = re.compile(
     r"\b(?:cancel|stop|forget|never\s*mind)\b.*\bcomplaint\b|"
     r"\bcomplaint\b.*\b(?:cancel|stop)\b",
@@ -65,10 +75,11 @@ class WhatsAppSupportFlowResult:
 class WhatsAppSupportFlowService:
     """Route WhatsApp support turns through authoritative backend services."""
 
-    def __init__(self, support_flow, tickets, agent_sessions):
+    def __init__(self, support_flow, tickets, agent_sessions, orders):
         self.support_flow = support_flow
         self.tickets = tickets
         self.agent_sessions = agent_sessions
+        self.orders = orders
 
     def handle(
         self,
@@ -91,6 +102,43 @@ class WhatsAppSupportFlowService:
                 "get_support_ticket_status",
                 False,
                 lambda: self.tickets.get_ticket_status(user_id, ticket_id),
+            )
+
+        if DELAY_TICKET_CONFIRMATION_PATTERN.search(message):
+            order = self.orders.get_active_order_for_session(user_id, session_id)
+            if order is None:
+                return self._missing_delay_order()
+            return self._call(
+                "handle_order_complaint",
+                True,
+                lambda: self.support_flow.handle_order_complaint(
+                    user_id=user_id,
+                    agent_session_id=session_id,
+                    request_id=request_id,
+                    order_id=order["order_id"],
+                    description="The customer reports that the order is taking too long.",
+                    customer_id=customer_id,
+                    customer_name=customer_name,
+                    customer_phone=customer_phone,
+                    source="whatsapp",
+                ),
+            )
+
+        if DELAY_COMPLAINT_PATTERN.search(message):
+            order = self.orders.get_active_order_for_session(user_id, session_id)
+            if order is None:
+                return self._missing_delay_order()
+            response = self.orders.get_order_status(user_id, order["order_id"])
+            return self._result(
+                "get_order_status",
+                response,
+                is_write=False,
+                text=(
+                    "I'm sorry this is taking longer than expected.\n"
+                    f"{response.user_message}\n\n"
+                    "Would you like me to create a support ticket for this delay? "
+                    "Reply 'create a delay support ticket' to confirm."
+                ),
             )
 
         complaint_intent = bool(COMPLAINT_INTENT_PATTERN.search(message))
@@ -208,10 +256,11 @@ class WhatsAppSupportFlowService:
         response: ToolResponse,
         *,
         is_write: bool,
+        text: str | None = None,
     ) -> WhatsAppSupportFlowResult:
         dumped = response.model_dump(exclude_none=True)
         return WhatsAppSupportFlowResult(
-            text=response.user_message,
+            text=text or response.user_message,
             tool_calls=[{
                 "tool_name": tool_name,
                 "success": response.success,
@@ -244,6 +293,17 @@ class WhatsAppSupportFlowService:
             retryable=True,
         )
         return cls._result(tool_name, response, is_write=is_write)
+
+    @classmethod
+    def _missing_delay_order(cls) -> WhatsAppSupportFlowResult:
+        response = ToolResponse.ok(
+            user_message=(
+                "I couldn't find an active order for this conversation. Please "
+                "provide the Order ID, or tell me if you want staff support."
+            ),
+            next_action="request_order_id_or_support",
+        )
+        return cls._result("get_order_status", response, is_write=False)
 
     @staticmethod
     def _match_id(pattern: re.Pattern[str], message: str) -> str | None:
