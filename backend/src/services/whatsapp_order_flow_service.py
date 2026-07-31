@@ -84,6 +84,7 @@ TAKEAWAY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ORDER_INTENT_CONFIDENCE_THRESHOLD = 0.85
+LATEST_ORDER_INTENT_ACTIONS = ["latest_order_eta", "latest_order_status"]
 
 
 logger = logging.getLogger(__name__)
@@ -144,8 +145,37 @@ class WhatsAppOrderFlowService:
             )
 
         order = self.orders.get_active_order_for_session(user_id, session_id)
+        if NON_ORDER_PATTERN.search(normalized) and not CANCEL_PATTERN.search(normalized):
+            return None
+
+        if OFF_TOPIC_PATTERN.search(normalized):
+            return WhatsAppOrderFlowResult(
+                text=DOMAIN_SCOPE_RESPONSE,
+                tool_calls=[],
+            )
+
+        latest_order_intent = None
+        if self._should_classify_latest_order_intent(order, normalized):
+            latest_order_intent = self._interpret(
+                state="conversation",
+                allowed_actions=LATEST_ORDER_INTENT_ACTIONS,
+                message=message,
+                user_id=user_id,
+                session_id=session_id,
+                request_id=request_id,
+            )
+        is_eta_intent = (
+            latest_order_intent is not None
+            and latest_order_intent.action == "latest_order_eta"
+        )
+        is_status_intent = (
+            latest_order_intent is not None
+            and latest_order_intent.action == "latest_order_status"
+        )
         if (
-            ORDER_STATUS_PATTERN.search(normalized)
+            is_eta_intent
+            or is_status_intent
+            or ORDER_STATUS_PATTERN.search(normalized)
             or ORDER_FOLLOW_UP_PATTERN.search(normalized)
         ):
             response = self.orders.get_order_status(
@@ -153,7 +183,9 @@ class WhatsAppOrderFlowService:
                 order.get("order_id") if order is not None else None,
             )
             text = response.user_message
-            if order is not None and ETA_FOLLOW_UP_PATTERN.search(normalized):
+            if order is not None and (
+                is_eta_intent or ETA_FOLLOW_UP_PATTERN.search(normalized)
+            ):
                 text = (
                     f"Exact ETA is unavailable. Here is the current order status:\n"
                     f"{response.user_message}"
@@ -164,9 +196,6 @@ class WhatsAppOrderFlowService:
                 is_write=False,
                 text=text,
             )
-        if NON_ORDER_PATTERN.search(normalized) and not CANCEL_PATTERN.search(normalized):
-            return None
-
         if order is not None and order.get("status") in {
             "awaiting_fulfillment_method",
             "awaiting_delivery_address",
@@ -179,12 +208,6 @@ class WhatsAppOrderFlowService:
                 normalized,
                 message,
                 request_id,
-            )
-
-        if OFF_TOPIC_PATTERN.search(normalized):
-            return WhatsAppOrderFlowResult(
-                text=DOMAIN_SCOPE_RESPONSE,
-                tool_calls=[],
             )
 
         cart_response = self.carts.get_active_cart(user_id, session_id)
@@ -614,6 +637,28 @@ class WhatsAppOrderFlowService:
         ):
             return None
         return intent
+
+    @staticmethod
+    def _should_classify_latest_order_intent(
+        order: dict[str, Any] | None,
+        normalized: str,
+    ) -> bool:
+        if normalized.isdigit() or SKIP_PATTERN.search(normalized):
+            return False
+        if order is None:
+            return True
+        status = order.get("status")
+        if status == "awaiting_fulfillment_method" and (
+            DELIVERY_PATTERN.search(normalized)
+            or TAKEAWAY_PATTERN.search(normalized)
+            or CANCEL_PATTERN.search(normalized)
+        ):
+            return False
+        if status == "pending_confirmation" and (
+            CONFIRM_PATTERN.search(normalized) or CANCEL_PATTERN.search(normalized)
+        ):
+            return False
+        return True
 
     @staticmethod
     def _intent_options(

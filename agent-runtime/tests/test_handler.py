@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from agent_runtime import handler
 from agent_runtime.server import app
 from agent_runtime.schemas import RuntimeRequest
+from src.agent import order_intent, restaurant_agent
 from src.agent.order_intent import OrderIntentClassification
 
 
@@ -192,6 +193,50 @@ def test_handler_classifies_order_intent_without_tools_or_conversation_memory(mo
     }
     assert FakeMemoryConfig.created == []
     assert FakeMemorySessionManager.created == []
+
+
+def test_classifier_model_build_does_not_require_session_token_secret(monkeypatch):
+    captured = {}
+
+    class FakeBedrockModel:
+        def __init__(self, **kwargs):
+            captured["model"] = kwargs
+
+    class FakeClassifier:
+        def __init__(self, **kwargs):
+            captured["classifier"] = kwargs
+
+        def __call__(self, prompt, **kwargs):
+            return SimpleNamespace(
+                structured_output=OrderIntentClassification(
+                    action="latest_order_eta",
+                    confidence=0.96,
+                )
+            )
+
+    monkeypatch.delenv("SESSION_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "configured-model")
+    monkeypatch.setattr(restaurant_agent, "BedrockModel", FakeBedrockModel)
+    monkeypatch.setattr(order_intent, "Agent", FakeClassifier)
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+    restaurant_agent.get_bedrock_model_settings.cache_clear()
+
+    response = handler.invoke(runtime_payload(
+        task="classify_order_intent",
+        message="when will I receive my order",
+        state="conversation",
+        allowed_actions=["latest_order_eta", "latest_order_status"],
+        channel="whatsapp",
+    ))
+
+    assert response["intent"] == {
+        "action": "latest_order_eta",
+        "confidence": 0.96,
+    }
+    assert captured["model"]["model_id"] == "configured-model"
+    assert "SESSION_TOKEN_SECRET" not in os.environ
+    restaurant_agent.get_bedrock_model_settings.cache_clear()
 
 
 def test_handler_forwards_missing_request_id_without_substitute(monkeypatch):

@@ -11,6 +11,21 @@ CORS_ALLOW_HEADERS = ["Content-Type"]
 CORS_EXPOSE_HEADERS = ["X-Request-ID", "X-Agent-Request-ID"]
 
 
+class BedrockModelSettings(BaseSettings):
+    """Configuration needed to construct a Bedrock model, without app secrets."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_ignore_empty=True,
+        extra="ignore",
+    )
+
+    aws_region: str = Field(min_length=1)
+    bedrock_model_id: str = ""
+    bedrock_guardrail_id: str = ""
+    bedrock_guardrail_version: str = ""
+
+
 def parse_frontend_cors_origins(raw_value: str | None, environment: str = "local") -> list[str]:
     origins = [origin.strip().rstrip("/") for origin in (raw_value or "").split(",") if origin.strip()]
     if not origins and environment in {"local", "test"}:
@@ -102,3 +117,8 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+@lru_cache
+def get_bedrock_model_settings() -> BedrockModelSettings:
+    return BedrockModelSettings()

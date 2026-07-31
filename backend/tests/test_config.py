@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from src.infrastructure.config import Settings
+import pytest
+from pydantic import ValidationError
+
+from src.infrastructure.config import BedrockModelSettings, Settings
 
 
 BASE = {
@@ -31,6 +34,27 @@ def make_test_settings(**overrides):
 def test_test_environment_allows_empty_bedrock_model():
     settings = make_test_settings()
     assert settings.environment == "test"
+
+
+def test_bedrock_model_settings_do_not_require_backend_session_secret():
+    settings = BedrockModelSettings(
+        _env_file=None,
+        aws_region="us-east-1",
+        bedrock_model_id="configured-model",
+    )
+
+    assert settings.bedrock_model_id == "configured-model"
+    assert not hasattr(settings, "session_token_secret")
+
+
+def test_backend_settings_still_require_session_token_secret():
+    values = dict(BASE)
+    values.pop("session_token_secret")
+
+    with pytest.raises(ValidationError) as error:
+        Settings(_env_file=None, **values)
+
+    assert "session_token_secret" in str(error.value)
 
 
 def test_dynamodb_tags_are_parsed():

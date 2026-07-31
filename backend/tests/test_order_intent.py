@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.agent.order_intent import (
+    ORDER_INTENT_SYSTEM_PROMPT,
     OrderIntentClassification,
     classify_order_intent,
 )
@@ -57,3 +58,10 @@ def test_order_intent_schema_rejects_transactional_fields():
             "total": 1,
             "customer_response": "Your order is confirmed.",
         })
+
+
+def test_order_intent_prompt_defines_flexible_latest_order_intents():
+    assert "latest_order_eta" in ORDER_INTENT_SYSTEM_PROMPT
+    assert "latest_order_status" in ORDER_INTENT_SYSTEM_PROMPT
+    assert "when will I receive my order" in ORDER_INTENT_SYSTEM_PROMPT
+    assert "Never infer an ETA or order status" in ORDER_INTENT_SYSTEM_PROMPT

@@ -37,6 +37,7 @@ class FakeOrders:
         self.order = deepcopy(order)
         self.updates = []
         self.saved_addresses = []
+        self.status_calls = []
 
     def get_active_order_for_session(self, user_id, session_id):
         return deepcopy(self.order)
@@ -89,9 +90,18 @@ class FakeOrders:
         )
 
     def get_order_status(self, user_id, order_id=None):
+        self.status_calls.append((user_id, order_id))
+        if order_id is None:
+            return ToolResponse.ok(
+                data={"orders": []},
+                user_message=(
+                    "I couldn't find an active order. Please provide the Order ID "
+                    "you want to check."
+                ),
+            )
         return ToolResponse.ok(
-            data={"order": deepcopy(self.order)} if order_id else {"orders": []},
-            user_message="Choose a valid order action.",
+            data={"order": deepcopy(self.order)},
+            user_message=f"Order ID: {order_id}\nStatus: preparing",
             agent={"confirmation_summary": "Please confirm or cancel."},
         )
 
@@ -183,8 +193,44 @@ def test_messy_checkout_language_uses_interpreter_then_real_cart_service(message
     assert result.tool_calls[0]["tool_name"] == "create_pending_order_from_cart"
     assert result.tool_calls[0]["result"]["data"]["order_id"] == "ORD-REAL"
     assert result.tool_calls[0]["result"]["data"]["total"] == 850
-    assert intent.requests[0].state == "cart_ready"
-    assert intent.requests[0].allowed_actions == ["checkout"]
+    assert intent.requests[-1].state == "cart_ready"
+    assert intent.requests[-1].allowed_actions == ["checkout"]
+
+
+def test_latest_order_eta_intent_precedes_menu_routing_and_uses_backend_status():
+    intent = IntentClient("latest_order_eta")
+    order = {
+        "order_id": "ORD-LATEST",
+        "status": "preparing",
+        "total": 850,
+        "currency": "PKR",
+    }
+    flow, carts, orders = service(order=order, intent=intent)
+
+    result = handle(flow, "when will I receive my order")
+
+    assert intent.requests[0].state == "conversation"
+    assert intent.requests[0].allowed_actions == [
+        "latest_order_eta",
+        "latest_order_status",
+    ]
+    assert orders.status_calls == [("user-1", "ORD-LATEST")]
+    assert carts.checkout_calls == []
+    assert "Order ID: ORD-LATEST" in result.text
+    assert "Status: preparing" in result.text
+    assert "Exact ETA is unavailable" in result.text
+
+
+def test_latest_order_eta_without_order_asks_for_order_id():
+    intent = IntentClient("latest_order_eta")
+    flow, carts, orders = service(intent=intent)
+
+    result = handle(flow, "when will I receive my order")
+
+    assert orders.status_calls == [("user-1", None)]
+    assert carts.checkout_calls == []
+    assert "provide the Order ID" in result.text
+    assert "Exact ETA" not in result.text
 
 
 @pytest.mark.parametrize("message", ["confirmm", "yeah go ahead"])
