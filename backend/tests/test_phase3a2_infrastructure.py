@@ -505,13 +505,17 @@ def test_tracked_parameter_example_includes_ticket_configuration_without_phone()
     assert example["AgentfloGatewayApiKeySecretArn"] == ""
 
 
-def test_agentcore_example_and_deployment_wire_ticket_environment():
+def test_agentcore_example_and_deployment_wire_required_runtime_environment():
     example = json.loads(AGENTCORE_EXAMPLE.read_text(encoding="utf-8"))
     workflow = load_workflow()
     builder = AGENTCORE_BUILDER.read_text(encoding="utf-8")
 
     assert example["TICKETS_TABLE_NAME"] == "fyp-dev-Tickets"
     assert example["SUPPORT_PHONE_NUMBER"] == ""
+    assert example["CONVERSATION_MESSAGES_TABLE_NAME"] == (
+        "fyp-dev-ConversationMessages"
+    )
+    assert example["CONVERSATION_MESSAGE_TTL_DAYS"] == "90"
     assert "AGENT_REQUESTS_TABLE_NAME" in example
     assert "AGENTCORE_MEMORY_ID" in example
     assert "on" in workflow
@@ -531,17 +535,23 @@ def test_agentcore_example_and_deployment_wire_ticket_environment():
 
     resolution = workflow_step(
         workflow,
-        "Resolve ticket environment from backend stack",
+        "Resolve runtime environment from backend stack",
     )["run"]
     assert 'aws cloudformation describe-stacks \\' in resolution
     assert '--stack-name "$BACKEND_STACK_NAME"' in resolution
     assert 'outputs.get("TicketsTableName", "")' in resolution
+    assert '"ConversationMessagesTableName"' in resolution
+    assert (
+        '"CONVERSATION_MESSAGES_TABLE_NAME": conversation_messages_table_name'
+        in resolution
+    )
+    assert '"CONVERSATION_MESSAGE_TTL_DAYS": "90"' in resolution
     assert '"SupportPhoneNumber" not in parameters' in resolution
     assert '"SUPPORT_PHONE_NUMBER": parameters["SupportPhoneNumber"]' in resolution
-    assert '"agentcore-ticket-environment.json"' in resolution
+    assert '"agentcore-runtime-environment.json"' in resolution
 
     builder_step = workflow_step(workflow, "Build AgentCore update input")["run"]
-    assert "--environment-file agentcore-ticket-environment.json" in builder_step
+    assert "--environment-file agentcore-runtime-environment.json" in builder_step
     assert "--environment-file" in builder
 
     step_names = {step["name"] for step in deploy["steps"]}
@@ -559,9 +569,9 @@ def test_agentcore_example_and_deployment_wire_ticket_environment():
     assert "aws cloudformation deploy" not in deployment_commands
     assert "aws cloudformation create-stack" not in deployment_commands
     assert "aws cloudformation update-stack" not in deployment_commands
-    for ticket_step in (resolution, builder_step):
-        assert "arn:aws:" not in ticket_step
-        assert re.search(r"\b\d{12}\b", ticket_step) is None
+    for runtime_environment_step in (resolution, builder_step):
+        assert "arn:aws:" not in runtime_environment_step
+        assert re.search(r"\b\d{12}\b", runtime_environment_step) is None
 
 
 def test_agentcore_deploy_role_can_read_only_the_backend_stack():

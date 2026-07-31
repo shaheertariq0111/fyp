@@ -20,6 +20,12 @@ RUNTIME_ARN = "arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_
 ROLE_ARN = "arn:aws:iam::352306494518:role/fyp-dev-agentcore-execution"
 TOKEN = f"agentcore-123456789-1-{SHA}"
 LEGACY_IMAGE_URI = f"{REPOSITORY}:dev-phase12"
+ENVIRONMENT_OVERRIDES = {
+    "CONVERSATION_MESSAGES_TABLE_NAME": "fyp-dev-ConversationMessages",
+    "CONVERSATION_MESSAGE_TTL_DAYS": "90",
+    "TICKETS_TABLE_NAME": "fyp-dev-tickets",
+    "SUPPORT_PHONE_NUMBER": "",
+}
 
 
 def current_runtime(**overrides):
@@ -88,16 +94,12 @@ def test_environment_overrides_merge_without_dropping_existing_values():
     existing_environment = current["environmentVariables"]
     update_input = build(
         current=current,
-        environment_overrides={
-            "TICKETS_TABLE_NAME": "fyp-dev-tickets",
-            "SUPPORT_PHONE_NUMBER": "",
-        }
+        environment_overrides=ENVIRONMENT_OVERRIDES,
     )
 
     assert update_input["environmentVariables"] == {
         **existing_environment,
-        "TICKETS_TABLE_NAME": "fyp-dev-tickets",
-        "SUPPORT_PHONE_NUMBER": "",
+        **ENVIRONMENT_OVERRIDES,
     }
 
 
@@ -125,16 +127,12 @@ def test_explicit_empty_support_phone_override_clears_existing_value():
 
     update_input = build(
         current=current,
-        environment_overrides={
-            "TICKETS_TABLE_NAME": "fyp-dev-tickets",
-            "SUPPORT_PHONE_NUMBER": "",
-        },
+        environment_overrides=ENVIRONMENT_OVERRIDES,
     )
 
     assert update_input["environmentVariables"] == {
         **current["environmentVariables"],
-        "TICKETS_TABLE_NAME": "fyp-dev-tickets",
-        "SUPPORT_PHONE_NUMBER": "",
+        **ENVIRONMENT_OVERRIDES,
     }
     assert old_support_phone not in update_input["environmentVariables"].values()
 
@@ -146,12 +144,20 @@ def test_explicit_empty_support_phone_override_clears_existing_value():
         {"TICKETS_TABLE_NAME": "fyp-dev-tickets"},
         {"SUPPORT_PHONE_NUMBER": ""},
         {
-            "TICKETS_TABLE_NAME": "fyp-dev-tickets",
+            **ENVIRONMENT_OVERRIDES,
             "SUPPORT_PHONE_NUMBER": 123,
+        },
+        {
+            **ENVIRONMENT_OVERRIDES,
+            "CONVERSATION_MESSAGES_TABLE_NAME": "",
+        },
+        {
+            **ENVIRONMENT_OVERRIDES,
+            "CONVERSATION_MESSAGE_TTL_DAYS": 90,
         },
     ],
 )
-def test_environment_overrides_require_ticket_name_and_support_phone(
+def test_environment_overrides_require_all_runtime_values(
     environment_overrides,
 ):
     with pytest.raises(ValueError, match="environment"):

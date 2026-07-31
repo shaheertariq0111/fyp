@@ -204,7 +204,7 @@ jobs:
               output.write(f"network-mode={network.get('networkMode', '')}\n")
           PY
 
-      - name: Resolve ticket environment from backend stack
+      - name: Resolve runtime environment from backend stack
         run: |
           set -euo pipefail
           aws cloudformation describe-stacks \
@@ -229,20 +229,30 @@ jobs:
               for item in stack.get("Parameters", [])
           }
           tickets_table_name = outputs.get("TicketsTableName", "")
+          conversation_messages_table_name = outputs.get(
+              "ConversationMessagesTableName",
+              "",
+          )
           if not tickets_table_name:
               raise SystemExit(
                   "Backend stack output TicketsTableName is required."
+              )
+          if not conversation_messages_table_name:
+              raise SystemExit(
+                  "Backend stack output ConversationMessagesTableName is required."
               )
           if "SupportPhoneNumber" not in parameters:
               raise SystemExit(
                   "Backend stack parameter SupportPhoneNumber is required."
               )
           environment = {
+              "CONVERSATION_MESSAGES_TABLE_NAME": conversation_messages_table_name,
+              "CONVERSATION_MESSAGE_TTL_DAYS": "90",
               "TICKETS_TABLE_NAME": tickets_table_name,
               "SUPPORT_PHONE_NUMBER": parameters["SupportPhoneNumber"],
           }
           with open(
-              "agentcore-ticket-environment.json",
+              "agentcore-runtime-environment.json",
               "w",
               encoding="utf-8",
           ) as handle:
@@ -263,7 +273,7 @@ jobs:
             --mode deployment \
             --github-sha "${{ github.sha }}" \
             --client-token "agentcore-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}" \
-            --environment-file agentcore-ticket-environment.json \
+            --environment-file agentcore-runtime-environment.json \
             --output agentcore-update-input.json
 
       - name: Update AgentCore runtime
