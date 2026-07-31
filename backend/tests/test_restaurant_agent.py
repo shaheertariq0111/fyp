@@ -121,6 +121,11 @@ def test_system_prompt_requires_tool_grounding():
         "Correct false customer assumptions politely"
         in normalized_prompt
     )
+    assert "The backend sends one outbound WhatsApp reply" in normalized_prompt
+    assert "Silently call required tools during the same turn" in normalized_prompt
+    assert "always end with a clear next step" in normalized_prompt
+    assert "hello I would like to order a pepperoni pizza" in normalized_prompt
+    assert "choose the item and size" in normalized_prompt
 
 
 def test_build_bedrock_model_uses_runtime_settings(monkeypatch):
