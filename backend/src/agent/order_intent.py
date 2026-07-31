@@ -23,6 +23,15 @@ order ID, choose an order status, or write a customer-facing response.
 selected_option may contain only an option ID supplied in available_options.
 Otherwise it must be null. Typos and natural phrasing may be interpreted only
 when their meaning is clear in the current state.
+
+Intent guidance:
+- latest_order_eta means the customer is asking when their current/latest order
+  will arrive, be delivered, or be ready. Examples include natural variations
+  such as "when will I receive my order" and "how long will it take".
+- latest_order_status means the customer is asking where their current/latest
+  order is or whether it is progressing/coming.
+- These actions only identify intent. Never infer an ETA or order status.
+- A request to browse, choose, or order food is not an order-status action.
 """.strip()
 
 

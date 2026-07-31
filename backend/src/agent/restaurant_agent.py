@@ -11,11 +11,11 @@ from strands.session import FileSessionManager
 from src.agent.context import AgentRequestContext, request_context
 from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT
 from src.agent.tools import MVP_TOOLS
-from src.infrastructure.config import get_settings
+from src.infrastructure.config import get_bedrock_model_settings, get_settings
 
 
 def build_bedrock_model() -> BedrockModel:
-    settings = get_settings()
+    settings = get_bedrock_model_settings()
     model_config: dict[str, Any] = {
         "model_id": settings.bedrock_model_id,
         "temperature": 0.2,

@@ -138,7 +138,7 @@ def test_build_bedrock_model_uses_runtime_settings(monkeypatch):
     monkeypatch.setattr(restaurant_agent, "BedrockModel", FakeBedrockModel)
     monkeypatch.setattr(
         restaurant_agent,
-        "get_settings",
+        "get_bedrock_model_settings",
         lambda: SimpleNamespace(
             aws_region="us-east-1",
             bedrock_model_id="configured-model",
