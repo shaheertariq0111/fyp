@@ -15,6 +15,10 @@ VERIFIED_ORDER_FIELDS = (
     "verified_order_status",
     "verified_order_at",
 )
+WHATSAPP_ORDER_STATE_FIELDS = (
+    "offered_menu_items",
+    "whatsapp_order_state_updated_at",
+)
 
 
 class SupportStateConflictError(RuntimeError):
@@ -72,6 +76,77 @@ class AgentSessionRepository:
             for field in VERIFIED_ORDER_FIELDS
             if field in session
         }
+
+    def get_whatsapp_order_state(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> dict:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        return {
+            field: session[field]
+            for field in WHATSAPP_ORDER_STATE_FIELDS
+            if field in session
+        }
+
+    def update_whatsapp_order_state(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        offered_menu_items: list[dict],
+        updated_at: str,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        self._update_support_attributes(
+            session,
+            update_expression="SET #items = :items, #updated_at = :updated_at",
+            condition_expression=(
+                "attribute_exists(#pk) "
+                "AND #customer_id = :customer_id "
+                "AND #agent_session_id = :agent_session_id"
+            ),
+            names={
+                "#pk": "PK",
+                "#customer_id": "customer_id",
+                "#agent_session_id": "agent_session_id",
+                "#items": "offered_menu_items",
+                "#updated_at": "whatsapp_order_state_updated_at",
+            },
+            values={
+                ":customer_id": customer_id,
+                ":agent_session_id": agent_session_id,
+                ":items": offered_menu_items,
+                ":updated_at": updated_at,
+            },
+        )
+
+    def clear_whatsapp_order_state(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        self._update_support_attributes(
+            session,
+            update_expression="REMOVE #items, #updated_at",
+            condition_expression=(
+                "attribute_exists(#pk) "
+                "AND #customer_id = :customer_id "
+                "AND #agent_session_id = :agent_session_id"
+            ),
+            names={
+                "#pk": "PK",
+                "#customer_id": "customer_id",
+                "#agent_session_id": "agent_session_id",
+                "#items": "offered_menu_items",
+                "#updated_at": "whatsapp_order_state_updated_at",
+            },
+            values={
+                ":customer_id": customer_id,
+                ":agent_session_id": agent_session_id,
+            },
+        )
 
     def update_verified_order_context(
         self,
