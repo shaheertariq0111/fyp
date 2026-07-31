@@ -1,3 +1,5 @@
+import pytest
+
 from src.services.order_service import OrderService
 from src.services.customer_service import CustomerService
 from fakes import MemoryMenuRepository, MemoryOrderRepository
@@ -80,6 +82,88 @@ def test_takeaway_skips_address():
     response = service.update_order_flow(order_id, "set_takeaway")
     assert response.data["status"] == "pending_confirmation"
     assert response.agent["required_input"] == "confirm_or_cancel"
+
+
+def _delivery_order():
+    menu = MemoryMenuRepository(
+        [{"product_id": "item", "name": "Item", "available": True,
+          "starting_price": 10, "customization_group_ids": []}], []
+    )
+    repository = MemoryOrderRepository()
+    service = OrderService(repository, menu)
+    order_id = service.create_pending_from_cart(
+        {"user_id": "user", "agent_session_id": "session",
+         "restaurant_id": "restaurant", "branch_id": "branch",
+         "cart_id": "cart-address", "subtotal": 10, "currency": "CUR",
+         "items": [{"item_id": "item", "name": "Item", "quantity": 1,
+                    "selected_options": {}, "current_price": 10}]}
+    ).data["order_id"]
+    service.update_order_flow(order_id, "set_delivery")
+    return service, repository, order_id
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["No", "nah", "none", "n/a", "skip", "later", "Ok"],
+)
+def test_delivery_address_rejects_refusals_and_short_placeholders(address):
+    service, repository, order_id = _delivery_order()
+
+    response = service.update_order_flow(order_id, "save_address", address)
+
+    assert not response.success
+    assert response.error_code == "INVALID_DELIVERY_ADDRESS"
+    assert response.user_message == (
+        "I still need a valid delivery address for delivery. Please send your "
+        "full address, or reply takeaway to switch to pickup."
+    )
+    saved = repository.get_by_order_id(order_id)
+    assert saved["status"] == "awaiting_delivery_address"
+    assert saved["delivery_address"] is None
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "D-07-07, Flexis, One South",
+        "A-12-03, PV21 Setapak",
+        "Block B, APU residence",
+        "123 Jalan Ampang",
+    ],
+)
+def test_delivery_address_accepts_realistic_addresses(address):
+    service, repository, order_id = _delivery_order()
+
+    response = service.update_order_flow(order_id, "save_address", address)
+
+    assert response.success
+    assert response.data["status"] == "pending_confirmation"
+    assert response.data["delivery_address"] == address
+    assert repository.get_by_order_id(order_id)["delivery_address"] == address
+
+
+def test_delivery_order_with_legacy_invalid_address_cannot_be_confirmed():
+    service, repository, order_id = _delivery_order()
+    repository.data[order_id]["status"] = "pending_confirmation"
+    repository.data[order_id]["delivery_address"] = "No"
+
+    response = service.update_order_flow(order_id, "confirm")
+
+    assert not response.success
+    assert response.error_code == "INVALID_DELIVERY_ADDRESS"
+    assert repository.get_by_order_id(order_id)["status"] == "pending_confirmation"
+
+
+def test_delivery_address_step_can_switch_to_takeaway():
+    service, repository, order_id = _delivery_order()
+
+    response = service.update_order_flow(order_id, "set_takeaway")
+
+    assert response.success
+    assert response.data["status"] == "pending_confirmation"
+    assert response.data["fulfillment_method"] == "takeaway"
+    assert response.data["delivery_address"] is None
+    assert repository.get_by_order_id(order_id)["fulfillment_method"] == "takeaway"
 
 
 def test_legacy_submit_action_is_not_supported():

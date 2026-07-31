@@ -13,9 +13,28 @@ ORDER_TRANSITIONS = {
     ("awaiting_fulfillment_method", "set_delivery"): "awaiting_delivery_address",
     ("awaiting_fulfillment_method", "set_takeaway"): "pending_confirmation",
     ("awaiting_delivery_address", "save_address"): "pending_confirmation",
+    ("awaiting_delivery_address", "set_takeaway"): "pending_confirmation",
     ("awaiting_fulfillment_method", "cancel"): "cancelled",
     ("awaiting_delivery_address", "cancel"): "cancelled",
 }
+INVALID_DELIVERY_ADDRESSES = {
+    "no",
+    "nope",
+    "nah",
+    "skip",
+    "none",
+    "n/a",
+    "na",
+    "don't know",
+    "dont know",
+    "not now",
+    "later",
+    "cancel address",
+}
+INVALID_DELIVERY_ADDRESS_MESSAGE = (
+    "I still need a valid delivery address for delivery. Please send your full "
+    "address, or reply takeaway to switch to pickup."
+)
 
 TERMINAL_STATUSES = {"delivered", "completed", "rejected", "cancelled", "failed"}
 ADMIN_ORDER_TRANSITIONS = {
@@ -114,9 +133,11 @@ class OrderService:
             return ToolResponse.error(error_code="INVALID_ORDER_STATE",
                                       user_message="This order can't be updated that way right now.")
         if action == "save_address":
-            if not value or not value.strip():
-                return ToolResponse.error(error_code="ADDRESS_REQUIRED",
-                                          user_message="Please provide a delivery address.")
+            if not self.is_valid_delivery_address(value):
+                return ToolResponse.error(
+                    error_code="INVALID_DELIVERY_ADDRESS",
+                    user_message=INVALID_DELIVERY_ADDRESS_MESSAGE,
+                )
             order["delivery_address"] = value.strip()
         elif action == "set_delivery":
             order["fulfillment_method"] = "delivery"
@@ -471,10 +492,24 @@ class OrderService:
         if method not in {"delivery", "takeaway"}:
             return ToolResponse.error(error_code="FULFILLMENT_METHOD_REQUIRED",
                                       user_message="Choose delivery or takeaway first.")
-        if method == "delivery" and not order.get("delivery_address"):
-            return ToolResponse.error(error_code="ADDRESS_REQUIRED",
-                                      user_message="A delivery address is required.")
+        if method == "delivery" and not self.is_valid_delivery_address(
+            order.get("delivery_address")
+        ):
+            return ToolResponse.error(
+                error_code="INVALID_DELIVERY_ADDRESS",
+                user_message=INVALID_DELIVERY_ADDRESS_MESSAGE,
+            )
         return self._recalculate_order_totals(order)
+
+    @staticmethod
+    def is_valid_delivery_address(value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        address = " ".join(value.strip().casefold().split())
+        if address in INVALID_DELIVERY_ADDRESSES or len(address) < 8:
+            return False
+        tokens = [token for token in address.replace(",", " ").split() if token]
+        return len(tokens) >= 2
 
     @staticmethod
     def _pricing_snapshot(order):
@@ -638,7 +673,11 @@ class OrderService:
                 "update_order_flow:set_takeaway",
                 "update_order_flow:cancel",
             ],
-            "awaiting_delivery_address": ["update_order_flow:save_address", "update_order_flow:cancel"],
+            "awaiting_delivery_address": [
+                "update_order_flow:save_address",
+                "update_order_flow:set_takeaway",
+                "update_order_flow:cancel",
+            ],
             "submitted_to_restaurant": ["get_order_status"],
         }.get(status, [])
 

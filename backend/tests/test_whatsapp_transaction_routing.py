@@ -5,6 +5,7 @@ import pytest
 
 from src.models.tool_responses import ToolResponse
 from src.services.agent_session_service import AgentSessionService
+from src.services.order_service import OrderService
 from src.services.support_flow_service import SupportFlowService as RealSupportFlow
 from src.services.ticket_service import TicketService
 from src.services.whatsapp_order_flow_service import WhatsAppOrderFlowService
@@ -14,6 +15,7 @@ from src.services.whatsapp_support_flow_service import (
 )
 from fakes import (
     MemoryAgentSessionRepository,
+    MemoryMenuRepository,
     MemoryOrderRepository,
     MemoryTicketRepository,
 )
@@ -67,11 +69,30 @@ class Carts:
 
 
 class Orders:
+    def __init__(self, active_order=None):
+        self.active_order = deepcopy(active_order)
+        self.status_calls = []
+
     def get_active_order_for_session(self, user_id, session_id):
-        return None
+        return deepcopy(self.active_order)
 
     def get_order_status(self, user_id, order_id=None):
-        return ToolResponse.ok(data={"orders": []}, user_message="No orders.")
+        self.status_calls.append((user_id, order_id))
+        if order_id and self.active_order:
+            return ToolResponse.ok(
+                data={"order": deepcopy(self.active_order)},
+                user_message=(
+                    f"Order ID: {order_id}\n"
+                    f"Status: {self.active_order.get('status', 'unknown')}"
+                ),
+            )
+        return ToolResponse.ok(
+            data={"orders": []},
+            user_message=(
+                "I couldn't find an active order. Please provide the Order ID "
+                "you want to check."
+            ),
+        )
 
 
 class Sessions:
@@ -153,12 +174,13 @@ BACKEND_SPICY_ITEMS = [
 ]
 
 
-def order_flow(items=BACKEND_SPICY_ITEMS):
+def order_flow(items=BACKEND_SPICY_ITEMS, active_order=None):
     menu = Menu(items)
     carts = Carts()
     sessions = Sessions()
-    flow = WhatsAppOrderFlowService(menu, carts, Orders(), sessions)
-    return flow, menu, carts, sessions
+    orders = Orders(active_order)
+    flow = WhatsAppOrderFlowService(menu, carts, orders, sessions)
+    return flow, menu, carts, sessions, orders
 
 
 def order_turn(flow, message):
@@ -179,7 +201,7 @@ def order_turn(flow, message):
     ],
 )
 def test_order_and_recommendation_intents_use_backend_menu(message):
-    flow, menu, _, sessions = order_flow()
+    flow, menu, _, sessions, _ = order_flow()
 
     result = order_turn(flow, message)
 
@@ -200,7 +222,7 @@ def test_order_and_recommendation_intents_use_backend_menu(message):
 
 
 def test_recommended_item_selection_uses_saved_backend_product_id():
-    flow, _, carts, _ = order_flow()
+    flow, _, carts, _, _ = order_flow()
     order_turn(flow, "I want to place an order and eat something spicy")
 
     result = order_turn(flow, "2")
@@ -210,7 +232,7 @@ def test_recommended_item_selection_uses_saved_backend_product_id():
 
 
 def test_no_backend_recommendation_match_returns_backend_next_step():
-    flow, _, _, _ = order_flow(items=[])
+    flow, _, _, _, _ = order_flow(items=[])
 
     result = order_turn(flow, "recommend something spicy")
 
@@ -237,7 +259,7 @@ def test_no_backend_recommendation_match_returns_backend_next_step():
     ],
 )
 def test_transaction_guardrails_do_not_execute_order_actions(message, expected):
-    flow, menu, carts, _ = order_flow()
+    flow, menu, carts, _, _ = order_flow()
 
     result = order_turn(flow, message)
 
@@ -247,12 +269,18 @@ def test_transaction_guardrails_do_not_execute_order_actions(message, expected):
     assert carts.started == []
 
 
-def support_service(*, pending=None, response=None, error=None):
+def support_service(*, pending=None, response=None, error=None, active_order=None):
     sessions = Sessions()
     sessions.pending_support = pending or {}
     support = SupportFlow(response=response, error=error)
     tickets = Tickets()
-    return WhatsAppSupportFlowService(support, tickets, sessions), support, tickets
+    orders = Orders(active_order)
+    return (
+        WhatsAppSupportFlowService(support, tickets, sessions, orders),
+        support,
+        tickets,
+        orders,
+    )
 
 
 def support_turn(service, message, request_id="req-support"):
@@ -268,7 +296,7 @@ def support_turn(service, message, request_id="req-support"):
 
 
 def test_complaint_intent_enters_backend_support_flow_without_fake_success():
-    service, support, _ = support_service()
+    service, support, _, _ = support_service()
 
     result = support_turn(service, "I want to complain about my order")
 
@@ -294,7 +322,7 @@ def test_pending_complaint_details_return_real_ticket_response():
             "Our team will review your complaint."
         ),
     )
-    service, support, _ = support_service(
+    service, support, _, _ = support_service(
         pending={"pending_support_intent": "order_complaint"},
         response=ticket_response,
     )
@@ -344,6 +372,7 @@ def test_two_turn_complaint_creates_persisted_backend_ticket():
         RealSupportFlow(agent_sessions, tickets, order_repository),
         tickets,
         agent_sessions,
+        OrderService(order_repository, MemoryMenuRepository([], [])),
     )
 
     first = support_turn(service, "I want to complain about my order", "req-1")
@@ -361,7 +390,7 @@ def test_two_turn_complaint_creates_persisted_backend_ticket():
 
 
 def test_complaint_backend_failure_never_claims_ticket_was_logged():
-    service, _, _ = support_service(error=RuntimeError("private failure"))
+    service, _, _, _ = support_service(error=RuntimeError("private failure"))
 
     result = support_turn(service, "the pizza was cold")
 
@@ -376,7 +405,7 @@ def test_complaint_backend_failure_never_claims_ticket_was_logged():
     ["I need to talk to a human", "I need support"],
 )
 def test_human_support_creates_backend_ticket_immediately(message):
-    service, _, tickets = support_service()
+    service, _, tickets, _ = support_service()
 
     result = support_turn(service, message)
 
@@ -387,7 +416,7 @@ def test_human_support_creates_backend_ticket_immediately(message):
 
 
 def test_ticket_status_uses_backend_ticket_service():
-    service, _, tickets = support_service()
+    service, _, tickets, _ = support_service()
 
     result = support_turn(service, "track ticket TKT-REAL-123")
 
@@ -397,7 +426,7 @@ def test_ticket_status_uses_backend_ticket_service():
 
 
 def test_unrelated_message_does_not_get_consumed_as_pending_complaint():
-    service, support, _ = support_service(
+    service, support, _, _ = support_service(
         pending={"pending_support_intent": "order_complaint"}
     )
 
@@ -405,3 +434,81 @@ def test_unrelated_message_does_not_get_consumed_as_pending_complaint():
 
     assert result is None
     assert support.calls == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I'm bored tell me a joke",
+        "Another joke",
+        "What's the weather today",
+    ],
+)
+def test_off_topic_requests_return_restaurant_scope_response(message):
+    flow, menu, carts, _, _ = order_flow()
+
+    result = order_turn(flow, message)
+
+    assert result.text == (
+        "I can help with menu items, orders, delivery, payments, allergies, "
+        "complaints, and restaurant support."
+    )
+    assert result.tool_calls == []
+    assert menu.calls == []
+    assert carts.started == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "When will it come?",
+        "The last one",
+        "Now what's the status",
+        "is it coming",
+        "has it been prepared",
+    ],
+)
+def test_order_follow_up_uses_latest_session_order(message):
+    order = {
+        "order_id": "ORD-LATEST",
+        "status": "preparing",
+    }
+    flow, _, _, _, orders = order_flow(active_order=order)
+
+    result = order_turn(flow, message)
+
+    assert orders.status_calls == [("customer-1", "ORD-LATEST")]
+    assert "Order ID: ORD-LATEST" in result.text
+    assert "Status: preparing" in result.text
+    assert "provide the Order ID" not in result.text
+    if message in {"When will it come?", "is it coming"}:
+        assert "Exact ETA is unavailable" in result.text
+
+
+def test_delay_uses_latest_status_and_offers_ticket_without_creating_one():
+    order = {
+        "order_id": "ORD-LATEST",
+        "status": "preparing",
+    }
+    service, support, tickets, orders = support_service(active_order=order)
+
+    result = support_turn(service, "I am tired of waiting")
+
+    assert orders.status_calls == [("customer-1", "ORD-LATEST")]
+    assert "Order ID: ORD-LATEST" in result.text
+    assert "Status: preparing" in result.text
+    assert "create a support ticket" in result.text
+    assert "to confirm" in result.text
+    assert support.calls == []
+    assert tickets.human_calls == []
+
+
+def test_delay_without_latest_order_asks_for_order_id_or_staff_support():
+    service, support, tickets, _ = support_service()
+
+    result = support_turn(service, "I am tired of waiting")
+
+    assert "provide the Order ID" in result.text
+    assert "staff support" in result.text
+    assert support.calls == []
+    assert tickets.human_calls == []

@@ -48,6 +48,26 @@ ORDER_STATUS_PATTERN = re.compile(
     r"\border\b.*\b(?:status|track|tracking)\b",
     re.IGNORECASE,
 )
+ORDER_FOLLOW_UP_PATTERN = re.compile(
+    r"\b(?:when\s+will\s+it\s+(?:come|arrive)|how\s+long\s+will\s+it\s+take|"
+    r"is\s+it\s+coming|has\s+it\s+been\s+prepared|"
+    r"(?:now\s+)?what(?:\s+s|\s+is)\s+the\s+status|the\s+last\s+one|"
+    r"(?:my\s+)?last\s+order|latest\s+order)\b",
+    re.IGNORECASE,
+)
+ETA_FOLLOW_UP_PATTERN = re.compile(
+    r"\b(?:when|how\s+long|coming|arrive|eta)\b",
+    re.IGNORECASE,
+)
+OFF_TOPIC_PATTERN = re.compile(
+    r"\b(?:jokes?|weather|general\s+trivia|homework|coding|programming|"
+    r"write\s+(?:me\s+)?code|personal\s+advice)\b",
+    re.IGNORECASE,
+)
+DOMAIN_SCOPE_RESPONSE = (
+    "I can help with menu items, orders, delivery, payments, allergies, "
+    "complaints, and restaurant support."
+)
 CHECKOUT_PATTERN = re.compile(
     r"\b(?:checkout|check\s*out|proceed|continue|confirm|done|ready)\b",
     re.IGNORECASE,
@@ -59,7 +79,10 @@ SKIP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 DELIVERY_PATTERN = re.compile(r"\bdelivery\b", re.IGNORECASE)
-TAKEAWAY_PATTERN = re.compile(r"\b(?:takeaway|take\s*away|pickup|pick\s*up)\b", re.IGNORECASE)
+TAKEAWAY_PATTERN = re.compile(
+    r"\b(?:takeaway|take\s*away|pickup|pick\s*up|collect|collection)\b",
+    re.IGNORECASE,
+)
 ORDER_INTENT_CONFIDENCE_THRESHOLD = 0.85
 
 
@@ -120,13 +143,30 @@ class WhatsAppOrderFlowService:
                 tool_calls=[],
             )
 
-        if ORDER_STATUS_PATTERN.search(normalized):
-            response = self.orders.get_order_status(user_id)
-            return self._result("get_order_status", response, is_write=False)
+        order = self.orders.get_active_order_for_session(user_id, session_id)
+        if (
+            ORDER_STATUS_PATTERN.search(normalized)
+            or ORDER_FOLLOW_UP_PATTERN.search(normalized)
+        ):
+            response = self.orders.get_order_status(
+                user_id,
+                order.get("order_id") if order is not None else None,
+            )
+            text = response.user_message
+            if order is not None and ETA_FOLLOW_UP_PATTERN.search(normalized):
+                text = (
+                    f"Exact ETA is unavailable. Here is the current order status:\n"
+                    f"{response.user_message}"
+                )
+            return self._result(
+                "get_order_status",
+                response,
+                is_write=False,
+                text=text,
+            )
         if NON_ORDER_PATTERN.search(normalized) and not CANCEL_PATTERN.search(normalized):
             return None
 
-        order = self.orders.get_active_order_for_session(user_id, session_id)
         if order is not None and order.get("status") in {
             "awaiting_fulfillment_method",
             "awaiting_delivery_address",
@@ -139,6 +179,12 @@ class WhatsAppOrderFlowService:
                 normalized,
                 message,
                 request_id,
+            )
+
+        if OFF_TOPIC_PATTERN.search(normalized):
+            return WhatsAppOrderFlowResult(
+                text=DOMAIN_SCOPE_RESPONSE,
+                tool_calls=[],
             )
 
         cart_response = self.carts.get_active_cart(user_id, session_id)
@@ -459,7 +505,9 @@ class WhatsAppOrderFlowService:
             )
 
         if status == "awaiting_delivery_address":
-            if CANCEL_PATTERN.search(normalized):
+            if TAKEAWAY_PATTERN.search(normalized):
+                response = self.orders.update_order_flow(order_id, "set_takeaway")
+            elif CANCEL_PATTERN.search(normalized) and normalized != "cancel address":
                 response = self.orders.update_order_flow(order_id, "cancel")
             else:
                 response = self.orders.update_order_flow(

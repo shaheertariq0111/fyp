@@ -119,5 +119,6 @@ def get_services() -> ServiceContainer:
             support_flow=support_flow_service,
             tickets=ticket_service,
             agent_sessions=agent_session_service,
+            orders=order_service,
         ),
     )
