@@ -1669,6 +1669,76 @@ def test_chat_non_ticket_tool_message_does_not_replace_invocation_text(monkeypat
     assert completed["text"] == model_text
 
 
+def test_chat_replaces_waiting_menu_response_with_actionable_options(monkeypatch):
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
+            tool_calls=[{
+                "tool_name": "search_menu",
+                "success": True,
+                "is_write": False,
+                "result": {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {
+                                "product_id": "pepperoni-classic",
+                                "name": "Classic Pepperoni Pizza",
+                                "currency": "PKR",
+                                "base_prices": {
+                                    "small": 899,
+                                    "large": 1599,
+                                },
+                            },
+                            {
+                                "product_id": "pepperoni-feast",
+                                "name": "Pepperoni Feast",
+                                "currency": "PKR",
+                                "starting_price": 1299,
+                            },
+                        ],
+                    },
+                    "user_message": "I found current menu options.",
+                    "next_action": "present_menu_results",
+                },
+                "error_code": None,
+            }]
+        ),
+        text="Please hold, I'll check and retrieve that information.",
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "hello I would like to order a pepperoni pizza",
+            "session_id": "session",
+            "user_id": "user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+    final_text = completed["text"]
+    lowered = final_text.lower()
+
+    for forbidden in (
+        "please hold",
+        "hold on",
+        "please wait",
+        "i'll check",
+        "i will check",
+        "retrieve that information",
+    ):
+        assert forbidden not in lowered
+    assert "Classic Pepperoni Pizza" in final_text
+    assert "Pepperoni Feast" in final_text
+    assert "PKR 899" in final_text
+    assert "Which item and size would you like?" in final_text
+
+
 def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
     captured = {}
 

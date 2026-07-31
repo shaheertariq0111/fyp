@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Any, Callable
@@ -76,6 +77,12 @@ AUTHORITATIVE_SUPPORT_TICKET_TOOLS = frozenset({
     "handle_order_complaint",
     "get_support_ticket_status",
 })
+WAITING_FINAL_RESPONSE_PATTERN = re.compile(
+    r"\b(?:please\s+hold|hold\s+on|please\s+wait|i['’]ll\s+check|"
+    r"i\s+will\s+check|let\s+me\s+retrieve|retrieve\s+that\s+information|"
+    r"give\s+me\s+(?:a\s+)?moment)\b",
+    re.IGNORECASE,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_frontend_cors_origins(
@@ -547,6 +554,84 @@ def _authoritative_ticket_message(
     return None
 
 
+def _is_waiting_final_response(text: str) -> bool:
+    return bool(WAITING_FINAL_RESPONSE_PATTERN.search(text or ""))
+
+
+def _price_label(item: dict[str, Any]) -> str:
+    currency = str(item.get("currency") or "").strip()
+    if item.get("price") is not None:
+        return f"{currency} {item['price']}".strip()
+    if item.get("starting_price") is not None:
+        return f"from {currency} {item['starting_price']}".strip()
+    base_prices = item.get("base_prices")
+    if isinstance(base_prices, dict):
+        prices = [value for value in base_prices.values() if value is not None]
+        if prices:
+            return f"from {currency} {min(prices)}".strip()
+    return "price shown on menu"
+
+
+def _menu_results_response_from_tool(call: ToolCallResult) -> str | None:
+    result = call.result if isinstance(call.result, dict) else {}
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return None
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        user_message = result.get("user_message")
+        if isinstance(user_message, str) and user_message.strip():
+            return (
+                f"{user_message.strip()} You can try another pizza type "
+                "or ask for the full menu."
+            )
+        return None
+    lines = []
+    for index, item in enumerate(items[:5], start=1):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "Menu item").strip()
+        lines.append(f"{index}. {name} - {_price_label(item)}")
+    if not lines:
+        return None
+    return (
+        "Here are the matching options I found:\n"
+        + "\n".join(lines)
+        + "\nWhich item and size would you like?"
+    )
+
+
+def _actionable_response_from_tool_results(
+    text: str,
+    tool_calls: list[ToolCallResult],
+) -> str:
+    if not _is_waiting_final_response(text):
+        return text
+    for call in reversed(tool_calls):
+        if call.tool_name == "search_menu" and call.success:
+            menu_response = _menu_results_response_from_tool(call)
+            if menu_response:
+                return menu_response
+    for call in reversed(tool_calls):
+        result = call.result if isinstance(call.result, dict) else {}
+        agent = result.get("agent")
+        if isinstance(agent, dict):
+            for key in (
+                "confirmation_summary",
+                "submission_confirmation",
+                "status_message",
+                "choice_prompt",
+                "upsell_prompt",
+            ):
+                value = agent.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        user_message = result.get("user_message")
+        if isinstance(user_message, str) and user_message.strip():
+            return user_message.strip()
+    return text
+
+
 def _chat_response_from_invocation(
     context: AgentRequestContext,
     identity_state: dict[str, Any],
@@ -560,7 +645,9 @@ def _chat_response_from_invocation(
     if write_succeeded:
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
-    response_text = _authoritative_ticket_message(tool_calls) or invocation.text
+    response_text = _authoritative_ticket_message(tool_calls) or (
+        _actionable_response_from_tool_results(invocation.text, tool_calls)
+    )
     return ChatResponse(
         text=response_text,
         session_id=context.agent_session_id,
