@@ -80,9 +80,37 @@ AUTHORITATIVE_SUPPORT_TICKET_TOOLS = frozenset({
 WAITING_FINAL_RESPONSE_PATTERN = re.compile(
     r"\b(?:please\s+hold|hold\s+on|please\s+wait|i['’]ll\s+check|"
     r"i\s+will\s+check|let\s+me\s+check|let\s+me\s+retrieve|"
-    r"retrieve\s+that\s+information|give\s+me\s+(?:a\s+)?moment)\b",
+    r"retrieve\s+that\s+information|fetch\s+the\s+information|"
+    r"give\s+me\s+(?:a\s+)?moment)\b",
     re.IGNORECASE,
 )
+FAKE_ORDER_CONFIRMATION_PATTERN = re.compile(
+    r"\b(?:order\s+(?:is\s+)?(?:confirmed|placed|being\s+prepared)|"
+    r"order\s+has\s+been\s+(?:confirmed|placed)|"
+    r"confirmed\s+and\s+(?:will\s+be\s+)?delivered|"
+    r"will\s+be\s+delivered)\b",
+    re.IGNORECASE,
+)
+ORDER_STATUS_INTENT_PATTERN = re.compile(
+    r"\b(?:status|track|tracking|where\s+is)\b.*\border\b|"
+    r"\border\b.*\b(?:status|track|tracking)\b",
+    re.IGNORECASE,
+)
+SAFE_UNCONFIRMED_ORDER_RESPONSE = (
+    "I couldn't confirm the order yet. Please confirm the missing details first."
+)
+NO_CONFIRMED_ORDER_STATUS_RESPONSE = (
+    "I couldn't find a confirmed order for this conversation. Please provide your order ID."
+)
+CONFIRMED_ORDER_STATUSES = frozenset({
+    "submitted_to_restaurant",
+    "accepted",
+    "preparing",
+    "ready_for_pickup",
+    "out_for_delivery",
+    "delivered",
+    "completed",
+})
 MENU_ITEM_REQUEST_PATTERN = re.compile(
     r"\b(?:order|want|would\s+like|like\s+to|can\s+i|could\s+i|show\s+me|"
     r"menu|options?|have|get|need|one|1|small|medium|large)\b",
@@ -623,6 +651,190 @@ def _price_label(item: dict[str, Any]) -> str:
     return "price shown on menu"
 
 
+def _money_label(amount: Any, currency: Any) -> str:
+    currency_text = str(currency or "").strip()
+    currency_label = "Rs" if currency_text.upper() == "PKR" else currency_text
+    if amount is None:
+        return "not available"
+    try:
+        numeric = float(amount)
+    except (TypeError, ValueError):
+        return f"{currency_label} {amount}".strip()
+    return f"{currency_label} {numeric:,.2f}".strip()
+
+
+def _status_label(status: Any) -> str:
+    return str(status or "unknown").replace("_", " ").capitalize()
+
+
+def _order_from_tool_result(call: ToolCallResult) -> dict[str, Any] | None:
+    result = call.result if isinstance(call.result, dict) else {}
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return None
+    order = data.get("order")
+    if isinstance(order, dict):
+        return order
+    if isinstance(data.get("order_id"), str):
+        return data
+    return None
+
+
+def _orders_from_tool_result(call: ToolCallResult) -> list[dict[str, Any]]:
+    result = call.result if isinstance(call.result, dict) else {}
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return []
+    order = data.get("order")
+    if isinstance(order, dict):
+        return [order]
+    orders = data.get("orders")
+    if isinstance(orders, list):
+        return [order for order in orders if isinstance(order, dict)]
+    if isinstance(data.get("order_id"), str):
+        return [data]
+    return []
+
+
+def _latest_confirmed_order(orders: list[dict[str, Any]]) -> dict[str, Any] | None:
+    confirmed = [
+        order
+        for order in orders
+        if str(order.get("status") or "") in CONFIRMED_ORDER_STATUSES
+    ]
+    if not confirmed:
+        return None
+    return max(
+        confirmed,
+        key=lambda order: str(order.get("updated_at") or order.get("created_at") or ""),
+    )
+
+
+def _submitted_order_from_tool_calls(
+    tool_calls: list[ToolCallResult],
+) -> dict[str, Any] | None:
+    for call in reversed(tool_calls):
+        if call.tool_name != "update_order_flow" or not call.success:
+            continue
+        order = _order_from_tool_result(call)
+        if order and order.get("order_id") and order.get("status") == "submitted_to_restaurant":
+            return order
+    return None
+
+
+def _item_summary_lines(order: dict[str, Any]) -> list[str]:
+    currency = order.get("currency")
+    lines = []
+    items = order.get("items")
+    if not isinstance(items, list) or not items:
+        return ["- Item summary unavailable"]
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        quantity = item.get("quantity") or 1
+        name = str(item.get("name") or "Item").strip()
+        line_total = _money_label(item.get("line_total"), currency)
+        lines.append(f"{index}. {name} x {quantity} - {line_total}")
+    return lines or ["- Item summary unavailable"]
+
+
+def _submitted_order_confirmation(order: dict[str, Any]) -> str:
+    lines = [
+        "Your order has been confirmed and sent to the restaurant.",
+        "",
+        f"Order ID: {order.get('order_id')}",
+        f"Status: {_status_label(order.get('status'))}",
+        f"Total: {_money_label(order.get('total'), order.get('currency'))}",
+        "",
+        "Items:",
+        *_item_summary_lines(order),
+    ]
+    fulfillment_method = order.get("fulfillment_method")
+    if fulfillment_method:
+        lines.extend([
+            "",
+            f"Fulfilment: {str(fulfillment_method).replace('_', ' ').title()}",
+        ])
+    if fulfillment_method == "delivery" and order.get("delivery_address"):
+        lines.append(f"Delivery address: {order['delivery_address']}")
+    lines.extend([
+        "",
+        "Please keep this Order ID for tracking.",
+    ])
+    return "\n".join(lines)
+
+
+def _confirmed_order_status_message(order: dict[str, Any]) -> str:
+    lines = [
+        f"Order ID: {order.get('order_id')}",
+        f"Status: {_status_label(order.get('status'))}",
+    ]
+    if order.get("total") is not None:
+        lines.append(f"Total: {_money_label(order.get('total'), order.get('currency'))}")
+    return "\n".join(lines)
+
+
+def _orders_from_status_tool_calls(tool_calls: list[ToolCallResult]) -> list[dict[str, Any]]:
+    for call in reversed(tool_calls):
+        if call.tool_name == "get_order_status" and call.success:
+            orders = _orders_from_tool_result(call)
+            if orders:
+                return orders
+            return []
+    return []
+
+
+def _whatsapp_order_status_response(
+    context: AgentRequestContext,
+    tool_calls: list[ToolCallResult],
+) -> str:
+    orders = _orders_from_status_tool_calls(tool_calls)
+    if not orders:
+        try:
+            result = get_services().orders.get_order_status(context.user_id)
+        except Exception as exc:
+            logger.warning(
+                "Deterministic order status lookup failed",
+                extra={
+                    "event": "deterministic_order_status_lookup_failed",
+                    "request_id": context.request_id,
+                    "channel": context.channel,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return NO_CONFIRMED_ORDER_STATUS_RESPONSE
+        orders = _orders_from_tool_result(
+            ToolCallResult(
+                tool_name="get_order_status",
+                success=result.success,
+                is_write=False,
+                result=result.model_dump(exclude_none=True),
+                error_code=result.error_code,
+            )
+        )
+    confirmed = _latest_confirmed_order(orders)
+    if confirmed is None:
+        return NO_CONFIRMED_ORDER_STATUS_RESPONSE
+    return _confirmed_order_status_message(confirmed)
+
+
+def _authoritative_order_message(
+    context: AgentRequestContext,
+    text: str,
+    tool_calls: list[ToolCallResult],
+) -> str | None:
+    submitted_order = _submitted_order_from_tool_calls(tool_calls)
+    if submitted_order is not None:
+        return _submitted_order_confirmation(submitted_order)
+    if context.channel == "whatsapp" and ORDER_STATUS_INTENT_PATTERN.search(
+        context.current_message or ""
+    ):
+        return _whatsapp_order_status_response(context, tool_calls)
+    if FAKE_ORDER_CONFIRMATION_PATTERN.search(text or ""):
+        return SAFE_UNCONFIRMED_ORDER_RESPONSE
+    return None
+
+
 def _menu_results_response_from_tool(call: ToolCallResult) -> str | None:
     result = call.result if isinstance(call.result, dict) else {}
     data = result.get("data")
@@ -772,8 +984,10 @@ def _chat_response_from_invocation(
     if write_succeeded:
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
-    response_text = _authoritative_ticket_message(tool_calls) or (
-        _actionable_response_from_tool_results(invocation.text, tool_calls, context)
+    response_text = (
+        _authoritative_ticket_message(tool_calls)
+        or _authoritative_order_message(context, invocation.text, tool_calls)
+        or _actionable_response_from_tool_results(invocation.text, tool_calls, context)
     )
     return ChatResponse(
         text=response_text,

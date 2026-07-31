@@ -10,11 +10,17 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from src.agent import tools as agent_tools
+from src.agent.context import AgentRequestContext, request_context
 from src.agent_client import AgentInvocationResult
 from src.api import main
 from src.api.schemas import ToolCallResult
 from src.models.tool_responses import ToolResponse
+from src.services.cart_service import CartService
+from src.services.menu_service import MenuService
+from src.services.order_service import OrderService
 from src.services.ticket_service import AdminTicketError
+from fakes import MemoryCartRepository, MemoryMenuRepository, MemoryOrderRepository
 from test_config import make_test_settings
 
 
@@ -832,6 +838,89 @@ def test_agentflo_whatsapp_duplicate_is_ignored_before_side_effects(
     assert duplicate_log.idempotency_status == "duplicate"
 
 
+def test_agentflo_whatsapp_duplicate_confirm_does_not_create_duplicate_order(monkeypatch):
+    menu_repository = MemoryMenuRepository(
+        [{"product_id": "item", "name": "Item", "available": True,
+          "starting_price": 10, "customization_group_ids": []}],
+        [],
+    )
+    order_repository = MemoryOrderRepository()
+    order_service = OrderService(order_repository, menu_repository)
+    services = WhatsAppIdentityServices()
+    services.orders = order_service
+    gateway = StubAgentfloGateway(configured=True)
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(agent_tools, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+    invocations = []
+
+    class ConfirmingAgentRuntimeClient:
+        def invoke(self, request):
+            invocations.append(request)
+            pending = order_service.create_pending_from_cart({
+                "user_id": request.user_id,
+                "agent_session_id": request.agent_session_id,
+                "restaurant_id": "restaurant",
+                "branch_id": "branch",
+                "cart_id": f"cart-{len(invocations)}",
+                "subtotal": 10,
+                "currency": "PKR",
+                "items": [{
+                    "item_id": "item",
+                    "name": "Item",
+                    "quantity": 1,
+                    "selected_options": {},
+                    "current_price": 10,
+                }],
+            })
+            order_id = pending.data["order_id"]
+            order_service.update_order_flow(order_id, "set_takeaway")
+            confirmed = order_service.update_order_flow(
+                order_id,
+                "confirm",
+                idempotency_key=request.request_id,
+            ).model_dump(exclude_none=True)
+            return AgentInvocationResult(
+                text="Your order has been confirmed and sent to the restaurant.",
+                raw_result={
+                    "tool_calls": [{
+                        "tool_name": "update_order_flow",
+                        "success": True,
+                        "is_write": True,
+                        "result": confirmed,
+                        "error_code": None,
+                    }],
+                },
+            )
+
+    monkeypatch.setattr(
+        main,
+        "get_agent_runtime_client",
+        lambda: ConfirmingAgentRuntimeClient(),
+    )
+    payload = {
+        "message": "confirm",
+        "from": "+10000000000",
+        "sender_id": "sender-confirm-duplicate",
+        "message_id": "wamid.confirm-duplicate",
+    }
+
+    first = client().post("/api/channels/agentflo/whatsapp", json=payload)
+    duplicate = client().post("/api/channels/agentflo/whatsapp", json=payload)
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 200
+    assert duplicate.json()["duplicate"] is True
+    assert len(invocations) == 1
+    assert len(order_repository.data) == 1
+    assert next(iter(order_repository.data.values()))["status"] == "submitted_to_restaurant"
+    assert len(gateway.calls) == 1
+
+
 def test_agentflo_whatsapp_missing_message_id_processes_with_safe_warning(
     monkeypatch,
     caplog,
@@ -1078,7 +1167,7 @@ def test_agentflo_whatsapp_simple_payload_extracts_aliases(monkeypatch):
     response = client().post(
         "/api/channels/agentflo/whatsapp",
         json={
-            "content": "Track my order",
+            "content": "Simple inbound message",
             "user_number": "+10000000001",
             "profile_name": "Synthetic User",
             "sender_id": "sender-200",
@@ -1089,7 +1178,7 @@ def test_agentflo_whatsapp_simple_payload_extracts_aliases(monkeypatch):
     assert response.status_code == 200
     assert response.json()["reply"] == "Simple reply."
     assert response.json()["text"] == "Simple reply."
-    assert captured["message"] == "Track my order"
+    assert captured["message"] == "Simple inbound message"
     assert captured["customer_phone"] == "+10000000001"
     assert captured["customer_name"] == "Synthetic User"
     assert captured["channel"] == "whatsapp"
@@ -1867,6 +1956,407 @@ def test_chat_does_not_deterministically_override_non_menu_waiting_text(monkeypa
 
     assert completed["text"] == model_text
     assert captured_menu_calls == []
+
+
+def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypatch):
+    menu_repository = MemoryMenuRepository(
+        items=[
+            {
+                "product_id": "mushroom-pepperoni",
+                "name": "Mushroom & Pepperoni",
+                "category": "pizza",
+                "currency": "PKR",
+                "available": True,
+                "starting_price": 850,
+                "base_prices": {"small": 850, "medium": 1700, "large": 2400},
+                "customization_group_ids": [],
+                "upsell_group_ids": [],
+            },
+            {
+                "product_id": "pepperoni-hot",
+                "name": "Pepperoni Hot",
+                "category": "pizza",
+                "currency": "PKR",
+                "available": True,
+                "starting_price": 850,
+                "base_prices": {"small": 850, "medium": 1700, "large": 2400},
+                "customization_group_ids": [],
+                "upsell_group_ids": [],
+            },
+            {
+                "product_id": "pepperoni-passion",
+                "name": "Pepperoni Passion",
+                "category": "pizza",
+                "currency": "PKR",
+                "available": True,
+                "starting_price": 850,
+                "base_prices": {"small": 850, "medium": 1700, "large": 2400},
+                "customization_group_ids": [
+                    "pizza-size",
+                    "pizza-crust",
+                    "pizza-topping",
+                ],
+                "upsell_group_ids": ["drink-upsell"],
+            },
+            {
+                "product_id": "cola",
+                "name": "Cola",
+                "category": "drink",
+                "currency": "PKR",
+                "available": True,
+                "starting_price": 250,
+                "customization_group_ids": [],
+                "upsell_group_ids": [],
+            },
+        ],
+        groups=[
+            {
+                "option_group_id": "pizza-size",
+                "name": "Pizza Size",
+                "type": "single_select",
+                "required": True,
+                "question": "Which pizza size would you like?",
+                "options": [
+                    {"option_id": "small", "name": "Small", "price_key": "small"},
+                    {"option_id": "medium", "name": "Medium", "price_key": "medium"},
+                    {"option_id": "large", "name": "Large", "price_key": "large"},
+                ],
+            },
+            {
+                "option_group_id": "pizza-crust",
+                "name": "Pizza Crust",
+                "type": "single_select",
+                "required": True,
+                "question": "Choose a crust.",
+                "options": [
+                    {"option_id": "regular", "name": "Regular Crust", "price_delta": 0},
+                    {"option_id": "thin", "name": "Crunchy Thin Crust", "price_delta": 0},
+                ],
+            },
+            {
+                "option_group_id": "pizza-topping",
+                "name": "Pizza Topping",
+                "type": "single_select",
+                "required": True,
+                "question": "Choose a topping option.",
+                "options": [
+                    {"option_id": "extra-cheese", "name": "Extra Cheese", "price_delta": 200},
+                    {"option_id": "no-extra", "name": "No Extra Topping", "price_delta": 0},
+                ],
+            },
+        ],
+        upsells=[
+            {
+                "upsell_group_id": "drink-upsell",
+                "question": "Would you like to add a drink?",
+                "items": ["cola"],
+                "max_suggestions": 1,
+            }
+        ],
+    )
+    order_repository = MemoryOrderRepository()
+    order_service = OrderService(order_repository, menu_repository)
+    services = IdentityServices()
+    services.menu = MenuService(menu_repository)
+    services.orders = order_service
+    services.carts = CartService(
+        MemoryCartRepository(),
+        menu_repository,
+        order_service,
+        make_test_settings(),
+    )
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(agent_tools, "get_services", lambda: services)
+
+    class AuthoritativeOrderAgentClient:
+        def __init__(self):
+            self.cart_item_id = None
+            self.cart_id = None
+            self.order_id = None
+
+        def invoke(self, request):
+            context = AgentRequestContext(
+                user_id=request.user_id,
+                agent_session_id=request.agent_session_id,
+                branch_id=request.branch_id,
+                customer_id=request.customer_id,
+                customer_name=request.customer_name,
+                customer_phone=request.customer_phone,
+                channel=request.channel,
+                request_id=request.request_id,
+                current_message=request.message,
+            )
+            with request_context(context):
+                if request.message.startswith("hello"):
+                    result = agent_tools.search_menu(query="pepperoni", max_results=5)
+                    text = result["user_message"]
+                elif request.message == "3":
+                    result = agent_tools.start_cart_item_customization(
+                        "pepperoni-passion",
+                        1,
+                    )
+                    self.cart_item_id = result["data"]["cart_item_id"]
+                    self.cart_id = result["data"]["cart_id"]
+                    text = result["user_message"]
+                elif request.message == "1" and self.order_id is None:
+                    result = agent_tools.save_customization_choice(
+                        self.cart_item_id,
+                        "pizza-size",
+                        "small",
+                    )
+                    text = result["user_message"]
+                elif request.message == "crust 1":
+                    result = agent_tools.save_customization_choice(
+                        self.cart_item_id,
+                        "pizza-crust",
+                        "regular",
+                    )
+                    text = result["user_message"]
+                elif request.message == "2":
+                    result = agent_tools.save_customization_choice(
+                        self.cart_item_id,
+                        "pizza-topping",
+                        "no-extra",
+                    )
+                    text = result["user_message"]
+                elif request.message == "no":
+                    result = agent_tools.handle_cart_upsell(self.cart_id, "skip")
+                    text = result["user_message"]
+                elif request.message == "confirm" and self.order_id is None:
+                    result = agent_tools.create_pending_order_from_cart(self.cart_id)
+                    self.order_id = result["data"]["order_id"]
+                    text = result["user_message"]
+                elif request.message == "1":
+                    result = agent_tools.update_order_flow(
+                        self.order_id,
+                        "set_delivery",
+                    )
+                    text = result["user_message"]
+                elif request.message == "delivery address":
+                    result = agent_tools.update_order_flow(
+                        self.order_id,
+                        "save_address",
+                        "Customer delivery address",
+                    )
+                    text = result["user_message"]
+                else:
+                    result = agent_tools.update_order_flow(
+                        self.order_id,
+                        "confirm",
+                        idempotency_key=request.request_id,
+                    )
+                    text = "Your order is confirmed and will be delivered."
+            return AgentInvocationResult(
+                text=text,
+                raw_result=SimpleNamespace(tool_calls=context.tool_calls),
+            )
+
+    monkeypatch.setattr(
+        main,
+        "get_agent_runtime_client",
+        lambda: authoritative_agent,
+    )
+    authoritative_agent = AuthoritativeOrderAgentClient()
+    test_client = client()
+    messages = [
+        "hello I would like to order a pepperoni pizza",
+        "3",
+        "1",
+        "crust 1",
+        "2",
+        "no",
+        "confirm",
+        "1",
+        "delivery address",
+        "confirm",
+    ]
+
+    final_payload = None
+    for message in messages:
+        submitted = test_client.post(
+            "/api/chat",
+            json={
+                "message": message,
+                "session_id": "whatsapp-session",
+                "user_id": "whatsapp-user",
+                "customer_id": "whatsapp-user",
+                "channel": "whatsapp",
+            },
+        )
+        final_payload = completed_chat_response(
+            test_client,
+            submitted.json()["request_id"],
+        )
+
+    assert len(order_repository.data) == 1
+    order = next(iter(order_repository.data.values()))
+    assert order["status"] == "submitted_to_restaurant"
+    assert order["total"] == 850
+    assert services.orders.admin_list_orders()["orders"][0]["order_id"] == order["order_id"]
+    assert final_payload is not None
+    final_text = final_payload["text"]
+    lowered = final_text.lower()
+    assert f"Order ID: {order['order_id']}" in final_text
+    assert "Total: Rs 850.00" in final_text
+    assert "Pepperoni Passion x 1" in final_text
+    assert "Fulfilment: Delivery" in final_text
+    assert "Delivery address: Customer delivery address" in final_text
+    assert "Status: Submitted to restaurant" in final_text
+    for forbidden in (
+        "please hold",
+        "hold on",
+        "please wait",
+        "give me a moment",
+        "let me check",
+        "i'll check",
+        "i will check",
+        "retrieve that information",
+        "fetch the information",
+    ):
+        assert forbidden not in lowered
+
+
+def test_chat_blocks_fake_order_confirmation_without_backend_order_result(monkeypatch):
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(tool_calls=[]),
+        text="Your order is confirmed and will be delivered.",
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "confirm",
+            "session_id": "session",
+            "user_id": "user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == (
+        "I couldn't confirm the order yet. Please confirm the missing details first."
+    )
+    assert "confirmed and will be delivered" not in completed["text"].lower()
+
+
+def test_whatsapp_order_status_uses_actual_confirmed_order(monkeypatch):
+    menu_repository = MemoryMenuRepository(
+        [{"product_id": "item", "name": "Item", "available": True,
+          "starting_price": 10, "customization_group_ids": []}],
+        [],
+    )
+    order_repository = MemoryOrderRepository()
+    order_service = OrderService(order_repository, menu_repository)
+    order_service.create_pending_from_cart({
+        "user_id": "whatsapp-user",
+        "agent_session_id": "whatsapp-session",
+        "restaurant_id": "restaurant",
+        "branch_id": "branch",
+        "cart_id": "cart",
+        "subtotal": 10,
+        "currency": "PKR",
+        "items": [{
+            "item_id": "item",
+            "name": "Item",
+            "quantity": 1,
+            "selected_options": {},
+            "current_price": 10,
+        }],
+    })
+    order_id = next(iter(order_repository.data))
+    order_service.update_order_flow(order_id, "set_takeaway")
+    order_service.update_order_flow(order_id, "confirm")
+    services = IdentityServices(customer_id="whatsapp-user", session_id="whatsapp-session")
+    services.orders = order_service
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(tool_calls=[]),
+        text="Let me check and fetch the information.",
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "whats the status of my order",
+            "session_id": "whatsapp-session",
+            "user_id": "whatsapp-user",
+            "customer_id": "whatsapp-user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == (
+        f"Order ID: {order_id}\n"
+        "Status: Submitted to restaurant\n"
+        "Total: Rs 10.00"
+    )
+
+
+def test_whatsapp_order_status_without_confirmed_order_asks_for_order_id(monkeypatch):
+    menu_repository = MemoryMenuRepository(
+        [{"product_id": "item", "name": "Item", "available": True,
+          "starting_price": 10, "customization_group_ids": []}],
+        [],
+    )
+    order_repository = MemoryOrderRepository()
+    order_service = OrderService(order_repository, menu_repository)
+    order_service.create_pending_from_cart({
+        "user_id": "whatsapp-user",
+        "agent_session_id": "whatsapp-session",
+        "restaurant_id": "restaurant",
+        "branch_id": "branch",
+        "cart_id": "cart",
+        "subtotal": 10,
+        "currency": "PKR",
+        "items": [{
+            "item_id": "item",
+            "name": "Item",
+            "quantity": 1,
+            "selected_options": {},
+            "current_price": 10,
+        }],
+    })
+    services = IdentityServices(customer_id="whatsapp-user", session_id="whatsapp-session")
+    services.orders = order_service
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(tool_calls=[]),
+        text="Please wait while I retrieve that information.",
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "whats the status of my order",
+            "session_id": "whatsapp-session",
+            "user_id": "whatsapp-user",
+            "customer_id": "whatsapp-user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == (
+        "I couldn't find a confirmed order for this conversation. Please provide your order ID."
+    )
+    assert "please wait" not in completed["text"].lower()
+    assert "retrieve" not in completed["text"].lower()
 
 
 def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
