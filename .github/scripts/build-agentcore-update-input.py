@@ -34,6 +34,8 @@ RESPONSE_ONLY_FIELDS = {
 FULL_GITHUB_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 CLIENT_TOKEN_STRUCTURE_RE = re.compile(r"^[A-Za-z0-9](?:-*[A-Za-z0-9])*$")
 REQUIRED_ENVIRONMENT_OVERRIDES = {
+    "CONVERSATION_MESSAGES_TABLE_NAME",
+    "CONVERSATION_MESSAGE_TTL_DAYS",
     "TICKETS_TABLE_NAME",
     "SUPPORT_PHONE_NUMBER",
 }
@@ -112,10 +114,28 @@ def validate_environment_overrides(
     if set(environment_overrides) != REQUIRED_ENVIRONMENT_OVERRIDES:
         raise ValueError(
             "environment overrides must contain exactly "
-            "TICKETS_TABLE_NAME and SUPPORT_PHONE_NUMBER"
+            "CONVERSATION_MESSAGES_TABLE_NAME, CONVERSATION_MESSAGE_TTL_DAYS, "
+            "TICKETS_TABLE_NAME, and SUPPORT_PHONE_NUMBER"
         )
+    conversation_messages_table_name = environment_overrides[
+        "CONVERSATION_MESSAGES_TABLE_NAME"
+    ]
+    conversation_message_ttl_days = environment_overrides[
+        "CONVERSATION_MESSAGE_TTL_DAYS"
+    ]
     tickets_table_name = environment_overrides["TICKETS_TABLE_NAME"]
     support_phone_number = environment_overrides["SUPPORT_PHONE_NUMBER"]
+    if (
+        not isinstance(conversation_messages_table_name, str)
+        or not conversation_messages_table_name.strip()
+    ):
+        raise ValueError(
+            "environment CONVERSATION_MESSAGES_TABLE_NAME must be a non-empty string"
+        )
+    if conversation_message_ttl_days != "90":
+        raise ValueError(
+            "environment CONVERSATION_MESSAGE_TTL_DAYS must be the string '90'"
+        )
     if (
         not isinstance(tickets_table_name, str)
         or not tickets_table_name.strip()
@@ -128,6 +148,8 @@ def validate_environment_overrides(
             "environment SUPPORT_PHONE_NUMBER must be a string"
         )
     return {
+        "CONVERSATION_MESSAGES_TABLE_NAME": conversation_messages_table_name,
+        "CONVERSATION_MESSAGE_TTL_DAYS": conversation_message_ttl_days,
         "TICKETS_TABLE_NAME": tickets_table_name,
         "SUPPORT_PHONE_NUMBER": support_phone_number,
     }
