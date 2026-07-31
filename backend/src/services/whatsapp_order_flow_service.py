@@ -15,6 +15,29 @@ MENU_REQUEST_PATTERN = re.compile(
     re.IGNORECASE,
 )
 MENU_ITEM_PATTERN = re.compile(r"\b(?:pizza|pepperoni)\b", re.IGNORECASE)
+ORDER_START_PATTERN = re.compile(
+    r"\b(?:order|ordering|place\s+an?\s+order|buy)\b",
+    re.IGNORECASE,
+)
+RECOMMENDATION_PATTERN = re.compile(
+    r"\b(?:recommend|recommendation|suggest|suggestion|right\s+thing|"
+    r"something\s+(?:spicy|cheap|affordable|budget|chicken|vegetarian|veggie))\b",
+    re.IGNORECASE,
+)
+MENU_PREFERENCE_PATTERN = re.compile(
+    r"\b(spicy|cheap|affordable|budget|chicken|vegetarian|veggie)\b",
+    re.IGNORECASE,
+)
+PRIVACY_BYPASS_PATTERN = re.compile(
+    r"\b(?:all|every|other)\s+(?:customer|user|people|person)(?:'s|\s+)orders?\b|"
+    r"\bcustomer\s+orders?\b",
+    re.IGNORECASE,
+)
+PRICE_BYPASS_PATTERN = re.compile(
+    r"\b(?:change|set|override|make)\b.*\bprice\b|"
+    r"\b(?:confirm|place|order)\b.*\bfor\s+free\b",
+    re.IGNORECASE,
+)
 NON_ORDER_PATTERN = re.compile(
     r"\b(?:complain|complaint|refund|support|human|agent|manager|cancel|"
     r"wrong|missing|late|cold|damaged|issue|problem)\b",
@@ -82,6 +105,20 @@ class WhatsAppOrderFlowService:
         normalized = self._normalize(message)
         if not normalized:
             return None
+
+        if PRIVACY_BYPASS_PATTERN.search(message):
+            return WhatsAppOrderFlowResult(
+                text="I can only show orders linked to your verified customer account.",
+                tool_calls=[],
+            )
+        if PRICE_BYPASS_PATTERN.search(message):
+            return WhatsAppOrderFlowResult(
+                text=(
+                    "I can't override backend prices. Continue using the displayed "
+                    "menu price and backend-calculated total."
+                ),
+                tool_calls=[],
+            )
 
         if ORDER_STATUS_PATTERN.search(normalized):
             response = self.orders.get_order_status(user_id)
@@ -162,7 +199,11 @@ class WhatsAppOrderFlowService:
         query = self._menu_query(normalized)
         if query is None:
             return None
-        response = self.menu.search_menu(query=query, available_only=True, limit=5)
+        response = self.menu.search_menu(
+            query=query or None,
+            available_only=True,
+            limit=5,
+        )
         items = (response.data or {}).get("items", []) if response.success else []
         if items:
             self.agent_sessions.save_whatsapp_order_state(
@@ -628,7 +669,10 @@ class WhatsAppOrderFlowService:
     def _menu_results_text(cls, response: ToolResponse) -> str:
         items = (response.data or {}).get("items", [])
         if not items:
-            return response.user_message
+            return (
+                f"{response.user_message} Please choose another preference, "
+                "ask for available categories, or view the menu."
+            )
         return "\n".join([
             "Here are the matching options I found:",
             *[
@@ -717,8 +761,24 @@ class WhatsAppOrderFlowService:
     def _menu_query(normalized: str) -> str | None:
         if NON_ORDER_PATTERN.search(normalized):
             return None
-        if not MENU_REQUEST_PATTERN.search(normalized) or not MENU_ITEM_PATTERN.search(normalized):
+        has_item_request = bool(
+            MENU_REQUEST_PATTERN.search(normalized)
+            and MENU_ITEM_PATTERN.search(normalized)
+        )
+        has_order_request = bool(ORDER_START_PATTERN.search(normalized))
+        has_recommendation = bool(RECOMMENDATION_PATTERN.search(normalized))
+        if not (has_item_request or has_order_request or has_recommendation):
             return None
         if "pepperoni" in normalized:
             return "pepperoni"
-        return "pizza"
+        preference = MENU_PREFERENCE_PATTERN.search(normalized)
+        if preference:
+            aliases = {
+                "affordable": "cheap",
+                "budget": "cheap",
+                "veggie": "vegetarian",
+            }
+            return aliases.get(preference.group(1), preference.group(1))
+        if "pizza" in normalized:
+            return "pizza"
+        return ""

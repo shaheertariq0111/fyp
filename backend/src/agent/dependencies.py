@@ -27,6 +27,7 @@ from src.services.order_service import OrderService
 from src.services.support_flow_service import SupportFlowService
 from src.services.ticket_service import TicketService
 from src.services.whatsapp_order_flow_service import WhatsAppOrderFlowService
+from src.services.whatsapp_support_flow_service import WhatsAppSupportFlowService
 
 
 def _get_agent_runtime_client():
@@ -50,6 +51,7 @@ class ServiceContainer:
     knowledge: KnowledgeService
     audit: AuditService
     whatsapp_order_flow: WhatsAppOrderFlowService
+    whatsapp_support_flow: WhatsAppSupportFlowService
 
 
 @lru_cache
@@ -74,6 +76,11 @@ def get_services() -> ServiceContainer:
         support_phone_number=settings.support_phone_number,
     )
     cart_service = CartService(cart_repository, menu_repository, order_service, settings)
+    support_flow_service = SupportFlowService(
+        agent_session_service,
+        ticket_service,
+        order_repository,
+    )
     return ServiceContainer(
         menu=menu_service,
         menu_sessions=MenuSessionService(
@@ -95,11 +102,7 @@ def get_services() -> ServiceContainer:
             ttl_days=settings.conversation_message_ttl_days,
         ),
         tickets=ticket_service,
-        support_flow=SupportFlowService(
-            agent_session_service,
-            ticket_service,
-            order_repository,
-        ),
+        support_flow=support_flow_service,
         knowledge=KnowledgeService(
             get_bedrock_agent_runtime_client(settings), settings.knowledge_base_id,
             settings.knowledge_base_max_results,
@@ -111,5 +114,10 @@ def get_services() -> ServiceContainer:
             order_service,
             agent_session_service,
             intent_client_factory=_get_agent_runtime_client,
+        ),
+        whatsapp_support_flow=WhatsAppSupportFlowService(
+            support_flow=support_flow_service,
+            tickets=ticket_service,
+            agent_sessions=agent_session_service,
         ),
     )

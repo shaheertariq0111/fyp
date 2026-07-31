@@ -2277,6 +2277,115 @@ def test_chat_blocks_llm_generated_whatsapp_cart_summary_without_backend_result(
     assert "2,900" not in completed["text"]
 
 
+def test_whatsapp_support_coordinator_runs_before_agentcore(monkeypatch):
+    services = IdentityServices()
+    support_calls = []
+    services.whatsapp_support_flow = SimpleNamespace(
+        handle=lambda **kwargs: (
+            support_calls.append(kwargs)
+            or SimpleNamespace(
+                text="Please provide the Order ID for your complaint.",
+                tool_calls=[{
+                    "tool_name": "handle_order_complaint",
+                    "success": True,
+                    "is_write": True,
+                    "result": {
+                        "success": True,
+                        "user_message": (
+                            "Please provide the Order ID for your complaint."
+                        ),
+                    },
+                    "error_code": None,
+                }],
+            )
+        )
+    )
+    services.whatsapp_order_flow = SimpleNamespace(
+        handle=lambda **kwargs: pytest.fail(
+            "support intent must be handled before the order coordinator"
+        )
+    )
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "get_agent_runtime_client",
+        lambda: pytest.fail("AgentCore must not handle transactional support"),
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "I want to complain about my order",
+            "session_id": "session",
+            "user_id": "user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == (
+        "Please provide the Order ID for your complaint."
+    )
+    assert support_calls[0]["message"] == "I want to complain about my order"
+    assert completed["tool_calls"][0]["tool_name"] == "handle_order_complaint"
+
+
+def test_chat_blocks_fake_whatsapp_ticket_creation_without_backend_result(monkeypatch):
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(tool_calls=[]),
+        text="I've logged your complaint and opened a support ticket.",
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "tell me what happened",
+            "session_id": "session",
+            "user_id": "user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == main.SAFE_UNCONFIRMED_TICKET_RESPONSE
+    assert "logged your complaint" not in completed["text"].lower()
+
+
+def test_chat_blocks_fake_whatsapp_transaction_write_without_backend_result(monkeypatch):
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(tool_calls=[]),
+        text="I've added the invented pizza to your cart.",
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "do that",
+            "session_id": "session",
+            "user_id": "user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == main.SAFE_UNCOMPLETED_TRANSACTION_RESPONSE
+    assert "added" not in completed["text"].lower()
+
+
 def test_whatsapp_order_status_uses_actual_confirmed_order(monkeypatch):
     menu_repository = MemoryMenuRepository(
         [{"product_id": "item", "name": "Item", "available": True,

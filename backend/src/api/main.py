@@ -100,6 +100,20 @@ FAKE_CART_SUMMARY_PATTERN = re.compile(
     r"\btotal\b.*\b(?:cart|order)\s+summary\b",
     re.IGNORECASE | re.DOTALL,
 )
+FAKE_TICKET_COMPLETION_PATTERN = re.compile(
+    r"\b(?:i(?:'ve|\s+have)\s+)?(?:logged|recorded|created|opened|raised)\b"
+    r".*\b(?:complaint|ticket|support\s+request)\b|"
+    r"\b(?:complaint|ticket|support\s+request)\b.*"
+    r"\b(?:logged|recorded|created|opened|raised)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+FAKE_TRANSACTION_COMPLETION_PATTERN = re.compile(
+    r"\b(?:added|saved|updated|changed|cancelled|canceled|refunded)\b.*"
+    r"\b(?:cart|order|address|fulfilment|fulfillment|item|refund)\b|"
+    r"\b(?:cart|order|address|fulfilment|fulfillment|item|refund)\b.*"
+    r"\b(?:added|saved|updated|changed|cancelled|canceled|refunded)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 ORDER_STATUS_INTENT_PATTERN = re.compile(
     r"\b(?:status|track|tracking|where\s+is)\b.*\border\b|"
     r"\border\b.*\b(?:status|track|tracking)\b",
@@ -107,6 +121,12 @@ ORDER_STATUS_INTENT_PATTERN = re.compile(
 )
 SAFE_UNCONFIRMED_ORDER_RESPONSE = (
     "I couldn't confirm the order yet. Please confirm the missing details first."
+)
+SAFE_UNCONFIRMED_TICKET_RESPONSE = (
+    "I couldn't verify that the support request was logged. Please try again or contact staff."
+)
+SAFE_UNCOMPLETED_TRANSACTION_RESPONSE = (
+    "I couldn't verify that action with the backend. Please try the requested action again."
 )
 NO_CONFIRMED_ORDER_STATUS_RESPONSE = (
     "I couldn't find a confirmed order for this conversation. Please provide your order ID."
@@ -618,7 +638,9 @@ def _buttons_from_tool_calls(tool_calls: list[ToolCallResult]) -> list[dict[str,
 
 
 def _authoritative_ticket_message(
+    text: str,
     tool_calls: list[ToolCallResult],
+    context: AgentRequestContext,
 ) -> str | None:
     for call in reversed(tool_calls):
         if call.tool_name not in AUTHORITATIVE_SUPPORT_TICKET_TOOLS:
@@ -627,6 +649,11 @@ def _authoritative_ticket_message(
         message = result.get("user_message")
         if isinstance(message, str) and message.strip():
             return message
+    if (
+        context.channel == "whatsapp"
+        and FAKE_TICKET_COMPLETION_PATTERN.search(text or "")
+    ):
+        return SAFE_UNCONFIRMED_TICKET_RESPONSE
     return None
 
 
@@ -861,6 +888,12 @@ def _authoritative_order_message(
         return SAFE_UNCONFIRMED_ORDER_RESPONSE
     if FAKE_ORDER_CONFIRMATION_PATTERN.search(text or ""):
         return SAFE_UNCONFIRMED_ORDER_RESPONSE
+    if (
+        context.channel == "whatsapp"
+        and not has_authoritative_order_result
+        and FAKE_TRANSACTION_COMPLETION_PATTERN.search(text or "")
+    ):
+        return SAFE_UNCOMPLETED_TRANSACTION_RESPONSE
     return None
 
 
@@ -1014,7 +1047,7 @@ def _chat_response_from_invocation(
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
     response_text = (
-        _authoritative_ticket_message(tool_calls)
+        _authoritative_ticket_message(invocation.text, tool_calls, context)
         or _authoritative_order_message(context, invocation.text, tool_calls)
         or _actionable_response_from_tool_results(invocation.text, tool_calls, context)
     )
@@ -1646,8 +1679,13 @@ def _process_chat_request(
     try:
         authoritative_flow = None
         if context.channel == "whatsapp":
-            coordinator = getattr(get_services(), "whatsapp_order_flow", None)
-            if coordinator is not None:
+            for coordinator_name in (
+                "whatsapp_support_flow",
+                "whatsapp_order_flow",
+            ):
+                coordinator = getattr(get_services(), coordinator_name, None)
+                if coordinator is None:
+                    continue
                 authoritative_flow = coordinator.handle(
                     user_id=context.user_id,
                     session_id=context.agent_session_id,
@@ -1657,15 +1695,17 @@ def _process_chat_request(
                     customer_name=context.customer_name,
                     customer_phone=context.customer_phone,
                 )
+                if authoritative_flow is not None:
+                    break
         if authoritative_flow is not None:
             invocation = AgentInvocationResult(
                 text=authoritative_flow.text,
                 raw_result={"tool_calls": authoritative_flow.tool_calls},
             )
             logger.info(
-                "Authoritative WhatsApp order flow completed",
+                "Authoritative WhatsApp transaction flow completed",
                 extra={
-                    "event": "whatsapp_order_flow_completed",
+                    "event": "whatsapp_transaction_flow_completed",
                     "http_request_id": http_request_id,
                     "request_id": record["request_id"],
                     "actor_id": context.user_id,
