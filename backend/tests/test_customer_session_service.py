@@ -40,6 +40,34 @@ class MemoryAgentSessionRepository:
     def save(self, session):
         self.data[session["agent_session_id"]] = dict(session)
 
+    def get_whatsapp_order_state(self, customer_id, agent_session_id):
+        session = self.data[agent_session_id]
+        assert session["customer_id"] == customer_id
+        return {
+            key: session[key]
+            for key in ("offered_menu_items", "whatsapp_order_state_updated_at")
+            if key in session
+        }
+
+    def update_whatsapp_order_state(
+        self,
+        customer_id,
+        agent_session_id,
+        *,
+        offered_menu_items,
+        updated_at,
+    ):
+        session = self.data[agent_session_id]
+        assert session["customer_id"] == customer_id
+        session["offered_menu_items"] = offered_menu_items
+        session["whatsapp_order_state_updated_at"] = updated_at
+
+    def clear_whatsapp_order_state(self, customer_id, agent_session_id):
+        session = self.data[agent_session_id]
+        assert session["customer_id"] == customer_id
+        session.pop("offered_menu_items", None)
+        session.pop("whatsapp_order_state_updated_at", None)
+
 
 def services():
     customers = CustomerService(MemoryCustomerRepository())
@@ -130,6 +158,40 @@ def test_trusted_channel_can_create_and_reuse_stable_requested_session():
     assert first["rotated"] is True
     assert second["session"]["agent_session_id"] == stable_session_id
     assert second["rotated"] is False
+
+
+def test_whatsapp_menu_choices_are_persisted_for_the_next_message():
+    _, sessions = services()
+    session = sessions.resolve(
+        requested_session_id="whatsapp-session",
+        customer_id="cust-whatsapp",
+        channel="whatsapp",
+        allow_requested_session_creation=True,
+    )["session"]
+    choices = [
+        {"product_id": "pepperoni-hot", "name": "Pepperoni Hot"},
+        {"product_id": "pepperoni-passion", "name": "Pepperoni Passion"},
+    ]
+
+    sessions.save_whatsapp_order_state(
+        "cust-whatsapp",
+        session["agent_session_id"],
+        offered_menu_items=choices,
+    )
+
+    assert sessions.get_whatsapp_order_state(
+        "cust-whatsapp",
+        session["agent_session_id"],
+    )["offered_menu_items"] == choices
+
+    sessions.clear_whatsapp_order_state(
+        "cust-whatsapp",
+        session["agent_session_id"],
+    )
+    assert sessions.get_whatsapp_order_state(
+        "cust-whatsapp",
+        session["agent_session_id"],
+    ) == {}
 
 
 def test_expired_idle_session_rotates():

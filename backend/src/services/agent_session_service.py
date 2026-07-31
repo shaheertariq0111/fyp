@@ -14,6 +14,7 @@ from src.repositories.agent_session_repository import SupportStateConflictError
 SUPPORT_STATE_TTL = timedelta(minutes=30)
 SUPPORT_STATE_MAX_CLOCK_SKEW = timedelta(seconds=5)
 VERIFIED_ORDER_TTL = SUPPORT_STATE_TTL
+WHATSAPP_ORDER_STATE_TTL = SUPPORT_STATE_TTL
 
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,61 @@ class AgentSessionService:
             "verified_order_status": status,
             "verified_order_at": verified_at,
         }
+
+    def save_whatsapp_order_state(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        offered_menu_items: list[dict],
+    ) -> dict:
+        if not isinstance(offered_menu_items, list) or not offered_menu_items:
+            raise ValueError("offered menu items are required")
+        updated_at = self._now().isoformat()
+        self.repository.update_whatsapp_order_state(
+            customer_id,
+            agent_session_id,
+            offered_menu_items=offered_menu_items,
+            updated_at=updated_at,
+        )
+        return {
+            "offered_menu_items": offered_menu_items,
+            "whatsapp_order_state_updated_at": updated_at,
+        }
+
+    def get_whatsapp_order_state(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> dict:
+        state = self.repository.get_whatsapp_order_state(
+            customer_id,
+            agent_session_id,
+        )
+        updated_at = state.get("whatsapp_order_state_updated_at")
+        try:
+            normalized = normalize_ticket_timestamp(updated_at)
+        except (PydanticCustomError, TypeError, ValueError):
+            normalized = None
+        if normalized is not None and normalized == updated_at:
+            timestamp = datetime.fromisoformat(normalized)
+            now = self._now()
+            if (
+                timestamp <= now + SUPPORT_STATE_MAX_CLOCK_SKEW
+                and now - timestamp < WHATSAPP_ORDER_STATE_TTL
+                and isinstance(state.get("offered_menu_items"), list)
+            ):
+                return state
+        if state:
+            self.repository.clear_whatsapp_order_state(customer_id, agent_session_id)
+        return {}
+
+    def clear_whatsapp_order_state(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> None:
+        self.repository.clear_whatsapp_order_state(customer_id, agent_session_id)
 
     def get_active_verified_order_context(
         self,

@@ -93,6 +93,52 @@ def test_get_support_state_is_empty_when_session_has_no_pending_state():
     assert repository.get_support_state("cust-1", "session-1") == {}
 
 
+def test_whatsapp_order_state_uses_owner_bound_session_attributes():
+    repository, table = repository_with_session(
+        offered_menu_items=[{"product_id": "pepperoni-hot"}],
+        whatsapp_order_state_updated_at="2026-07-31T10:00:00+00:00",
+    )
+
+    state = repository.get_whatsapp_order_state("cust-1", "session-1")
+    repository.update_whatsapp_order_state(
+        "cust-1",
+        "session-1",
+        offered_menu_items=[{"product_id": "pepperoni-passion"}],
+        updated_at="2026-07-31T10:01:00+00:00",
+    )
+
+    assert state == {
+        "offered_menu_items": [{"product_id": "pepperoni-hot"}],
+        "whatsapp_order_state_updated_at": "2026-07-31T10:00:00+00:00",
+    }
+    call = table.update_calls[0]
+    assert call["UpdateExpression"] == "SET #items = :items, #updated_at = :updated_at"
+    assert call["ExpressionAttributeValues"][":items"] == [
+        {"product_id": "pepperoni-passion"}
+    ]
+    assert "#customer_id = :customer_id" in call["ConditionExpression"]
+    assert "#agent_session_id = :agent_session_id" in call["ConditionExpression"]
+
+
+def test_clear_whatsapp_order_state_removes_only_flow_attributes():
+    repository, table = repository_with_session(
+        offered_menu_items=[{"product_id": "pepperoni-hot"}],
+        whatsapp_order_state_updated_at="2026-07-31T10:00:00+00:00",
+    )
+
+    repository.clear_whatsapp_order_state("cust-1", "session-1")
+
+    call = table.update_calls[0]
+    assert call["UpdateExpression"] == "REMOVE #items, #updated_at"
+    assert set(call["ExpressionAttributeNames"].values()) == {
+        "PK",
+        "customer_id",
+        "agent_session_id",
+        "offered_menu_items",
+        "whatsapp_order_state_updated_at",
+    }
+
+
 def test_support_state_lookup_uses_owner_bound_primary_key():
     repository, table = repository_with_session()
 

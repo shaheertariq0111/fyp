@@ -334,6 +334,24 @@ class OrderService:
             agent=agent,
         )
 
+    def get_active_order_for_session(
+        self,
+        user_id: str,
+        agent_session_id: str,
+    ) -> dict | None:
+        matches = [
+            order
+            for order in self.orders.list_active(user_id, TERMINAL_STATUSES)
+            if order.get("agent_session_id") == agent_session_id
+        ]
+        if not matches:
+            return None
+        order = max(
+            matches,
+            key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""),
+        )
+        return self._public(order)
+
     def admin_list_orders(self, status: str | None = None, limit: int = 50) -> dict:
         orders = [self._public(order) for order in self.orders.list_all()]
         if status:

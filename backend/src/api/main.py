@@ -27,7 +27,11 @@ from pydantic import ValidationError
 from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
 from src.agent.dependencies import get_services
-from src.agent_client import AgentInvocationRequest, get_agent_runtime_client
+from src.agent_client import (
+    AgentInvocationRequest,
+    AgentInvocationResult,
+    get_agent_runtime_client,
+)
 from src.api.schemas import (
     ActionRequest,
     AdminAvailabilityRequest,
@@ -90,6 +94,11 @@ FAKE_ORDER_CONFIRMATION_PATTERN = re.compile(
     r"confirmed\s+and\s+(?:will\s+be\s+)?delivered|"
     r"will\s+be\s+delivered)\b",
     re.IGNORECASE,
+)
+FAKE_CART_SUMMARY_PATTERN = re.compile(
+    r"\b(?:cart|order)\s+summary\b.*\btotal\b|"
+    r"\btotal\b.*\b(?:cart|order)\s+summary\b",
+    re.IGNORECASE | re.DOTALL,
 )
 ORDER_STATUS_INTENT_PATTERN = re.compile(
     r"\b(?:status|track|tracking|where\s+is)\b.*\border\b|"
@@ -830,6 +839,26 @@ def _authoritative_order_message(
         context.current_message or ""
     ):
         return _whatsapp_order_status_response(context, tool_calls)
+    has_authoritative_order_result = any(
+        call.success
+        and call.tool_name in {
+            "start_cart_item_customization",
+            "set_customization_mode",
+            "save_customization_choice",
+            "handle_cart_upsell",
+            "create_pending_order_from_cart",
+            "update_order_flow",
+            "get_active_cart",
+            "get_order_status",
+        }
+        for call in tool_calls
+    )
+    if (
+        context.channel == "whatsapp"
+        and not has_authoritative_order_result
+        and FAKE_CART_SUMMARY_PATTERN.search(text or "")
+    ):
+        return SAFE_UNCONFIRMED_ORDER_RESPONSE
     if FAKE_ORDER_CONFIRMATION_PATTERN.search(text or ""):
         return SAFE_UNCONFIRMED_ORDER_RESPONSE
     return None
@@ -1615,31 +1644,61 @@ def _process_chat_request(
         },
     )
     try:
-        invoke_started = time.perf_counter()
-        invocation = get_agent_runtime_client().invoke(
-            AgentInvocationRequest(
-                message=payload.message,
-                user_id=context.user_id,
-                agent_session_id=context.agent_session_id,
-                request_id=record["request_id"],
-                branch_id=payload.branch_id,
-                customer_id=context.customer_id,
-                customer_name=context.customer_name,
-                customer_phone=context.customer_phone,
-                channel=context.channel,
+        authoritative_flow = None
+        if context.channel == "whatsapp":
+            coordinator = getattr(get_services(), "whatsapp_order_flow", None)
+            if coordinator is not None:
+                authoritative_flow = coordinator.handle(
+                    user_id=context.user_id,
+                    session_id=context.agent_session_id,
+                    message=payload.message,
+                    request_id=record["request_id"],
+                    customer_id=context.customer_id,
+                    customer_name=context.customer_name,
+                    customer_phone=context.customer_phone,
+                )
+        if authoritative_flow is not None:
+            invocation = AgentInvocationResult(
+                text=authoritative_flow.text,
+                raw_result={"tool_calls": authoritative_flow.tool_calls},
             )
-        )
-        logger.info(
-            "Agent runtime invocation completed",
-            extra={
-                "event": "agentcore_invocation_completed",
-                "http_request_id": http_request_id,
-                "actor_id": context.user_id,
-                "channel": context.channel,
-                "agentcore_invocation_status": "completed",
-                "response_time_ms": round((time.perf_counter() - invoke_started) * 1000, 2),
-            },
-        )
+            logger.info(
+                "Authoritative WhatsApp order flow completed",
+                extra={
+                    "event": "whatsapp_order_flow_completed",
+                    "http_request_id": http_request_id,
+                    "request_id": record["request_id"],
+                    "actor_id": context.user_id,
+                    "agent_session_id": context.agent_session_id,
+                    "channel": context.channel,
+                },
+            )
+        else:
+            invoke_started = time.perf_counter()
+            invocation = get_agent_runtime_client().invoke(
+                AgentInvocationRequest(
+                    message=payload.message,
+                    user_id=context.user_id,
+                    agent_session_id=context.agent_session_id,
+                    request_id=record["request_id"],
+                    branch_id=payload.branch_id,
+                    customer_id=context.customer_id,
+                    customer_name=context.customer_name,
+                    customer_phone=context.customer_phone,
+                    channel=context.channel,
+                )
+            )
+            logger.info(
+                "Agent runtime invocation completed",
+                extra={
+                    "event": "agentcore_invocation_completed",
+                    "http_request_id": http_request_id,
+                    "actor_id": context.user_id,
+                    "channel": context.channel,
+                    "agentcore_invocation_status": "completed",
+                    "response_time_ms": round((time.perf_counter() - invoke_started) * 1000, 2),
+                },
+            )
         response_payload = _chat_response_from_invocation(
             context, identity_state, invocation
         ).model_dump(exclude_none=True)

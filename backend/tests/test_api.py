@@ -20,6 +20,7 @@ from src.services.cart_service import CartService
 from src.services.menu_service import MenuService
 from src.services.order_service import OrderService
 from src.services.ticket_service import AdminTicketError
+from src.services.whatsapp_order_flow_service import WhatsAppOrderFlowService
 from fakes import MemoryCartRepository, MemoryMenuRepository, MemoryOrderRepository
 from test_config import make_test_settings
 
@@ -1822,10 +1823,63 @@ def test_chat_replaces_waiting_menu_response_with_actionable_options(monkeypatch
         "retrieve that information",
     ):
         assert forbidden not in lowered
+
     assert "Classic Pepperoni Pizza" in final_text
     assert "Pepperoni Feast" in final_text
     assert "PKR 899" in final_text
     assert "Which item and size would you like?" in final_text
+
+
+def test_web_pepperoni_request_still_uses_existing_agent_flow(monkeypatch):
+    services = IdentityServices()
+    services.whatsapp_order_flow = SimpleNamespace(
+        handle=lambda **kwargs: pytest.fail(
+            "The WhatsApp coordinator must not intercept web chat"
+        )
+    )
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
+            tool_calls=[{
+                "tool_name": "search_menu",
+                "success": True,
+                "is_write": False,
+                "result": {
+                    "success": True,
+                    "data": {"items": [{
+                        "product_id": "pepperoni-passion",
+                        "name": "Pepperoni Passion",
+                        "currency": "PKR",
+                        "starting_price": 850,
+                    }]},
+                    "user_message": "I found current menu options.",
+                },
+            }]
+        ),
+        text="Pepperoni Passion is available.",
+        captured=captured,
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "hello I would like to order a pepperoni pizza",
+            "session_id": "web-session",
+            "user_id": "web-user",
+            "channel": "web",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert captured["channel"] == "web"
+    assert completed["text"] == "Pepperoni Passion is available."
+    assert completed["tool_calls"][0]["tool_name"] == "search_menu"
 
 
 def test_chat_deterministically_searches_menu_when_whatsapp_pizza_intent_waits(monkeypatch):
@@ -2056,7 +2110,7 @@ def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypa
     )
     order_repository = MemoryOrderRepository()
     order_service = OrderService(order_repository, menu_repository)
-    services = IdentityServices()
+    services = WhatsAppIdentityServices()
     services.menu = MenuService(menu_repository)
     services.orders = order_service
     services.carts = CartService(
@@ -2065,98 +2119,32 @@ def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypa
         order_service,
         make_test_settings(),
     )
+    whatsapp_state = {}
+    services.agent_sessions.get_whatsapp_order_state = (
+        lambda customer_id, session_id: deepcopy(whatsapp_state)
+    )
+
+    def save_whatsapp_order_state(customer_id, session_id, *, offered_menu_items):
+        whatsapp_state.clear()
+        whatsapp_state["offered_menu_items"] = deepcopy(offered_menu_items)
+        return deepcopy(whatsapp_state)
+
+    services.agent_sessions.save_whatsapp_order_state = save_whatsapp_order_state
+    services.agent_sessions.clear_whatsapp_order_state = (
+        lambda customer_id, session_id: whatsapp_state.clear()
+    )
+    services.whatsapp_order_flow = WhatsAppOrderFlowService(
+        services.menu,
+        services.carts,
+        services.orders,
+        services.agent_sessions,
+    )
     monkeypatch.setattr(main, "get_services", lambda: services)
-    monkeypatch.setattr(agent_tools, "get_services", lambda: services)
-
-    class AuthoritativeOrderAgentClient:
-        def __init__(self):
-            self.cart_item_id = None
-            self.cart_id = None
-            self.order_id = None
-
-        def invoke(self, request):
-            context = AgentRequestContext(
-                user_id=request.user_id,
-                agent_session_id=request.agent_session_id,
-                branch_id=request.branch_id,
-                customer_id=request.customer_id,
-                customer_name=request.customer_name,
-                customer_phone=request.customer_phone,
-                channel=request.channel,
-                request_id=request.request_id,
-                current_message=request.message,
-            )
-            with request_context(context):
-                if request.message.startswith("hello"):
-                    result = agent_tools.search_menu(query="pepperoni", max_results=5)
-                    text = result["user_message"]
-                elif request.message == "3":
-                    result = agent_tools.start_cart_item_customization(
-                        "pepperoni-passion",
-                        1,
-                    )
-                    self.cart_item_id = result["data"]["cart_item_id"]
-                    self.cart_id = result["data"]["cart_id"]
-                    text = result["user_message"]
-                elif request.message == "1" and self.order_id is None:
-                    result = agent_tools.save_customization_choice(
-                        self.cart_item_id,
-                        "pizza-size",
-                        "small",
-                    )
-                    text = result["user_message"]
-                elif request.message == "crust 1":
-                    result = agent_tools.save_customization_choice(
-                        self.cart_item_id,
-                        "pizza-crust",
-                        "regular",
-                    )
-                    text = result["user_message"]
-                elif request.message == "2":
-                    result = agent_tools.save_customization_choice(
-                        self.cart_item_id,
-                        "pizza-topping",
-                        "no-extra",
-                    )
-                    text = result["user_message"]
-                elif request.message == "no":
-                    result = agent_tools.handle_cart_upsell(self.cart_id, "skip")
-                    text = result["user_message"]
-                elif request.message == "confirm" and self.order_id is None:
-                    result = agent_tools.create_pending_order_from_cart(self.cart_id)
-                    self.order_id = result["data"]["order_id"]
-                    text = result["user_message"]
-                elif request.message == "1":
-                    result = agent_tools.update_order_flow(
-                        self.order_id,
-                        "set_delivery",
-                    )
-                    text = result["user_message"]
-                elif request.message == "delivery address":
-                    result = agent_tools.update_order_flow(
-                        self.order_id,
-                        "save_address",
-                        "Customer delivery address",
-                    )
-                    text = result["user_message"]
-                else:
-                    result = agent_tools.update_order_flow(
-                        self.order_id,
-                        "confirm",
-                        idempotency_key=request.request_id,
-                    )
-                    text = "Your order is confirmed and will be delivered."
-            return AgentInvocationResult(
-                text=text,
-                raw_result=SimpleNamespace(tool_calls=context.tool_calls),
-            )
-
     monkeypatch.setattr(
         main,
         "get_agent_runtime_client",
-        lambda: authoritative_agent,
+        lambda: pytest.fail("AgentCore must not control an authoritative WhatsApp order"),
     )
-    authoritative_agent = AuthoritativeOrderAgentClient()
     test_client = client()
     messages = [
         "hello I would like to order a pepperoni pizza",
@@ -2167,26 +2155,24 @@ def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypa
         "no",
         "confirm",
         "1",
-        "delivery address",
+        "Customer delivery address",
         "confirm",
     ]
 
     final_payload = None
-    for message in messages:
-        submitted = test_client.post(
-            "/api/chat",
+    for index, message in enumerate(messages, start=1):
+        response = test_client.post(
+            "/api/channels/agentflo/whatsapp",
             json={
                 "message": message,
-                "session_id": "whatsapp-session",
-                "user_id": "whatsapp-user",
-                "customer_id": "whatsapp-user",
-                "channel": "whatsapp",
+                "from": "+10000000000",
+                "sender_id": "sender-authoritative-order",
+                "message_id": f"wamid.authoritative-order-{index}",
             },
         )
-        final_payload = completed_chat_response(
-            test_client,
-            submitted.json()["request_id"],
-        )
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        final_payload = response.json()
 
     assert len(order_repository.data) == 1
     order = next(iter(order_repository.data.values()))
@@ -2215,6 +2201,22 @@ def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypa
     ):
         assert forbidden not in lowered
 
+    status_response = test_client.post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "whats the status of my order",
+            "from": "+10000000000",
+            "sender_id": "sender-authoritative-order",
+            "message_id": "wamid.authoritative-order-status",
+        },
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["text"] == (
+        f"Order ID: {order['order_id']}\n"
+        "Status: Submitted to restaurant\n"
+        "Total: Rs 850.00"
+    )
+
 
 def test_chat_blocks_fake_order_confirmation_without_backend_order_result(monkeypatch):
     stub_agent_client(
@@ -2242,6 +2244,37 @@ def test_chat_blocks_fake_order_confirmation_without_backend_order_result(monkey
         "I couldn't confirm the order yet. Please confirm the missing details first."
     )
     assert "confirmed and will be delivered" not in completed["text"].lower()
+
+
+def test_chat_blocks_llm_generated_whatsapp_cart_summary_without_backend_result(monkeypatch):
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(tool_calls=[]),
+        text=(
+            "Order summary: one large pepperoni pizza with extra cheese. "
+            "Total: PKR 2,900. Reply confirm to place it."
+        ),
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "summarize what I said",
+            "session_id": "session",
+            "user_id": "user",
+            "channel": "whatsapp",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert completed["text"] == (
+        "I couldn't confirm the order yet. Please confirm the missing details first."
+    )
+    assert "2,900" not in completed["text"]
 
 
 def test_whatsapp_order_status_uses_actual_confirmed_order(monkeypatch):
