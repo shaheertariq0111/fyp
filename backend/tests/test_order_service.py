@@ -84,6 +84,170 @@ def test_takeaway_skips_address():
     assert response.agent["required_input"] == "confirm_or_cancel"
 
 
+def _whatsapp_order(*, confirmed_name=None, profile_name=None):
+    customers = CustomerService(MemoryCustomerRepository())
+    if confirmed_name:
+        customers.confirm_customer_name("cust-1", confirmed_name)
+    if profile_name:
+        customers.update_profile(
+            "cust-1",
+            whatsapp_profile_name=profile_name,
+            channel="whatsapp",
+        )
+    menu = MemoryMenuRepository(
+        [{"product_id": "item", "name": "Item", "available": True,
+          "starting_price": 10, "customization_group_ids": []}], []
+    )
+    repository = MemoryOrderRepository()
+    service = OrderService(
+        repository,
+        menu,
+        customer_service=customers,
+    )
+    order_id = service.create_pending_from_cart({
+        "user_id": "cust-1",
+        "customer_id": "cust-1",
+        "customer_name": profile_name,
+        "agent_session_id": "whatsapp-session",
+        "restaurant_id": "restaurant",
+        "branch_id": "branch",
+        "cart_id": "cart-whatsapp",
+        "subtotal": 10,
+        "currency": "PKR",
+        "channel": "whatsapp",
+        "items": [{
+            "item_id": "item", "name": "Item", "quantity": 1,
+            "selected_options": {}, "current_price": 10,
+        }],
+    }).data["order_id"]
+    return service, repository, customers, order_id
+
+
+def test_whatsapp_takeaway_requires_customer_name_before_confirmation():
+    service, repository, _, order_id = _whatsapp_order()
+
+    response = service.update_order_flow(order_id, "set_takeaway")
+
+    assert response.data["status"] == "awaiting_customer_name"
+    assert response.user_message == "Can I have your name for the order?"
+    assert repository.data[order_id]["customer_name"] is None
+
+
+def test_confirmed_profile_name_is_reused_for_whatsapp_order_snapshot():
+    service, repository, _, order_id = _whatsapp_order(confirmed_name="Ava Khan")
+
+    response = service.update_order_flow(order_id, "set_takeaway")
+
+    assert response.data["status"] == "pending_confirmation"
+    assert response.data["customer_name"] == "Ava Khan"
+    assert repository.data[order_id]["customer_name"] == "Ava Khan"
+    assert "Name: Ava Khan" in response.user_message
+
+
+def test_whatsapp_profile_name_is_suggested_but_not_snapshotted():
+    service, repository, _, order_id = _whatsapp_order(profile_name="Profile Alias")
+
+    response = service.update_order_flow(order_id, "set_takeaway")
+
+    assert response.data["status"] == "awaiting_customer_name"
+    assert response.data["customer_name"] is None
+    assert response.user_message == (
+        "Should I put this order under the name Profile Alias?"
+    )
+    assert repository.data[order_id]["customer_name_confirmed"] is False
+
+
+def test_legacy_whatsapp_display_name_is_suggested_during_checkout():
+    service, _, customers, order_id = _whatsapp_order()
+    customers.repository.data["cust-1"] = {
+        "customer_id": "cust-1",
+        "display_name": "Legacy WhatsApp Alias",
+        "channel_profiles": {"whatsapp": {"created_at": "legacy"}},
+        "addresses": [],
+    }
+
+    response = service.update_order_flow(order_id, "set_takeaway")
+    confirmed = service.update_order_flow(order_id, "confirm_customer_name")
+    profile = customers.get_profile("cust-1").data["customer"]
+
+    assert response.data["status"] == "awaiting_customer_name"
+    assert response.data["customer_name"] is None
+    assert response.user_message == (
+        "Should I put this order under the name Legacy WhatsApp Alias?"
+    )
+    assert confirmed.data["status"] == "pending_confirmation"
+    assert confirmed.data["customer_name"] == "Legacy WhatsApp Alias"
+    assert profile["name_confirmed"] is True
+    assert profile["name_source"] == "whatsapp_profile"
+    assert profile["name_confirmed_at"]
+
+
+def test_confirming_whatsapp_profile_name_updates_profile_and_order():
+    service, repository, customers, order_id = _whatsapp_order(
+        profile_name="Profile Alias"
+    )
+    service.update_order_flow(order_id, "set_takeaway")
+
+    response = service.update_order_flow(order_id, "confirm_customer_name")
+
+    profile = customers.get_profile("cust-1").data["customer"]
+    assert response.data["status"] == "pending_confirmation"
+    assert response.data["customer_name"] == "Profile Alias"
+    assert profile["display_name"] == "Profile Alias"
+    assert profile["name_confirmed"] is True
+    assert profile["name_source"] == "whatsapp_profile"
+    assert repository.data[order_id]["customer_name_confirmed"] is True
+
+
+def test_rejected_whatsapp_profile_name_cannot_be_confirmed_later():
+    service, repository, _, order_id = _whatsapp_order(
+        profile_name="Profile Alias"
+    )
+    service.update_order_flow(order_id, "set_takeaway")
+
+    rejected = service.update_order_flow(order_id, "reject_customer_name")
+    confirmed = service.update_order_flow(order_id, "confirm_customer_name")
+
+    assert rejected.user_message == "Can I have your name for the order?"
+    assert rejected.data["suggested_customer_name"] is None
+    assert confirmed.success is False
+    assert confirmed.error_code == "CUSTOMER_NAME_REQUIRED"
+    assert repository.data[order_id]["status"] == "awaiting_customer_name"
+
+
+def test_customer_provided_whatsapp_name_updates_profile_and_order():
+    service, _, customers, order_id = _whatsapp_order()
+    service.update_order_flow(order_id, "set_takeaway")
+
+    response = service.update_order_flow(
+        order_id,
+        "save_customer_name",
+        "Ava Khan",
+    )
+
+    profile = customers.get_profile("cust-1").data["customer"]
+    assert response.data["status"] == "pending_confirmation"
+    assert response.data["customer_name"] == "Ava Khan"
+    assert profile["display_name"] == "Ava Khan"
+    assert profile["name_source"] == "customer_provided"
+
+
+def test_whatsapp_order_cannot_submit_without_confirmed_name():
+    service, repository, _, order_id = _whatsapp_order()
+    repository.data[order_id].update({
+        "status": "pending_confirmation",
+        "fulfillment_method": "takeaway",
+        "customer_name": None,
+        "customer_name_confirmed": False,
+    })
+
+    response = service.update_order_flow(order_id, "confirm")
+
+    assert response.success is False
+    assert response.error_code == "CUSTOMER_NAME_REQUIRED"
+    assert repository.data[order_id]["status"] == "pending_confirmation"
+
+
 def _delivery_order():
     menu = MemoryMenuRepository(
         [{"product_id": "item", "name": "Item", "available": True,

@@ -191,6 +191,7 @@ def start_cart_item_customization(item_id: str, quantity: int = 1) -> dict:
         customer_id=context.customer_id,
         customer_name=context.customer_name,
         customer_phone=context.customer_phone,
+        channel=context.channel,
     ), is_write=True)
 
 

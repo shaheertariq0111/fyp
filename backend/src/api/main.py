@@ -1172,7 +1172,7 @@ def _resolve_identity(
         agent_session_id=session["agent_session_id"],
         branch_id=getattr(request, "branch_id", None),
         customer_id=customer["customer_id"],
-        customer_name=customer.get("display_name"),
+        customer_name=CustomerService.confirmed_name(customer),
         customer_phone=customer.get("phone_e164"),
         channel=session.get("channel", "web"),
     )
@@ -1813,7 +1813,7 @@ def _whatsapp_identity(
     if normalized_phone is not None or inbound.customer_name is not None:
         profile_result = get_services().customers.update_profile(
             customer_id,
-            display_name=inbound.customer_name,
+            whatsapp_profile_name=inbound.customer_name,
             phone_number=normalized_phone,
             channel="whatsapp",
             phone_verified=normalized_phone is not None,
@@ -2321,5 +2321,6 @@ def menu_orders(request: MenuOrderRequest) -> dict[str, Any]:
         customer_id=context.customer_id,
         customer_name=context.customer_name,
         customer_phone=context.customer_phone,
+        channel=context.channel,
     )
     return _raise_if_error(result.model_dump(exclude_none=True))

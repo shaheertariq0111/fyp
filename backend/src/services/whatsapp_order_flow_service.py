@@ -199,6 +199,7 @@ class WhatsAppOrderFlowService:
         if order is not None and order.get("status") in {
             "awaiting_fulfillment_method",
             "awaiting_delivery_address",
+            "awaiting_customer_name",
             "pending_confirmation",
         }:
             return self._handle_order(
@@ -257,6 +258,7 @@ class WhatsAppOrderFlowService:
                     customer_id=customer_id,
                     customer_name=customer_name,
                     customer_phone=customer_phone,
+                    channel="whatsapp",
                 )
                 return self._cart_result("start_cart_item_customization", response)
             if self._is_choice_attempt(normalized):
@@ -545,6 +547,38 @@ class WhatsAppOrderFlowService:
                 text=self._order_step_text(response),
             )
 
+        if status == "awaiting_customer_name":
+            suggested_name = order.get("suggested_customer_name")
+            suggestion_rejected = order.get("customer_name_suggestion_rejected")
+            if CANCEL_PATTERN.search(normalized):
+                response = self.orders.update_order_flow(order_id, "cancel")
+            elif suggested_name and not suggestion_rejected and CONFIRM_PATTERN.search(
+                normalized
+            ):
+                response = self.orders.update_order_flow(
+                    order_id,
+                    "confirm_customer_name",
+                )
+            elif suggested_name and not suggestion_rejected and SKIP_PATTERN.search(
+                normalized
+            ):
+                response = self.orders.update_order_flow(
+                    order_id,
+                    "reject_customer_name",
+                )
+            else:
+                response = self.orders.update_order_flow(
+                    order_id,
+                    "save_customer_name",
+                    original_message.strip(),
+                )
+            return self._result(
+                "update_order_flow",
+                response,
+                is_write=True,
+                text=self._order_step_text(response),
+            )
+
         if status == "pending_confirmation":
             action = None
             if CONFIRM_PATTERN.search(normalized):
@@ -741,6 +775,8 @@ class WhatsAppOrderFlowService:
             return cls._order_summary(agent) + "\n\nChoose fulfilment:\n1. Delivery\n2. Takeaway"
         if response.next_action == "ask_delivery_address":
             return "Please send the delivery address for this order."
+        if response.next_action == "ask_customer_name":
+            return response.user_message
         for key in ("confirmation_summary", "submission_confirmation", "status_message"):
             value = agent.get(key)
             if isinstance(value, str) and value.strip():

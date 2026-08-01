@@ -36,7 +36,8 @@ class CartService:
     def start_item_customization(self, user_id: str, session_id: str, item_id: str,
                                  quantity: int = 1, customer_id: str | None = None,
                                  customer_name: str | None = None,
-                                 customer_phone: str | None = None) -> ToolResponse:
+                                 customer_phone: str | None = None,
+                                 channel: str = "web") -> ToolResponse:
         if quantity < 1:
             return ToolResponse.error(error_code="INVALID_QUANTITY",
                                       user_message="Quantity must be at least one.")
@@ -62,6 +63,7 @@ class CartService:
             "user_id": user_id, "agent_session_id": session_id,
             "customer_id": customer_id or user_id, "customer_name": customer_name,
             "customer_phone": customer_phone,
+            "channel": channel,
             "restaurant_id": self.settings.restaurant_id, "branch_id": self.settings.branch_id,
             "status": "cart_created" if quantity > 1 and groups else "customizing_item",
             "customization_mode": None if quantity > 1 and groups else "single",
@@ -284,6 +286,7 @@ class CartService:
         customer_id: str | None = None,
         customer_name: str | None = None,
         customer_phone: str | None = None,
+        channel: str = "web",
     ) -> ToolResponse:
         if not items:
             return ToolResponse.error(error_code="CART_EMPTY", user_message="Please add an item first.")
@@ -294,6 +297,7 @@ class CartService:
             "user_id": user_id, "agent_session_id": session_id,
             "customer_id": customer_id or user_id, "customer_name": customer_name,
             "customer_phone": customer_phone,
+            "channel": channel,
             "restaurant_id": self.settings.restaurant_id, "branch_id": self.settings.branch_id,
             "status": "cart_ready", "customization_mode": "website",
             "requested_quantity": 1, "source_item_id": None,

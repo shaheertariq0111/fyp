@@ -63,7 +63,11 @@ def get_services() -> ServiceContainer:
     order_repository = OrderRepository(dynamodb, settings.orders_table_name)
     ticket_repository = TicketRepository(dynamodb, settings.tickets_table_name)
     customer_service = CustomerService(CustomerRepository(dynamodb, settings.customers_table_name))
-    order_service = OrderService(order_repository, menu_repository)
+    order_service = OrderService(
+        order_repository,
+        menu_repository,
+        customer_service=customer_service,
+    )
     menu_service = MenuService(menu_repository, settings.branch_id)
     agent_session_service = AgentSessionService(
         AgentSessionRepository(dynamodb, settings.agent_sessions_table_name),

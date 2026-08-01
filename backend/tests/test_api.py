@@ -17,6 +17,7 @@ from src.api import main
 from src.api.schemas import ToolCallResult
 from src.models.tool_responses import ToolResponse
 from src.services.cart_service import CartService
+from src.services.customer_service import CustomerService
 from src.services.menu_service import MenuService
 from src.services.order_service import OrderService
 from src.services.ticket_service import AdminTicketError
@@ -190,28 +191,67 @@ class WhatsAppIdentityServices(IdentityServices):
         self.profiles = {}
         self.profile_update_count = 0
         self.resolve_count = 0
-        self.customers = SimpleNamespace(update_profile=self.update_profile)
+        self.customers = self
+        self.repository = SimpleNamespace(
+            get=lambda customer_id: deepcopy(self.profiles.get(customer_id))
+        )
 
     def update_profile(
         self,
         customer_id,
         *,
         display_name=None,
+        whatsapp_profile_name=None,
         phone_number=None,
         channel,
         phone_verified,
+        name_source="customer_provided",
     ):
         self.profile_update_count += 1
-        profile = {
+        profile = deepcopy(self.profiles.get(customer_id)) or {
             "customer_id": customer_id,
-            "display_name": display_name,
-            "phone_e164": phone_number,
-            "phone_verified": phone_verified,
+            "display_name": None,
+            "name_confirmed": False,
+            "name_source": None,
+            "whatsapp_profile_name": None,
+            "phone_e164": None,
+            "phone_verified": False,
         }
+        if display_name is not None:
+            profile["display_name"] = display_name
+            profile["name_confirmed"] = True
+            profile["name_source"] = name_source
+        if whatsapp_profile_name is not None:
+            profile["whatsapp_profile_name"] = whatsapp_profile_name
+        if phone_number is not None:
+            profile["phone_e164"] = phone_number
+            profile["phone_verified"] = phone_verified
         self.profiles[customer_id] = profile
         return ToolResponse.ok(
             data={"customer": profile},
             user_message="Customer details were saved.",
+        )
+
+    clean_customer_name = staticmethod(CustomerService.clean_customer_name)
+    confirmed_name = staticmethod(CustomerService.confirmed_name)
+    suggested_whatsapp_name = staticmethod(
+        CustomerService.suggested_whatsapp_name
+    )
+
+    def confirm_customer_name(
+        self,
+        customer_id,
+        display_name,
+        *,
+        source,
+        channel,
+    ):
+        return self.update_profile(
+            customer_id,
+            display_name=display_name,
+            channel=channel,
+            phone_verified=False,
+            name_source=source,
         )
 
     def resolve(self, **kwargs):
@@ -743,7 +783,11 @@ def test_agentflo_whatsapp_meta_payload_invokes_existing_agent_flow(
     assert "10000000000" not in body["session_id"]
     assert captured["message"] == "Hello from WhatsApp"
     assert captured["channel"] == "whatsapp"
-    assert captured["customer_name"] == "Synthetic Customer"
+    assert captured["customer_name"] is None
+    profile = next(iter(services.profiles.values()))
+    assert profile["display_name"] is None
+    assert profile["name_confirmed"] is False
+    assert profile["whatsapp_profile_name"] == "Synthetic Customer"
     assert captured["customer_phone"] == "+10000000000"
     assert captured["user_id"].startswith("whatsapp-")
     assert captured["agent_session_id"] == body["session_id"]
@@ -1181,7 +1225,10 @@ def test_agentflo_whatsapp_simple_payload_extracts_aliases(monkeypatch):
     assert response.json()["text"] == "Simple reply."
     assert captured["message"] == "Simple inbound message"
     assert captured["customer_phone"] == "+10000000001"
-    assert captured["customer_name"] == "Synthetic User"
+    assert captured["customer_name"] is None
+    profile = next(iter(services.profiles.values()))
+    assert profile["whatsapp_profile_name"] == "Synthetic User"
+    assert profile["name_confirmed"] is False
     assert captured["channel"] == "whatsapp"
 
 
@@ -2111,6 +2158,7 @@ def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypa
     order_repository = MemoryOrderRepository()
     order_service = OrderService(order_repository, menu_repository)
     services = WhatsAppIdentityServices()
+    order_service.customers = services.customers
     services.menu = MenuService(menu_repository)
     services.orders = order_service
     services.carts = CartService(
@@ -2156,6 +2204,7 @@ def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypa
         "confirm",
         "1",
         "Customer delivery address",
+        "Synthetic Customer",
         "confirm",
     ]
 
@@ -2177,6 +2226,7 @@ def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypa
     assert len(order_repository.data) == 1
     order = next(iter(order_repository.data.values()))
     assert order["status"] == "submitted_to_restaurant"
+    assert order["customer_name"] == "Synthetic Customer"
     assert order["total"] == 850
     assert services.orders.admin_list_orders()["orders"][0]["order_id"] == order["order_id"]
     assert final_payload is not None
