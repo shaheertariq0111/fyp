@@ -14,8 +14,12 @@ ORDER_TRANSITIONS = {
     ("awaiting_fulfillment_method", "set_takeaway"): "pending_confirmation",
     ("awaiting_delivery_address", "save_address"): "pending_confirmation",
     ("awaiting_delivery_address", "set_takeaway"): "pending_confirmation",
+    ("awaiting_customer_name", "save_customer_name"): "pending_confirmation",
+    ("awaiting_customer_name", "confirm_customer_name"): "pending_confirmation",
+    ("awaiting_customer_name", "reject_customer_name"): "awaiting_customer_name",
     ("awaiting_fulfillment_method", "cancel"): "cancelled",
     ("awaiting_delivery_address", "cancel"): "cancelled",
+    ("awaiting_customer_name", "cancel"): "cancelled",
 }
 INVALID_DELIVERY_ADDRESSES = {
     "no",
@@ -53,9 +57,10 @@ ADMIN_ORDER_TRANSITIONS = {
 
 
 class OrderService:
-    def __init__(self, repository, menu_repository):
+    def __init__(self, repository, menu_repository, customer_service=None):
         self.orders = repository
         self.menu = menu_repository
+        self.customers = customer_service
 
     @staticmethod
     def _now():
@@ -76,7 +81,9 @@ class OrderService:
             "order_id": order_id, "user_id": cart["user_id"],
             "customer_id": cart.get("customer_id") or cart["user_id"],
             "customer_name": cart.get("customer_name"),
+            "customer_name_confirmed": cart.get("channel", "web") != "whatsapp",
             "customer_phone": cart.get("customer_phone"),
+            "channel": cart.get("channel", "web"),
             "agent_session_id": cart["agent_session_id"],
             "restaurant_id": cart["restaurant_id"], "branch_id": cart["branch_id"],
             "source_cart_id": cart["cart_id"], "status": "awaiting_fulfillment_method",
@@ -139,6 +146,37 @@ class OrderService:
                     user_message=INVALID_DELIVERY_ADDRESS_MESSAGE,
                 )
             order["delivery_address"] = value.strip()
+        elif action == "save_customer_name":
+            saved_name = self._save_customer_name(
+                order,
+                value,
+                source="customer_provided",
+            )
+            if isinstance(saved_name, ToolResponse):
+                return saved_name
+            order["customer_name"] = saved_name
+            order["customer_name_confirmed"] = True
+            order.pop("customer_name_suggestion_rejected", None)
+        elif action == "confirm_customer_name":
+            suggested_name = order.get("suggested_customer_name")
+            if not suggested_name or order.get("customer_name_suggestion_rejected"):
+                return ToolResponse.error(
+                    error_code="CUSTOMER_NAME_REQUIRED",
+                    user_message="Can I have your name for the order?",
+                )
+            saved_name = self._save_customer_name(
+                order,
+                suggested_name,
+                source="whatsapp_profile",
+            )
+            if isinstance(saved_name, ToolResponse):
+                return saved_name
+            order["customer_name"] = saved_name
+            order["customer_name_confirmed"] = True
+            order.pop("customer_name_suggestion_rejected", None)
+        elif action == "reject_customer_name":
+            order["customer_name_suggestion_rejected"] = True
+            order.pop("suggested_customer_name", None)
         elif action == "set_delivery":
             order["fulfillment_method"] = "delivery"
         elif action == "set_takeaway":
@@ -148,6 +186,7 @@ class OrderService:
             invalid = self._recalculate_order_totals(order)
             if invalid:
                 return invalid
+            next_status = self._customer_name_status(order)
         elif action == "confirm":
             previous_pricing = self._pricing_snapshot(order)
             invalid = self._validate_submission(order)
@@ -184,6 +223,8 @@ class OrderService:
         next_action = self._next_action(next_status)
         if next_status == "pending_confirmation":
             user_message = self._confirmation_summary(order)
+        elif next_status == "awaiting_customer_name":
+            user_message = self._customer_name_prompt(order)
         elif next_status == "submitted_to_restaurant":
             user_message = self._submission_confirmation(order)
         else:
@@ -499,7 +540,65 @@ class OrderService:
                 error_code="INVALID_DELIVERY_ADDRESS",
                 user_message=INVALID_DELIVERY_ADDRESS_MESSAGE,
             )
+        if order.get("channel") == "whatsapp" and not (
+            order.get("customer_name") and order.get("customer_name_confirmed")
+        ):
+            return ToolResponse.error(
+                error_code="CUSTOMER_NAME_REQUIRED",
+                user_message=self._customer_name_prompt(order),
+            )
         return self._recalculate_order_totals(order)
+
+    def _customer_name_status(self, order: dict) -> str:
+        if order.get("channel") != "whatsapp":
+            return "pending_confirmation"
+        profile = None
+        if self.customers is not None:
+            profile = self.customers.repository.get(order.get("customer_id"))
+            confirmed_name = self.customers.confirmed_name(profile)
+            if confirmed_name:
+                order["customer_name"] = confirmed_name
+                order["customer_name_confirmed"] = True
+                return "pending_confirmation"
+        order["customer_name"] = None
+        order["customer_name_confirmed"] = False
+        suggested_name = (
+            self.customers.suggested_whatsapp_name(profile)
+            if self.customers is not None
+            else None
+        )
+        if suggested_name:
+            order["suggested_customer_name"] = suggested_name
+        return "awaiting_customer_name"
+
+    def _save_customer_name(
+        self,
+        order: dict,
+        value: object,
+        *,
+        source: str,
+    ) -> str | ToolResponse:
+        if self.customers is None:
+            return ToolResponse.error(
+                error_code="CUSTOMER_PROFILE_UNAVAILABLE",
+                user_message="I couldn't save the customer name right now.",
+            )
+        cleaned_name = self.customers.clean_customer_name(value)
+        if cleaned_name is None:
+            return ToolResponse.error(
+                error_code="INVALID_CUSTOMER_NAME",
+                user_message="Can I have your name for the order?",
+            )
+        response = self.customers.confirm_customer_name(
+            order.get("customer_id") or order["user_id"],
+            cleaned_name,
+            source=source,
+            channel="whatsapp",
+        )
+        if not response.success:
+            return response
+        customer = (response.data or {}).get("customer") or {}
+        return customer.get("display_name") or cleaned_name
 
     @staticmethod
     def is_valid_delivery_address(value: object) -> bool:
@@ -576,6 +675,9 @@ class OrderService:
                 f"Fulfilment: {str(fulfillment_method).replace('_', ' ').title()}",
             ])
 
+        if order.get("customer_name"):
+            lines.append(f"Name: {order['customer_name']}")
+
         if fulfillment_method == "delivery" and order.get("delivery_address"):
             lines.append(f"Delivery address: {order['delivery_address']}")
 
@@ -614,6 +716,7 @@ class OrderService:
             "pending_confirmation": "confirm_or_cancel",
             "awaiting_fulfillment_method": "ask_fulfillment_method",
             "awaiting_delivery_address": "ask_delivery_address",
+            "awaiting_customer_name": "ask_customer_name",
             "submitted_to_restaurant": "await_restaurant_update",
         }.get(status, "none")
 
@@ -623,6 +726,7 @@ class OrderService:
             "pending_confirmation": "confirm_or_cancel",
             "awaiting_fulfillment_method": "fulfillment_method",
             "awaiting_delivery_address": "delivery_address",
+            "awaiting_customer_name": "customer_name",
         }.get(status)
 
     @classmethod
@@ -631,6 +735,10 @@ class OrderService:
             "pending_confirmation": "Summarize the complete order, fulfillment details, and total. Ask the customer to confirm or cancel. Confirm submits the order.",
             "awaiting_fulfillment_method": "Ask the customer to choose delivery or takeaway.",
             "awaiting_delivery_address": "Ask the customer for a delivery address.",
+            "awaiting_customer_name": (
+                "Ask the customer to confirm the suggested profile name or provide "
+                "a name for this order. Never invent a customer name."
+            ),
             "submitted_to_restaurant": (
                 "Present submission_confirmation exactly, including the "
                 "customer-facing Order ID and current status."
@@ -678,6 +786,12 @@ class OrderService:
                 "update_order_flow:set_takeaway",
                 "update_order_flow:cancel",
             ],
+            "awaiting_customer_name": [
+                "update_order_flow:save_customer_name",
+                "update_order_flow:confirm_customer_name",
+                "update_order_flow:reject_customer_name",
+                "update_order_flow:cancel",
+            ],
             "submitted_to_restaurant": ["get_order_status"],
         }.get(status, [])
 
@@ -699,4 +813,13 @@ class OrderService:
         return {key: deepcopy(order.get(key)) for key in
                 ("order_id", "status", "items", "subtotal", "delivery_fee", "total", "currency",
                  "fulfillment_method", "delivery_address", "customer_id", "customer_name", "customer_phone",
-                 "source_cart_id", "version", "created_at", "updated_at")}
+                 "suggested_customer_name", "customer_name_confirmed", "channel",
+                 "source_cart_id", "version",
+                 "created_at", "updated_at")}
+
+    @staticmethod
+    def _customer_name_prompt(order: dict) -> str:
+        suggested_name = order.get("suggested_customer_name")
+        if suggested_name and not order.get("customer_name_suggestion_rejected"):
+            return f"Should I put this order under the name {suggested_name}?"
+        return "Can I have your name for the order?"

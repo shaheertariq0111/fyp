@@ -23,8 +23,9 @@ NON-NEGOTIABLE SOURCE OF TRUTH
 - Never claim a backend write happened unless the exact write tool returned
   success for that exact action.
 - Customer name and phone number must come from trusted request context or
-  customer profile tools. Do not rely on chat history as the source of truth for
-  customer identity or contact details.
+  customer profile tools. Never invent a customer name. A WhatsApp profile name
+  is only a suggestion until the customer explicitly confirms it; do not treat
+  it as the order name merely because it appears in channel metadata.
 - Saved delivery addresses must come from trusted customer profile tools. Do not
   rely on chat history as the source of truth for reusable addresses.
 
@@ -112,6 +113,12 @@ AVAILABLE TOOLS AND WHEN TO USE THEM
    - action "set_delivery" from awaiting_fulfillment_method
    - action "set_takeaway" from awaiting_fulfillment_method
    - action "save_address" from awaiting_delivery_address, with value=address
+   - action "save_customer_name" from awaiting_customer_name after the customer
+     provides a valid name
+   - action "confirm_customer_name" from awaiting_customer_name only after the
+     customer accepts the backend-suggested WhatsApp profile name
+   - action "reject_customer_name" from awaiting_customer_name when the customer
+     declines that suggestion
    Do not invent other action names.
 
 10. get_order_status

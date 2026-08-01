@@ -57,6 +57,9 @@ class FakeOrders:
             "set_delivery": "awaiting_delivery_address",
             "set_takeaway": "pending_confirmation",
             "save_address": "pending_confirmation",
+            "save_customer_name": "pending_confirmation",
+            "confirm_customer_name": "pending_confirmation",
+            "reject_customer_name": "awaiting_customer_name",
             "cancel": "cancelled",
         }[action]
         if action == "save_address":
@@ -68,14 +71,28 @@ class FakeOrders:
             "total": 850,
             "currency": "PKR",
             "delivery_address": value if action == "save_address" else None,
+            "customer_name": (
+                value
+                if action == "save_customer_name"
+                else (self.order or {}).get("suggested_customer_name")
+                if action == "confirm_customer_name"
+                else (self.order or {}).get("customer_name")
+            ),
         }
+        if action == "reject_customer_name":
+            data["customer_name_suggestion_rejected"] = True
         return ToolResponse.ok(
             data=data,
-            user_message="Backend order state updated.",
+            user_message=(
+                "Can I have your name for the order?"
+                if action == "reject_customer_name"
+                else "Backend order state updated."
+            ),
             next_action={
                 "submitted_to_restaurant": "await_restaurant_update",
                 "awaiting_delivery_address": "ask_delivery_address",
                 "pending_confirmation": "confirm_or_cancel",
+                "awaiting_customer_name": "ask_customer_name",
                 "cancelled": "none",
             }[status],
             agent={
@@ -398,3 +415,54 @@ def test_delivery_address_step_can_switch_to_takeaway(message):
     assert result.tool_calls[0]["result"]["data"]["status"] == (
         "pending_confirmation"
     )
+
+
+def test_customer_name_is_saved_only_while_order_awaits_name():
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_customer_name",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, "Ava Khan")
+
+    assert orders.updates == [
+        ("ORD-REAL", "save_customer_name", "Ava Khan", None)
+    ]
+    assert result.tool_calls[0]["result"]["data"]["status"] == (
+        "pending_confirmation"
+    )
+
+
+def test_yes_confirms_only_backend_suggested_whatsapp_name():
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_customer_name",
+        "suggested_customer_name": "Profile Alias",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, "yes")
+
+    assert orders.updates == [
+        ("ORD-REAL", "confirm_customer_name", None, None)
+    ]
+    assert result.tool_calls[0]["result"]["data"]["customer_name"] == (
+        "Profile Alias"
+    )
+
+
+def test_no_rejects_suggested_name_and_asks_for_customer_name():
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_customer_name",
+        "suggested_customer_name": "Profile Alias",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, "no")
+
+    assert orders.updates == [
+        ("ORD-REAL", "reject_customer_name", None, None)
+    ]
+    assert result.text == "Can I have your name for the order?"

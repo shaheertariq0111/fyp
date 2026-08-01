@@ -10,6 +10,10 @@ from src.models.tool_responses import ToolResponse
 
 
 class CustomerService:
+    INVALID_CUSTOMER_NAMES = {
+        "yes", "no", "confirm", "cancel", "skip", "none", "n/a", "na",
+    }
+
     def __init__(self, repository):
         self.repository = repository
 
@@ -47,6 +51,10 @@ class CustomerService:
             "SK": "PROFILE",
             "customer_id": effective_id,
             "display_name": None,
+            "name_confirmed": False,
+            "name_source": None,
+            "name_confirmed_at": None,
+            "whatsapp_profile_name": None,
             "phone_e164": None,
             "phone_hash": None,
             "phone_verified": False,
@@ -81,19 +89,13 @@ class CustomerService:
         customer_id: str,
         *,
         display_name: str | None = None,
+        whatsapp_profile_name: str | None = None,
         phone_number: str | None = None,
         channel: str = "web",
         phone_verified: bool = False,
+        name_source: str = "customer_provided",
     ) -> ToolResponse:
         customer = self.ensure_customer(customer_id, channel)
-        if display_name is not None:
-            cleaned_name = " ".join(display_name.strip().split())
-            if not cleaned_name:
-                return ToolResponse.error(
-                    error_code="CUSTOMER_NAME_REQUIRED",
-                    user_message="Please provide a customer name.",
-                )
-            customer["display_name"] = cleaned_name
         if phone_number is not None:
             phone_e164 = self.normalize_phone(phone_number)
             if not phone_e164:
@@ -109,9 +111,26 @@ class CustomerService:
             customer["GSI1PK"] = f"PHONE#{customer['phone_hash']}"
             customer["GSI1SK"] = "CUSTOMER"
             customer["phone_verified"] = bool(phone_verified)
+        if display_name is not None:
+            cleaned_name = self.clean_customer_name(display_name)
+            if cleaned_name is None:
+                return ToolResponse.error(
+                    error_code="INVALID_CUSTOMER_NAME",
+                    user_message="Please provide a valid name for the order.",
+                )
+            customer["display_name"] = cleaned_name
+            customer["name_confirmed"] = True
+            customer["name_source"] = name_source
+            customer["name_confirmed_at"] = self._now()
+        if whatsapp_profile_name is not None:
+            cleaned_profile_name = self.clean_customer_name(whatsapp_profile_name)
+            if cleaned_profile_name is not None:
+                customer["whatsapp_profile_name"] = cleaned_profile_name
         profiles = dict(customer.get("channel_profiles") or {})
         profiles.setdefault(channel, {"created_at": customer.get("created_at")})
         profiles[channel]["updated_at"] = self._now()
+        if channel == "whatsapp" and customer.get("whatsapp_profile_name"):
+            profiles[channel]["profile_name"] = customer["whatsapp_profile_name"]
         customer["channel_profiles"] = profiles
         customer["updated_at"] = self._now()
         self.repository.save(customer)
@@ -124,6 +143,80 @@ class CustomerService:
                 "customer": self._public(customer),
                 "instruction": "Use these trusted customer details for this customer.",
             },
+        )
+
+    def confirm_customer_name(
+        self,
+        customer_id: str,
+        display_name: str,
+        *,
+        source: str = "customer_provided",
+        channel: str = "whatsapp",
+    ) -> ToolResponse:
+        return self.update_profile(
+            customer_id,
+            display_name=display_name,
+            channel=channel,
+            name_source=source,
+        )
+
+    @classmethod
+    def clean_customer_name(cls, value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        cleaned = " ".join(value.strip().split())
+        if (
+            not 2 <= len(cleaned) <= 80
+            or cleaned.casefold() in cls.INVALID_CUSTOMER_NAMES
+            or len(cleaned.split()) > 6
+            or not any(character.isalpha() for character in cleaned)
+            or any(
+                not (character.isalpha() or character in " .'-")
+                for character in cleaned
+            )
+        ):
+            return None
+        return cleaned
+
+    @classmethod
+    def confirmed_name(cls, customer: dict | None) -> str | None:
+        if not customer or not customer.get("display_name"):
+            return None
+        if "name_confirmed" in customer:
+            return (
+                str(customer["display_name"])
+                if customer.get("name_confirmed") is True
+                else None
+            )
+        if cls._is_whatsapp_derived_profile(customer):
+            return None
+        # Non-WhatsApp profiles predate explicit trust metadata; retain their name.
+        return str(customer["display_name"])
+
+    @classmethod
+    def suggested_whatsapp_name(cls, customer: dict | None) -> str | None:
+        if not customer:
+            return None
+        profile_name = customer.get("whatsapp_profile_name")
+        if profile_name:
+            return str(profile_name)
+        if (
+            customer.get("display_name")
+            and not cls.confirmed_name(customer)
+            and cls._is_whatsapp_derived_profile(customer)
+        ):
+            return str(customer["display_name"])
+        return None
+
+    @staticmethod
+    def _is_whatsapp_derived_profile(customer: dict) -> bool:
+        if str(customer.get("customer_id") or "").startswith("whatsapp-"):
+            return True
+        if customer.get("name_source") == "whatsapp_profile":
+            return True
+        profiles = customer.get("channel_profiles") or {}
+        return "whatsapp" in profiles and not any(
+            channel != "whatsapp" for channel in profiles
         )
 
     def save_address(
@@ -221,6 +314,14 @@ class CustomerService:
         return {
             "customer_id": customer.get("customer_id"),
             "display_name": customer.get("display_name"),
+            "name_confirmed": bool(
+                CustomerService.confirmed_name(customer)
+            ),
+            "name_source": customer.get("name_source") or (
+                "legacy" if CustomerService.confirmed_name(customer) else None
+            ),
+            "name_confirmed_at": customer.get("name_confirmed_at"),
+            "whatsapp_profile_name": customer.get("whatsapp_profile_name"),
             "phone_e164": customer.get("phone_e164"),
             "phone_verified": customer.get("phone_verified"),
             "addresses": deepcopy(customer.get("addresses") or []),

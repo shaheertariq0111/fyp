@@ -92,6 +92,97 @@ def test_customer_profile_persists_name_and_unverified_web_phone():
     assert customer["phone_e164"] == "+923001234567"
     assert customer["phone_verified"] is False
     assert customer["addresses"] == []
+    assert customer["name_confirmed"] is True
+    assert customer["name_source"] == "customer_provided"
+
+
+def test_whatsapp_profile_name_is_stored_without_confirming_customer_name():
+    customers, _ = services()
+
+    response = customers.update_profile(
+        "cust-1",
+        whatsapp_profile_name="  WhatsApp Alias ",
+        phone_number="+92 300 1234567",
+        channel="whatsapp",
+        phone_verified=True,
+    )
+
+    customer = response.data["customer"]
+    assert customer["display_name"] is None
+    assert customer["name_confirmed"] is False
+    assert customer["name_source"] is None
+    assert customer["whatsapp_profile_name"] == "WhatsApp Alias"
+
+
+def test_customer_provided_name_replaces_unconfirmed_whatsapp_name():
+    customers, _ = services()
+    customers.update_profile(
+        "cust-1",
+        whatsapp_profile_name="WhatsApp Alias",
+        channel="whatsapp",
+    )
+
+    response = customers.confirm_customer_name(
+        "cust-1",
+        "Ava Khan",
+        source="customer_provided",
+    )
+
+    customer = response.data["customer"]
+    assert customer["display_name"] == "Ava Khan"
+    assert customer["name_confirmed"] is True
+    assert customer["name_source"] == "customer_provided"
+    assert customer["name_confirmed_at"]
+    assert customer["whatsapp_profile_name"] == "WhatsApp Alias"
+
+
+def test_legacy_display_name_remains_confirmed_for_backward_compatibility():
+    customers, _ = services()
+    customers.repository.data["cust-legacy"] = {
+        "customer_id": "cust-legacy",
+        "display_name": "Legacy Customer",
+        "channel_profiles": {"web": {"created_at": "legacy"}},
+        "addresses": [],
+    }
+
+    profile = customers.get_profile("cust-legacy").data["customer"]
+
+    assert profile["name_confirmed"] is True
+    assert profile["name_source"] == "legacy"
+
+
+def test_legacy_whatsapp_display_name_is_not_silently_confirmed():
+    customers, _ = services()
+    customers.repository.data["whatsapp-legacy"] = {
+        "customer_id": "whatsapp-legacy",
+        "display_name": "Legacy WhatsApp Alias",
+        "channel_profiles": {"whatsapp": {"created_at": "legacy"}},
+        "addresses": [],
+    }
+
+    profile = customers.get_profile("whatsapp-legacy").data["customer"]
+
+    assert profile["display_name"] == "Legacy WhatsApp Alias"
+    assert profile["name_confirmed"] is False
+    assert profile["name_source"] is None
+
+
+def test_explicit_customer_name_confirmation_metadata_takes_priority():
+    confirmed = {
+        "customer_id": "whatsapp-confirmed",
+        "display_name": "Confirmed Name",
+        "name_confirmed": True,
+        "channel_profiles": {"whatsapp": {}},
+    }
+    unconfirmed = {
+        "customer_id": "cust-unconfirmed",
+        "display_name": "Unconfirmed Name",
+        "name_confirmed": False,
+        "channel_profiles": {"web": {}},
+    }
+
+    assert CustomerService.confirmed_name(confirmed) == "Confirmed Name"
+    assert CustomerService.confirmed_name(unconfirmed) is None
 
 
 def test_customer_profile_saves_multiple_delivery_addresses_and_default():
