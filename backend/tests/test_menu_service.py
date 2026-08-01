@@ -130,6 +130,24 @@ def test_search_handles_compact_piece_count_and_wings_typo():
     assert [entry["product_id"] for entry in result.data["items"]] == ["4-pcs-chicken-wings"]
 
 
+def test_search_matches_natural_plural_category_query():
+    result = service([
+        item("cola", name="Cola", category="drink"),
+        item("pizza", name="Pizza", category="pizza"),
+    ]).search_menu(query="drinks")
+
+    assert [entry["product_id"] for entry in result.data["items"]] == ["cola"]
+
+
+def test_unknown_specific_query_does_not_fall_back_to_broad_menu():
+    result = service([
+        item("pizza", name="Pizza", category="pizza"),
+        item("cola", name="Cola", category="drink"),
+    ]).search_menu(query="unlisted platter")
+
+    assert result.data["items"] == []
+
+
 def test_search_ignores_non_menu_words_without_hardcoded_stopwords():
     result = service([
         item("legend-ranch", name="Legend Ranch", description="Chicken pizza",

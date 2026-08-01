@@ -203,7 +203,7 @@ class MenuService:
         tokens = [token for token in cls._tokens(value) if len(token) > 1 or token.isdigit()]
         return [
             token for token in tokens
-            if token in corpus_terms or cls._has_same_length_close_token(token, corpus_terms)
+            if token in corpus_terms or cls._has_close_token(token, corpus_terms)
         ]
 
     @classmethod
@@ -229,7 +229,7 @@ class MenuService:
                            searchable_tokens: list[str],
                            searchable_terms: set[str]) -> int:
         if not query_terms:
-            return 1
+            return 0
         matched_terms = set()
         fuzzy_matches = 0
         required_terms = set(query_terms)

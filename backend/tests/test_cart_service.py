@@ -351,6 +351,26 @@ def test_cart_mutations_require_the_cart_owner():
     assert checkout_response.error_code == "CART_NOT_FOUND"
 
 
+def test_discard_active_cart_marks_only_owned_session_cart_cancelled():
+    service, carts, _ = build_services()
+    started = service.start_item_customization(
+        "customer-a", "session-a", "configurable"
+    )
+
+    wrong_session = service.discard_active_cart("customer-a", "session-b")
+    discarded = service.discard_active_cart("customer-a", "session-a")
+
+    assert wrong_session.data["discarded"] is False
+    assert discarded.data == {
+        "discarded": True,
+        "cart_id": started.data["cart_id"],
+        "status": "cancelled",
+    }
+    assert carts.find_by_cart_id(
+        "customer-a", started.data["cart_id"]
+    )["status"] == "cancelled"
+
+
 def test_repeated_checkout_for_same_cart_creates_one_order():
     service, _, orders = build_services()
     started = service.start_item_customization("user", "session", "configurable")

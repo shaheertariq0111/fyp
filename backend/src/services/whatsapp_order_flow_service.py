@@ -29,7 +29,29 @@ MENU_PREFERENCE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 DIRECT_MENU_BROWSE_PATTERN = re.compile(
-    r"^(?:menu|show\s+menu)$",
+    r"^(?:menu|show\s+(?:me\s+)?(?:(?:the|your)\s+)?"
+    r"(?:(?:whole|full)\s+)?menu)$",
+    re.IGNORECASE,
+)
+MENU_MORE_PATTERN = re.compile(
+    r"\b(?:show\s+(?:me\s+)?more(?:\s+(?:items?|options?))?|"
+    r"more\s+(?:items?|options?)|not\s+(?:the\s+)?full\s+menu|"
+    r"not\s+(?:the\s+)?whole\s+menu)\b",
+    re.IGNORECASE,
+)
+SPECIFIC_MENU_QUERY_PATTERN = re.compile(
+    r"^(?:do\s+you\s+have|have\s+you\s+got|show\s+(?:me\s+)?)\s+"
+    r"(?P<query>.+)$",
+    re.IGNORECASE,
+)
+RESET_ORDER_FLOW_PATTERN = re.compile(
+    r"^(?:start\s+(?:a\s+)?new\s+order|new\s+order|restart\s+order|"
+    r"reset\s+order|clear\s+(?:my\s+)?cart|discard\s+this\s+order)$",
+    re.IGNORECASE,
+)
+EXPLICIT_ORDER_CANCEL_PATTERN = re.compile(
+    r"\b(?:cancel\s+(?:my|this|the)\s+order|stop\s+(?:my|this|the)\s+order|"
+    r"i\s+don\s*t\s+want\s+to\s+order|i\s+do\s+not\s+want\s+to\s+order)\b",
     re.IGNORECASE,
 )
 PRIVACY_BYPASS_PATTERN = re.compile(
@@ -79,20 +101,21 @@ CHECKOUT_PATTERN = re.compile(
 CONFIRM_PATTERN = re.compile(r"\b(?:confirm|yes|submit|place\s+it)\b", re.IGNORECASE)
 CANCEL_PATTERN = re.compile(r"\b(?:cancel|stop|never\s*mind)\b", re.IGNORECASE)
 NEGATED_CONFIRM_PATTERN = re.compile(
-    r"\b(?:don\s+t|do\s+not|not|never)\s+(?:confirm|submit|place)\b",
+    r"\b(?:don\s*t|do\s+not|not|never)\s+(?:confirm|submit|place)\b",
     re.IGNORECASE,
 )
 NEGATED_CANCEL_PATTERN = re.compile(
-    r"\b(?:don\s+t|do\s+not|not|never)\s+(?:cancel|stop)\b",
+    r"\b(?:don\s*t|do\s+not|not|never)\s+(?:want\s+to\s+)?"
+    r"(?:cancel|stop)\b",
     re.IGNORECASE,
 )
 NEGATED_SELECTION_PATTERN = re.compile(
-    r"\b(?:don\s+t\s+want|do\s+not\s+want|not)\b|"
+    r"\b(?:don\s*t\s+want|do\s+not\s+want|not)\b|"
     r"\bno\s+(?:option\s+|item\s+)?\d+\b",
     re.IGNORECASE,
 )
 NEGATED_FULFILLMENT_PATTERN = re.compile(
-    r"\b(?:don\s+t\s+want|do\s+not\s+want|not|no)\s+"
+    r"\b(?:don\s*t\s+want|do\s+not\s+want|not|no)\s+"
     r"(?:delivery|takeaway|take\s+away|pickup)\b",
     re.IGNORECASE,
 )
@@ -117,6 +140,12 @@ CONVERSATION_INTENT_ACTIONS = [
     "menu_browse",
     "menu_browse_more",
 ]
+CANCELLABLE_ORDER_FLOW_STATUSES = {
+    "awaiting_fulfillment_method",
+    "awaiting_delivery_address",
+    "awaiting_customer_name",
+    "pending_confirmation",
+}
 CUSTOMER_NAME_PATTERN = re.compile(
     r"\b(?:my\s+name\s+is|name\s+is|it(?:'s|\s+is)(?:\s+actually)?|"
     r"change\s+my\s+name\s+to|put\s+it\s+under)\s+"
@@ -194,6 +223,18 @@ class WhatsAppOrderFlowService:
 
         order = self.orders.get_active_order_for_session(user_id, session_id)
         deterministic_menu_query = self._menu_query(normalized)
+        reset_requested = bool(RESET_ORDER_FLOW_PATTERN.fullmatch(normalized))
+        cancel_requested = bool(
+            EXPLICIT_ORDER_CANCEL_PATTERN.search(normalized)
+            and not NEGATED_CANCEL_PATTERN.search(normalized)
+        )
+        if reset_requested or cancel_requested:
+            return self._reset_ordering_flow(
+                user_id=user_id,
+                session_id=session_id,
+                order=order,
+                reset_requested=reset_requested,
+            )
         if NON_ORDER_PATTERN.search(normalized) and not CANCEL_PATTERN.search(normalized):
             return None
 
@@ -283,6 +324,10 @@ class WhatsAppOrderFlowService:
 
         menu_state = self.agent_sessions.get_whatsapp_order_state(user_id, session_id)
         offered_items = menu_state.get("offered_menu_items", [])
+        deterministic_menu_more = bool(
+            offered_items and MENU_MORE_PATTERN.search(normalized)
+        )
+        is_menu_more_intent = is_menu_more_intent or deterministic_menu_more
         if offered_items and not (
             is_menu_browse_intent
             or is_menu_more_intent
@@ -392,7 +437,61 @@ class WhatsAppOrderFlowService:
             "search_menu",
             response,
             is_write=False,
-            text=self._menu_results_text(response),
+            text=self._menu_results_text(
+                response,
+                is_continuation=is_menu_more_intent,
+            ),
+        )
+
+    def _reset_ordering_flow(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        order: dict[str, Any] | None,
+        reset_requested: bool,
+    ) -> WhatsAppOrderFlowResult:
+        self.agent_sessions.clear_whatsapp_order_state(user_id, session_id)
+        if order is not None and order.get("status") in CANCELLABLE_ORDER_FLOW_STATUSES:
+            response = self.orders.update_order_flow(
+                user_id,
+                order["order_id"],
+                "cancel",
+            )
+            text = (
+                "I've cleared the current ordering flow. You're ready to start "
+                "a new order. What would you like?"
+                if reset_requested
+                else "I've cancelled the pending order."
+            )
+            return self._result(
+                "update_order_flow",
+                response,
+                is_write=True,
+                text=text,
+            )
+
+        response = self.carts.discard_active_cart(user_id, session_id)
+        discarded = bool((response.data or {}).get("discarded"))
+        if reset_requested:
+            text = (
+                "I've cleared the current ordering flow. You're ready to start "
+                "a new order. What would you like?"
+            )
+        elif discarded:
+            text = "I've discarded the current cart."
+        elif order is not None:
+            text = (
+                "That order has already been submitted, so I haven't cancelled "
+                "the restaurant order."
+            )
+        else:
+            text = "There isn't an active cart or pending order to cancel."
+        return self._result(
+            "discard_active_cart",
+            response,
+            is_write=discarded,
+            text=text,
         )
 
     def _handle_cart(
@@ -1063,21 +1162,39 @@ class WhatsAppOrderFlowService:
         return "\n".join(lines)
 
     @classmethod
-    def _menu_results_text(cls, response: ToolResponse) -> str:
+    def _menu_results_text(
+        cls,
+        response: ToolResponse,
+        *,
+        is_continuation: bool = False,
+    ) -> str:
         items = (response.data or {}).get("items", [])
         if not items:
             return (
                 f"{response.user_message} Please choose another preference, "
                 "ask for available categories, or view the menu."
             )
-        return "\n".join([
-            "Sure, here are some options you can choose from:",
+        has_more = bool((response.data or {}).get("has_more"))
+        heading = (
+            "Here are more options you can choose from:"
+            if is_continuation
+            else (
+                f"Here are the first {len(items)} options you can choose from:"
+                if has_more
+                else "Sure, here are some options you can choose from:"
+            )
+        )
+        lines = [
+            heading,
             *[
                 f"{index}. {item.get('name', 'Menu item')} - {cls._menu_price(item)}"
                 for index, item in enumerate(items, start=1)
             ],
-            "Which item would you like? Reply with its number or name.",
-        ])
+        ]
+        if has_more:
+            lines.append("Reply show more to see more menu options.")
+        lines.append("Which item would you like? Reply with its number or name.")
+        return "\n".join(lines)
 
     @classmethod
     def _menu_choice_prompt(cls, items: list[dict[str, Any]]) -> str:
@@ -1170,6 +1287,33 @@ class WhatsAppOrderFlowService:
     def _menu_query(normalized: str) -> str | None:
         if NON_ORDER_PATTERN.search(normalized):
             return None
+        specific_match = SPECIFIC_MENU_QUERY_PATTERN.fullmatch(normalized)
+        if specific_match is not None:
+            query = re.sub(
+                r"^(?:(?:any|some|the)\s+)+",
+                "",
+                specific_match.group("query"),
+            ).strip()
+            query = re.sub(
+                r"\s+(?:on|from)\s+(?:(?:the|your)\s+)?menu$",
+                "",
+                query,
+            ).strip()
+            broad_queries = {
+                "menu",
+                "the menu",
+                "your menu",
+                "full menu",
+                "the full menu",
+                "whole menu",
+                "the whole menu",
+                "more",
+                "more items",
+                "more options",
+            }
+            blocked_queries = {"my order", "order status", "the status", "status"}
+            if query and query not in broad_queries and query not in blocked_queries:
+                return query
         has_item_request = bool(
             MENU_REQUEST_PATTERN.search(normalized)
             and MENU_ITEM_PATTERN.search(normalized)

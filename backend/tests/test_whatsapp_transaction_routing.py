@@ -65,9 +65,17 @@ class IntentClient:
 class Carts:
     def __init__(self):
         self.started = []
+        self.discarded = []
 
     def get_active_cart(self, user_id, session_id):
         return ToolResponse.ok(data={"cart": None}, user_message="No active cart.")
+
+    def discard_active_cart(self, user_id, session_id):
+        self.discarded.append((user_id, session_id))
+        return ToolResponse.ok(
+            data={"discarded": False},
+            user_message="There isn't an active cart to discard.",
+        )
 
     def start_item_customization(
         self,
@@ -361,6 +369,73 @@ def test_specific_menu_request_wins_over_broad_classifier_result():
     order_turn(flow, "recommend something spicy")
 
     assert menu.calls[0]["query"] == "spicy"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_query"),
+    [
+        ("do you have choco bread?", "choco bread"),
+        ("do you have drinks?", "drinks"),
+    ],
+)
+def test_specific_menu_query_replaces_stale_broad_menu(
+    message,
+    expected_query,
+):
+    intent = IntentClient("menu_browse")
+    flow, menu, carts, _, _ = order_flow(intent=intent)
+    order_turn(flow, "menu")
+
+    order_turn(flow, message)
+
+    assert menu.calls[-1]["query"] == expected_query
+    assert menu.calls[-1]["exclude_product_ids"] == []
+    assert carts.started == []
+
+
+def test_whole_menu_first_page_explains_pagination():
+    items = [
+        {
+            "product_id": f"item-{index}",
+            "name": f"Backend Item {index}",
+            "currency": "PKR",
+            "starting_price": 100 + index,
+        }
+        for index in range(1, 8)
+    ]
+    flow, menu, _, _, _ = order_flow(items=items)
+
+    result = order_turn(flow, "show me the whole menu")
+
+    assert menu.calls[0]["query"] is None
+    assert "first 5 options" in result.text
+    assert "Reply show more" in result.text
+
+
+def test_full_menu_complaint_continues_saved_pagination():
+    items = [
+        {
+            "product_id": f"item-{index}",
+            "name": f"Backend Item {index}",
+            "currency": "PKR",
+            "starting_price": 100 + index,
+        }
+        for index in range(1, 9)
+    ]
+    flow, menu, _, _, _ = order_flow(items=items)
+    order_turn(flow, "show me the whole menu")
+
+    result = order_turn(
+        flow,
+        "this is not the full menu. show me the full menu",
+    )
+
+    assert menu.calls[-1]["exclude_product_ids"] == [
+        "item-1", "item-2", "item-3", "item-4", "item-5"
+    ]
+    assert "Here are more options" in result.text
+    assert "Backend Item 6" in result.text
+    assert "Backend Item 1" not in result.text
 
 
 def test_negated_number_does_not_select_an_offered_menu_item():
