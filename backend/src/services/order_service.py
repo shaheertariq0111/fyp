@@ -10,6 +10,7 @@ from src.models.tool_responses import ToolResponse
 ORDER_TRANSITIONS = {
     ("pending_confirmation", "confirm"): "submitted_to_restaurant",
     ("pending_confirmation", "cancel"): "rejected",
+    ("pending_confirmation", "save_customer_name"): "pending_confirmation",
     ("awaiting_fulfillment_method", "set_delivery"): "awaiting_delivery_address",
     ("awaiting_fulfillment_method", "set_takeaway"): "pending_confirmation",
     ("awaiting_delivery_address", "save_address"): "pending_confirmation",
@@ -775,7 +776,11 @@ class OrderService:
     @staticmethod
     def _order_valid_next_actions(status):
         return {
-            "pending_confirmation": ["update_order_flow:confirm", "update_order_flow:cancel"],
+            "pending_confirmation": [
+                "update_order_flow:save_customer_name",
+                "update_order_flow:confirm",
+                "update_order_flow:cancel",
+            ],
             "awaiting_fulfillment_method": [
                 "update_order_flow:set_delivery",
                 "update_order_flow:set_takeaway",

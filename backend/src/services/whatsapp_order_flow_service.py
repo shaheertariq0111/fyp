@@ -85,6 +85,22 @@ TAKEAWAY_PATTERN = re.compile(
 )
 ORDER_INTENT_CONFIDENCE_THRESHOLD = 0.85
 LATEST_ORDER_INTENT_ACTIONS = ["latest_order_eta", "latest_order_status"]
+NAME_CORRECTION_PATTERN = re.compile(
+    r"\b(?:my\s+name\s+is|it(?:'s|\s+is)\s+actually|"
+    r"change\s+my\s+name\s+to|put\s+it\s+under)\s+"
+    r"(?P<name>[A-Za-z][A-Za-z .'-]{1,79})[.!]?\s*$",
+    re.IGNORECASE,
+)
+UNSAFE_CUSTOMER_NAME_PATTERN = re.compile(
+    r"\b(?:yes|no|ok|confirm|cancel|delivery|takeaway|pickup|menu|pizza|order|"
+    r"pepperoni|mushroom|chicken|cheese|cola|burger|fries|wings|drink|"
+    r"address|street|road|house|apartment|complaint|support|please|thanks)\b",
+    re.IGNORECASE,
+)
+INVALID_CUSTOMER_NAME_CORRECTION_MESSAGE = (
+    "Please provide the corrected customer name only, for example: "
+    "my name is Shaheer Tariq."
+)
 
 
 logger = logging.getLogger(__name__)
@@ -580,20 +596,64 @@ class WhatsAppOrderFlowService:
             )
 
         if status == "pending_confirmation":
+            correction_match = NAME_CORRECTION_PATTERN.search(original_message)
+            intent = None
+            if correction_match is None and not (
+                CONFIRM_PATTERN.fullmatch(normalized)
+                or CANCEL_PATTERN.fullmatch(normalized)
+            ):
+                intent = self._interpret(
+                    state="pending_confirmation",
+                    allowed_actions=[
+                        "customer_name_correction",
+                        "confirm",
+                        "cancel",
+                    ],
+                    message=original_message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                )
+            corrected_name = (
+                correction_match.group("name")
+                if correction_match is not None
+                else intent.extracted_name
+                if intent is not None
+                and intent.action == "customer_name_correction"
+                else None
+            )
+            correction_attempted = correction_match is not None or (
+                intent is not None
+                and intent.action == "customer_name_correction"
+            )
+            if correction_attempted:
+                cleaned_name = self._clean_corrected_customer_name(
+                    corrected_name,
+                    original_message,
+                )
+                if cleaned_name is None:
+                    return WhatsAppOrderFlowResult(
+                        text=INVALID_CUSTOMER_NAME_CORRECTION_MESSAGE,
+                        tool_calls=[],
+                    )
+                response = self.orders.update_order_flow(
+                    order_id,
+                    "save_customer_name",
+                    cleaned_name,
+                )
+                return self._result(
+                    "update_order_flow",
+                    response,
+                    is_write=True,
+                    text=self._order_step_text(response),
+                )
+
             action = None
             if CONFIRM_PATTERN.search(normalized):
                 action = "confirm"
             elif CANCEL_PATTERN.search(normalized):
                 action = "cancel"
             else:
-                intent = self._interpret(
-                    state="pending_confirmation",
-                    allowed_actions=["confirm", "cancel"],
-                    message=original_message,
-                    user_id=user_id,
-                    session_id=session_id,
-                    request_id=request_id,
-                )
                 action = intent.action if intent is not None else None
             if action == "confirm":
                 response = self.orders.update_order_flow(
@@ -671,6 +731,24 @@ class WhatsAppOrderFlowService:
         ):
             return None
         return intent
+
+    @staticmethod
+    def _clean_corrected_customer_name(
+        value: object,
+        original_message: str,
+    ) -> str | None:
+        from src.services.customer_service import CustomerService
+
+        candidate = value.rstrip(".! ") if isinstance(value, str) else value
+        cleaned_name = CustomerService.clean_customer_name(candidate)
+        if (
+            cleaned_name is None
+            or UNSAFE_CUSTOMER_NAME_PATTERN.search(cleaned_name)
+            or " ".join(cleaned_name.casefold().split())
+            not in " ".join(original_message.casefold().split())
+        ):
+            return None
+        return cleaned_name
 
     @staticmethod
     def _should_classify_latest_order_intent(

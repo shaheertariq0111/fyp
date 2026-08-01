@@ -248,6 +248,31 @@ def test_whatsapp_order_cannot_submit_without_confirmed_name():
     assert repository.data[order_id]["status"] == "pending_confirmation"
 
 
+def test_pending_whatsapp_name_correction_regenerates_summary_before_submit():
+    service, repository, customers, order_id = _whatsapp_order(
+        confirmed_name="shaheer"
+    )
+    service.update_order_flow(order_id, "set_takeaway")
+
+    corrected = service.update_order_flow(
+        order_id,
+        "save_customer_name",
+        "Shaheer Tariq",
+    )
+
+    assert corrected.data["status"] == "pending_confirmation"
+    assert corrected.data["customer_name"] == "Shaheer Tariq"
+    assert "Name: Shaheer Tariq" in corrected.user_message
+    assert repository.data[order_id]["status"] == "pending_confirmation"
+    assert customers.get_profile("cust-1").data["customer"]["display_name"] == (
+        "Shaheer Tariq"
+    )
+
+    submitted = service.update_order_flow(order_id, "confirm")
+
+    assert submitted.data["status"] == "submitted_to_restaurant"
+
+
 def _delivery_order():
     menu = MemoryMenuRepository(
         [{"product_id": "item", "name": "Item", "available": True,
