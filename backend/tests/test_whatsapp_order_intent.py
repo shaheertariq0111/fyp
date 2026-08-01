@@ -35,8 +35,14 @@ class FakeMenu:
 
 
 class FakeSessions:
+    def __init__(self):
+        self.clear_calls = []
+
     def get_whatsapp_order_state(self, user_id, session_id):
         return {}
+
+    def clear_whatsapp_order_state(self, user_id, session_id):
+        self.clear_calls.append((user_id, session_id))
 
 
 class FakeOrders:
@@ -142,6 +148,7 @@ class FakeCarts:
         self.cart = {"cart_id": "CART-1", "status": status}
         self.checkout_calls = []
         self.upsell_calls = []
+        self.discard_calls = []
 
     def get_active_cart(self, user_id, session_id):
         return ToolResponse.ok(
@@ -168,6 +175,19 @@ class FakeCarts:
                     "currency": "PKR",
                 }
             },
+        )
+
+    def discard_active_cart(self, user_id, session_id):
+        self.discard_calls.append((user_id, session_id))
+        self.cart["status"] = "cancelled"
+        return ToolResponse.ok(
+            data={
+                "discarded": True,
+                "cart_id": self.cart["cart_id"],
+                "status": "cancelled",
+            },
+            user_message="The current cart was discarded.",
+            next_action="search_menu",
         )
 
     def handle_upsell(self, user_id, cart_id, action, item_id=None, quantity=1):
@@ -542,6 +562,66 @@ def test_no_thanks_does_not_become_checkout_outside_upsell_state():
     assert carts.checkout_calls == []
     assert intent.requests == []
     assert result.text == "Your cart is ready. Reply checkout to continue."
+
+
+def test_start_new_order_discards_active_upsell_flow():
+    flow, carts, _ = service(cart_status="awaiting_upsell_decision")
+
+    result = handle(flow, "start a new order")
+
+    assert carts.discard_calls == [("user-1", "session-1")]
+    assert carts.cart["status"] == "cancelled"
+    assert carts.upsell_calls == []
+    assert carts.checkout_calls == []
+    assert "ready to start a new order" in result.text
+
+
+def test_explicit_cancel_beats_addon_skip_and_checkout():
+    flow, carts, _ = service(cart_status="awaiting_upsell_decision")
+
+    result = handle(flow, "no cancel my order. i dont want to order")
+
+    assert carts.discard_calls == [("user-1", "session-1")]
+    assert carts.cart["status"] == "cancelled"
+    assert carts.upsell_calls == []
+    assert carts.checkout_calls == []
+    assert result.text == "I've discarded the current cart."
+
+
+@pytest.mark.parametrize("message", ["don't cancel", "dont cancel"])
+def test_negated_cancel_does_not_discard_active_upsell_flow(message):
+    flow, carts, _ = service(cart_status="awaiting_upsell_decision")
+
+    result = handle(flow, message)
+
+    assert carts.discard_calls == []
+    assert carts.checkout_calls == []
+    assert [call[1] for call in carts.upsell_calls] == ["get_options"]
+    assert result.text == "Would you like a drink?"
+
+
+def test_explicit_cancel_uses_pending_order_cancel_path():
+    flow, carts, orders = service(
+        order={"order_id": "ORD-1", "status": "awaiting_customer_name"}
+    )
+
+    result = handle(flow, "cancel my order")
+
+    assert orders.updates == [("ORD-1", "cancel", None, None)]
+    assert carts.discard_calls == []
+    assert result.text == "I've cancelled the pending order."
+
+
+def test_reset_does_not_cancel_submitted_restaurant_order():
+    flow, carts, orders = service(
+        order={"order_id": "ORD-1", "status": "submitted_to_restaurant"}
+    )
+
+    result = handle(flow, "start a new order")
+
+    assert orders.updates == []
+    assert carts.discard_calls == [("user-1", "session-1")]
+    assert "ready to start a new order" in result.text
 
 
 @pytest.mark.parametrize(

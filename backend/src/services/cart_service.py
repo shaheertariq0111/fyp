@@ -427,6 +427,32 @@ class CartService:
             ),
         )
 
+    def discard_active_cart(self, user_id: str, session_id: str) -> ToolResponse:
+        cart = self.carts.find_active_by_session(
+            user_id,
+            session_id,
+            TERMINAL_CART_STATUSES,
+        )
+        if not cart:
+            return ToolResponse.ok(
+                data={"discarded": False},
+                user_message="There isn't an active cart to discard.",
+                next_action="search_menu",
+            )
+        cart["status"] = "cancelled"
+        cart["active_cart_item_id"] = None
+        cart["updated_at"] = self._now()
+        self._save(cart)
+        return ToolResponse.ok(
+            data={
+                "discarded": True,
+                "cart_id": cart["cart_id"],
+                "status": cart["status"],
+            },
+            user_message="The current cart was discarded.",
+            next_action="search_menu",
+        )
+
     def add_item_to_active_cart(
         self,
         user_id: str,
