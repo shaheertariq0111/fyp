@@ -17,6 +17,9 @@ VERIFIED_ORDER_FIELDS = (
 )
 WHATSAPP_ORDER_STATE_FIELDS = (
     "offered_menu_items",
+    "whatsapp_menu_query",
+    "shown_menu_item_ids",
+    "whatsapp_menu_has_more",
     "whatsapp_order_state_updated_at",
 )
 
@@ -95,12 +98,19 @@ class AgentSessionRepository:
         agent_session_id: str,
         *,
         offered_menu_items: list[dict],
+        menu_query: str | None,
+        shown_menu_item_ids: list[str],
+        menu_has_more: bool,
         updated_at: str,
     ) -> None:
         session = self._get_owned_session(customer_id, agent_session_id)
         self._update_support_attributes(
             session,
-            update_expression="SET #items = :items, #updated_at = :updated_at",
+            update_expression=(
+                "SET #items = :items, #menu_query = :menu_query, "
+                "#shown_ids = :shown_ids, #has_more = :has_more, "
+                "#updated_at = :updated_at"
+            ),
             condition_expression=(
                 "attribute_exists(#pk) "
                 "AND #customer_id = :customer_id "
@@ -111,12 +121,18 @@ class AgentSessionRepository:
                 "#customer_id": "customer_id",
                 "#agent_session_id": "agent_session_id",
                 "#items": "offered_menu_items",
+                "#menu_query": "whatsapp_menu_query",
+                "#shown_ids": "shown_menu_item_ids",
+                "#has_more": "whatsapp_menu_has_more",
                 "#updated_at": "whatsapp_order_state_updated_at",
             },
             values={
                 ":customer_id": customer_id,
                 ":agent_session_id": agent_session_id,
                 ":items": offered_menu_items,
+                ":menu_query": menu_query or "",
+                ":shown_ids": shown_menu_item_ids,
+                ":has_more": menu_has_more,
                 ":updated_at": updated_at,
             },
         )
@@ -129,7 +145,9 @@ class AgentSessionRepository:
         session = self._get_owned_session(customer_id, agent_session_id)
         self._update_support_attributes(
             session,
-            update_expression="REMOVE #items, #updated_at",
+            update_expression=(
+                "REMOVE #items, #menu_query, #shown_ids, #has_more, #updated_at"
+            ),
             condition_expression=(
                 "attribute_exists(#pk) "
                 "AND #customer_id = :customer_id "
@@ -140,6 +158,9 @@ class AgentSessionRepository:
                 "#customer_id": "customer_id",
                 "#agent_session_id": "agent_session_id",
                 "#items": "offered_menu_items",
+                "#menu_query": "whatsapp_menu_query",
+                "#shown_ids": "shown_menu_item_ids",
+                "#has_more": "whatsapp_menu_has_more",
                 "#updated_at": "whatsapp_order_state_updated_at",
             },
             values={

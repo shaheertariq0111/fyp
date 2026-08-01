@@ -1,4 +1,5 @@
 from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
 
 from .base import from_dynamodb, to_dynamodb
 
@@ -7,8 +8,20 @@ class OrderRepository:
     def __init__(self, dynamodb, table_name: str):
         self.table = dynamodb.Table(table_name)
 
-    def create(self, order: dict) -> None:
-        self.table.put_item(Item=to_dynamodb(order), ConditionExpression="attribute_not_exists(PK)")
+    def create(self, order: dict) -> bool:
+        try:
+            self.table.put_item(
+                Item=to_dynamodb(order),
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return False
+            raise
+        return True
 
     def get(self, user_id: str, order_id: str) -> dict | None:
         response = self.table.get_item(

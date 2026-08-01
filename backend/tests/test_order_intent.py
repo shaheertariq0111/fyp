@@ -77,3 +77,4 @@ def test_order_intent_prompt_routes_menu_browsing_to_authoritative_data():
     assert "menu_browse" in ORDER_INTENT_SYSTEM_PROMPT
     assert "authoritative backend menu" in ORDER_INTENT_SYSTEM_PROMPT
     assert "never provide or infer item names" in ORDER_INTENT_SYSTEM_PROMPT
+    assert "menu_browse_more" in ORDER_INTENT_SYSTEM_PROMPT

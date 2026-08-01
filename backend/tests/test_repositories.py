@@ -12,12 +12,12 @@ class FakeTable:
         return self.response
 
 
-class FakeScanTable:
+class FakeQueryTable:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
 
-    def scan(self, **kwargs):
+    def query(self, **kwargs):
         self.calls.append(kwargs)
         return self.responses.pop(0)
 
@@ -47,23 +47,21 @@ def test_cart_repository_uses_user_partition():
     assert table.calls[0]["Key"] == {"PK": "user", "SK": "CART#cart"}
 
 
-def test_cart_repository_find_by_cart_id_paginates_scan_results():
-    table = FakeScanTable([
-        {"Items": [], "LastEvaluatedKey": {"PK": "user-1", "SK": "CART#old"}},
-        {"Items": [{"cart_id": "target"}]},
-    ])
+def test_cart_repository_find_by_cart_id_uses_owner_partition_key():
+    table = FakeTable({"Item": {"cart_id": "target"}})
     repository = CartRepository(FakeDynamo(table), "configured-table")
 
-    assert repository.find_by_cart_id("target")["cart_id"] == "target"
-    assert table.calls[1]["ExclusiveStartKey"] == {"PK": "user-1", "SK": "CART#old"}
+    assert repository.find_by_cart_id("user-1", "target")["cart_id"] == "target"
+    assert table.calls[0]["Key"] == {"PK": "user-1", "SK": "CART#target"}
 
 
-def test_cart_repository_find_by_cart_item_id_paginates_scan_results():
-    table = FakeScanTable([
+def test_cart_repository_find_by_cart_item_id_queries_only_owner_partition():
+    table = FakeQueryTable([
         {"Items": [], "LastEvaluatedKey": {"PK": "user-1", "SK": "CART#old"}},
         {"Items": [{"cart_item_ids": ["target-item"]}]},
     ])
     repository = CartRepository(FakeDynamo(table), "configured-table")
 
-    assert repository.find_by_cart_item_id("target-item")["cart_item_ids"] == ["target-item"]
+    assert repository.find_by_cart_item_id("user-1", "target-item")["cart_item_ids"] == ["target-item"]
+    assert "KeyConditionExpression" in table.calls[0]
     assert table.calls[1]["ExclusiveStartKey"] == {"PK": "user-1", "SK": "CART#old"}

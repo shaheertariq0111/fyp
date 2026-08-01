@@ -10,11 +10,21 @@ class FakeTable:
     def __init__(self):
         self.put_calls = []
         self.put_error = None
+        self.get_calls = []
+        self.get_response = {}
+        self.delete_calls = []
 
     def put_item(self, **kwargs):
         self.put_calls.append(deepcopy(kwargs))
         if self.put_error:
             raise self.put_error
+
+    def get_item(self, **kwargs):
+        self.get_calls.append(deepcopy(kwargs))
+        return deepcopy(self.get_response)
+
+    def delete_item(self, **kwargs):
+        self.delete_calls.append(deepcopy(kwargs))
 
 
 class FakeDynamo:
@@ -93,3 +103,26 @@ def test_claim_idempotency_key_propagates_unrelated_aws_failure():
         raised.value.response["Error"]["Code"]
         == "ProvisionedThroughputExceededException"
     )
+
+
+def test_whatsapp_idempotency_marker_read_save_and_delete_use_exact_key():
+    dynamo = FakeDynamo()
+    repository = AgentRequestRepository(dynamo, "agent-requests")
+    marker = {
+        "PK": "agentflo-whatsapp-message:wamid.synthetic-1",
+        "SK": "IDEMPOTENCY",
+        "delivery_state": "response_ready",
+    }
+    dynamo.table.get_response = {"Item": marker}
+
+    assert repository.get_idempotency_key("wamid.synthetic-1") == marker
+    repository.save_idempotency_key(marker)
+    repository.delete_idempotency_key("wamid.synthetic-1")
+
+    key = {
+        "PK": "agentflo-whatsapp-message:wamid.synthetic-1",
+        "SK": "IDEMPOTENCY",
+    }
+    assert dynamo.table.get_calls == [{"Key": key, "ConsistentRead": True}]
+    assert dynamo.table.put_calls == [{"Item": marker}]
+    assert dynamo.table.delete_calls == [{"Key": key}]

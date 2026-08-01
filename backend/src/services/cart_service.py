@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 import re
 
 from src.models.tool_responses import ToolResponse
+from src.repositories.cart_repository import CartVersionConflictError
 
 
 ORDER_HANDOFF_CART_STATUS = "converted_to_order"
@@ -113,11 +114,13 @@ class CartService:
                                    ))
         return self._next_choice_response(cart)
 
-    def set_customization_mode(self, cart_id: str, mode: str) -> ToolResponse:
+    def set_customization_mode(
+        self, user_id: str, cart_id: str, mode: str
+    ) -> ToolResponse:
         if mode not in {"same", "separate"}:
             return ToolResponse.error(error_code="INVALID_CUSTOMIZATION_MODE",
                                       user_message="Choose same or separate customization.")
-        cart = self.carts.find_by_cart_id(cart_id)
+        cart = self.carts.find_by_cart_id(user_id, cart_id)
         if not cart:
             return ToolResponse.error(error_code="CART_NOT_FOUND", user_message="I couldn't find that cart.")
         if cart["status"] != "cart_created" or cart.get("items"):
@@ -138,9 +141,14 @@ class CartService:
         self._save(cart)
         return self._next_choice_response(cart)
 
-    def save_choice(self, cart_item_id: str, field_name: str,
-                    selected_option_id: str) -> ToolResponse:
-        cart = self.carts.find_by_cart_item_id(cart_item_id)
+    def save_choice(
+        self,
+        user_id: str,
+        cart_item_id: str,
+        field_name: str,
+        selected_option_id: str | list[str],
+    ) -> ToolResponse:
+        cart = self.carts.find_by_cart_item_id(user_id, cart_item_id)
         if not cart:
             return ToolResponse.error(error_code="CART_NOT_FOUND", user_message="I couldn't find that cart.")
         if cart["status"] != "customizing_item" or cart.get("active_cart_item_id") != cart_item_id:
@@ -153,13 +161,35 @@ class CartService:
         if not group:
             return ToolResponse.error(error_code="INVALID_CUSTOMIZATION",
                                       user_message="That customization isn't valid for this item.")
-        option = next((entry for entry in group.get("options", [])
-                       if entry.get("option_id") == selected_option_id), None)
-        if not option:
+        selected_ids = (
+            selected_option_id
+            if isinstance(selected_option_id, list)
+            else [selected_option_id]
+        )
+        option_ids = {
+            entry.get("option_id") for entry in group.get("options", [])
+        }
+        minimum = self._selection_limit(group, "min")
+        maximum = self._selection_limit(group, "max")
+        invalid_count = (
+            not selected_ids
+            or len(set(selected_ids)) != len(selected_ids)
+            or (group.get("type") == "single_select" and len(selected_ids) != 1)
+            or len(selected_ids) < minimum
+            or (maximum and len(selected_ids) > maximum)
+        )
+        if invalid_count:
+            return ToolResponse.error(
+                error_code="INVALID_OPTION_COUNT",
+                user_message="Please choose the allowed number of options.",
+            )
+        if any(option_id not in option_ids for option_id in selected_ids):
             return ToolResponse.error(error_code="INVALID_OPTION",
                                       user_message="Please choose one of the available options.")
         completed_was_upsell = item.get("is_upsell", False)
-        item["selected_options"][field_name] = selected_option_id
+        item["selected_options"][field_name] = (
+            selected_ids if group.get("type") == "multi_select" else selected_ids[0]
+        )
         self._refresh_item(item, menu_item)
         if not item["missing_required_fields"]:
             self._advance_active_item(cart)
@@ -187,12 +217,12 @@ class CartService:
                                    ))
         return self._next_choice_response(cart)
 
-    def handle_upsell(self, cart_id: str, action: str, item_id: str | None = None,
+    def handle_upsell(self, user_id: str, cart_id: str, action: str, item_id: str | None = None,
                       quantity: int = 1) -> ToolResponse:
         if action not in {"get_options", "add_item", "skip"}:
             return ToolResponse.error(error_code="INVALID_UPSELL_ACTION",
                                       user_message="That upsell action isn't supported.")
-        cart = self.carts.find_by_cart_id(cart_id)
+        cart = self.carts.find_by_cart_id(user_id, cart_id)
         if not cart:
             return ToolResponse.error(error_code="CART_NOT_FOUND", user_message="I couldn't find that cart.")
         if cart["status"] not in {"item_ready", "awaiting_upsell_decision"}:
@@ -259,13 +289,15 @@ class CartService:
                                    instruction="Cart is ready. If the customer wants to proceed, call create_pending_order_from_cart with this cart_id.",
                                ))
 
-    def create_pending_order(self, cart_id: str) -> ToolResponse:
-        cart = self.carts.find_by_cart_id(cart_id)
+    def create_pending_order(self, user_id: str, cart_id: str) -> ToolResponse:
+        cart = self.carts.find_by_cart_id(user_id, cart_id)
         if not cart:
             return ToolResponse.error(error_code="CART_NOT_FOUND", user_message="I couldn't find that cart.")
         if cart["status"] in {"item_ready", "awaiting_upsell_decision"}:
             cart["status"] = "cart_ready"
             self._save(cart)
+        if cart["status"] == ORDER_HANDOFF_CART_STATUS:
+            return self.order_service.create_pending_from_cart(cart)
         if cart["status"] != "cart_ready":
             return ToolResponse.error(error_code="CART_NOT_READY",
                                       user_message="Please complete the cart before creating an order.")
@@ -275,7 +307,12 @@ class CartService:
         response = self.order_service.create_pending_from_cart(cart)
         if response.success:
             cart["status"] = ORDER_HANDOFF_CART_STATUS
-            self._save(cart)
+            try:
+                self._save(cart)
+            except CartVersionConflictError:
+                latest = self.carts.find_by_cart_id(user_id, cart_id)
+                if not latest or latest.get("status") != ORDER_HANDOFF_CART_STATUS:
+                    raise
         return response
 
     def create_pending_from_menu_order(
@@ -480,6 +517,7 @@ class CartService:
                 user_message=f"{group['question']} Available options: {options}.",
             )
         return self.save_choice(
+            user_id,
             item["cart_item_id"],
             group["option_group_id"],
             option["option_id"],
@@ -502,21 +540,38 @@ class CartService:
 
     def _refresh_item(self, item, menu_item):
         groups = self._groups(menu_item)
-        required = [group["option_group_id"] for group in groups if group.get("required")]
-        item["missing_required_fields"] = [field for field in required
-                                           if field not in item["selected_options"]]
+        required = [
+            group["option_group_id"]
+            for group in groups
+            if group.get("required") or self._selection_limit(group, "min") > 0
+        ]
+        item["missing_required_fields"] = [
+            field
+            for field in required
+            if not item["selected_options"].get(field)
+        ]
         item["current_step"] = (item["missing_required_fields"][0]
                                 if item["missing_required_fields"] else None)
         unit_price = menu_item.get("starting_price", 0) or 0
         for group in groups:
             selected = item["selected_options"].get(group["option_group_id"])
-            option = next((entry for entry in group.get("options", [])
-                           if entry.get("option_id") == selected), None)
-            if not option:
-                continue
-            if "price_key" in option:
-                unit_price = menu_item.get("base_prices", {}).get(option["price_key"], unit_price)
-            unit_price += option.get("price_delta", 0)
+            selected_ids = selected if isinstance(selected, list) else [selected]
+            for selected_id in (value for value in selected_ids if value):
+                option = next(
+                    (
+                        entry
+                        for entry in group.get("options", [])
+                        if entry.get("option_id") == selected_id
+                    ),
+                    None,
+                )
+                if not option:
+                    continue
+                if "price_key" in option:
+                    unit_price = menu_item.get("base_prices", {}).get(
+                        option["price_key"], unit_price
+                    )
+                unit_price += option.get("price_delta", 0)
         item["current_price"] = unit_price * item["quantity"]
 
     def _validate_selected_options(self, item, menu_item):
@@ -528,10 +583,38 @@ class CartService:
                                           user_message="That customization isn't valid for this item.")
             option_ids = [option.get("option_id") for option in group.get("options", [])]
             selected_ids = selected if isinstance(selected, list) else [selected]
-            if any(option_id not in option_ids for option_id in selected_ids):
+            if (
+                len(set(selected_ids)) != len(selected_ids)
+                or any(option_id not in option_ids for option_id in selected_ids)
+            ):
                 return ToolResponse.error(error_code="INVALID_OPTION",
                                           user_message="Please choose one of the available options.")
+            if group.get("type") == "single_select" and len(selected_ids) != 1:
+                return ToolResponse.error(
+                    error_code="INVALID_OPTION_COUNT",
+                    user_message="Please choose exactly one option.",
+                )
+            minimum = self._selection_limit(group, "min")
+            maximum = self._selection_limit(group, "max")
+            if len(selected_ids) < minimum or (maximum and len(selected_ids) > maximum):
+                return ToolResponse.error(
+                    error_code="INVALID_OPTION_COUNT",
+                    user_message="Please choose the allowed number of options.",
+                )
         return None
+
+    @staticmethod
+    def _selection_limit(group, boundary: str) -> int:
+        keys = (
+            ("min_select", "min_selections")
+            if boundary == "min"
+            else ("max_select", "max_selections")
+        )
+        for key in keys:
+            value = group.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+        return 0
 
     @classmethod
     def _match_option(cls, group, choice_text: str):

@@ -45,7 +45,13 @@ class MemoryAgentSessionRepository:
         assert session["customer_id"] == customer_id
         return {
             key: session[key]
-            for key in ("offered_menu_items", "whatsapp_order_state_updated_at")
+            for key in (
+                "offered_menu_items",
+                "whatsapp_menu_query",
+                "shown_menu_item_ids",
+                "whatsapp_menu_has_more",
+                "whatsapp_order_state_updated_at",
+            )
             if key in session
         }
 
@@ -55,17 +61,26 @@ class MemoryAgentSessionRepository:
         agent_session_id,
         *,
         offered_menu_items,
+        menu_query,
+        shown_menu_item_ids,
+        menu_has_more,
         updated_at,
     ):
         session = self.data[agent_session_id]
         assert session["customer_id"] == customer_id
         session["offered_menu_items"] = offered_menu_items
+        session["whatsapp_menu_query"] = menu_query or ""
+        session["shown_menu_item_ids"] = shown_menu_item_ids
+        session["whatsapp_menu_has_more"] = menu_has_more
         session["whatsapp_order_state_updated_at"] = updated_at
 
     def clear_whatsapp_order_state(self, customer_id, agent_session_id):
         session = self.data[agent_session_id]
         assert session["customer_id"] == customer_id
         session.pop("offered_menu_items", None)
+        session.pop("whatsapp_menu_query", None)
+        session.pop("shown_menu_item_ids", None)
+        session.pop("whatsapp_menu_has_more", None)
         session.pop("whatsapp_order_state_updated_at", None)
 
 
@@ -270,10 +285,14 @@ def test_whatsapp_menu_choices_are_persisted_for_the_next_message():
         offered_menu_items=choices,
     )
 
-    assert sessions.get_whatsapp_order_state(
+    state = sessions.get_whatsapp_order_state(
         "cust-whatsapp",
         session["agent_session_id"],
-    )["offered_menu_items"] == choices
+    )
+    assert state["offered_menu_items"] == choices
+    assert state["shown_menu_item_ids"] == [
+        "pepperoni-hot", "pepperoni-passion"
+    ]
 
     sessions.clear_whatsapp_order_state(
         "cust-whatsapp",

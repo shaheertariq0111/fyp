@@ -78,6 +78,24 @@ CHECKOUT_PATTERN = re.compile(
 )
 CONFIRM_PATTERN = re.compile(r"\b(?:confirm|yes|submit|place\s+it)\b", re.IGNORECASE)
 CANCEL_PATTERN = re.compile(r"\b(?:cancel|stop|never\s*mind)\b", re.IGNORECASE)
+NEGATED_CONFIRM_PATTERN = re.compile(
+    r"\b(?:don\s+t|do\s+not|not|never)\s+(?:confirm|submit|place)\b",
+    re.IGNORECASE,
+)
+NEGATED_CANCEL_PATTERN = re.compile(
+    r"\b(?:don\s+t|do\s+not|not|never)\s+(?:cancel|stop)\b",
+    re.IGNORECASE,
+)
+NEGATED_SELECTION_PATTERN = re.compile(
+    r"\b(?:don\s+t\s+want|do\s+not\s+want|not)\b|"
+    r"\bno\s+(?:option\s+|item\s+)?\d+\b",
+    re.IGNORECASE,
+)
+NEGATED_FULFILLMENT_PATTERN = re.compile(
+    r"\b(?:don\s+t\s+want|do\s+not\s+want|not|no)\s+"
+    r"(?:delivery|takeaway|take\s+away|pickup)\b",
+    re.IGNORECASE,
+)
 SKIP_PATTERN = re.compile(
     r"\b(?:no|none|skip|without|no\s+thanks|nothing\s+else)\b",
     re.IGNORECASE,
@@ -97,6 +115,7 @@ CONVERSATION_INTENT_ACTIONS = [
     "latest_order_eta",
     "latest_order_status",
     "menu_browse",
+    "menu_browse_more",
 ]
 CUSTOMER_NAME_PATTERN = re.compile(
     r"\b(?:my\s+name\s+is|name\s+is|it(?:'s|\s+is)(?:\s+actually)?|"
@@ -174,6 +193,7 @@ class WhatsAppOrderFlowService:
             )
 
         order = self.orders.get_active_order_for_session(user_id, session_id)
+        deterministic_menu_query = self._menu_query(normalized)
         if NON_ORDER_PATTERN.search(normalized) and not CANCEL_PATTERN.search(normalized):
             return None
 
@@ -204,6 +224,10 @@ class WhatsAppOrderFlowService:
         is_menu_browse_intent = (
             conversation_intent is not None
             and conversation_intent.action == "menu_browse"
+        )
+        is_menu_more_intent = (
+            conversation_intent is not None
+            and conversation_intent.action == "menu_browse_more"
         )
         if (
             is_eta_intent
@@ -259,7 +283,11 @@ class WhatsAppOrderFlowService:
 
         menu_state = self.agent_sessions.get_whatsapp_order_state(user_id, session_id)
         offered_items = menu_state.get("offered_menu_items", [])
-        if offered_items and not is_menu_browse_intent:
+        if offered_items and not (
+            is_menu_browse_intent
+            or is_menu_more_intent
+            or deterministic_menu_query is not None
+        ):
             selected = self._select(offered_items, normalized, ("name", "product_id"))
             if selected is None:
                 intent = self._interpret(
@@ -301,17 +329,31 @@ class WhatsAppOrderFlowService:
                 )
 
         direct_menu_browse = bool(DIRECT_MENU_BROWSE_PATTERN.fullmatch(normalized))
-        query = (
-            ""
-            if is_menu_browse_intent or direct_menu_browse
-            else self._menu_query(normalized)
-        )
+        if deterministic_menu_query is not None:
+            query = deterministic_menu_query
+        elif is_menu_more_intent:
+            query = str(menu_state.get("whatsapp_menu_query") or "")
+        elif is_menu_browse_intent or direct_menu_browse:
+            query = ""
+        else:
+            query = None
         if query is None:
             return None
+        shown_ids = (
+            list(menu_state.get("shown_menu_item_ids") or [])
+            if is_menu_more_intent
+            else []
+        )
+        if is_menu_more_intent and not offered_items:
+            return WhatsAppOrderFlowResult(
+                text="Please ask to see the menu first, then I can show more options.",
+                tool_calls=[],
+            )
         response = self.menu.search_menu(
             query=query or None,
             available_only=True,
             limit=5,
+            exclude_product_ids=shown_ids,
         )
         items = (response.data or {}).get("items", []) if response.success else []
         if items:
@@ -330,6 +372,21 @@ class WhatsAppOrderFlowService:
                     for item in items
                     if item.get("product_id")
                 ],
+                menu_query=query,
+                shown_menu_item_ids=[
+                    *shown_ids,
+                    *[
+                        str(item["product_id"])
+                        for item in items
+                        if item.get("product_id")
+                    ],
+                ],
+                menu_has_more=bool((response.data or {}).get("has_more")),
+            )
+        elif is_menu_more_intent:
+            return WhatsAppOrderFlowResult(
+                text="You've reached the end of the available menu options.",
+                tool_calls=[],
             )
         return self._result(
             "search_menu",
@@ -387,7 +444,9 @@ class WhatsAppOrderFlowService:
                     ),
                     tool_calls=[],
                 )
-            response = self.carts.set_customization_mode(cart_id, selected["value"])
+            response = self.carts.set_customization_mode(
+                user_id, cart_id, selected["value"]
+            )
             return self._cart_result("set_customization_mode", response)
 
         if status == "customizing_item":
@@ -427,23 +486,28 @@ class WhatsAppOrderFlowService:
                     tool_calls=[],
                 )
             response = self.carts.save_choice(
+                user_id,
                 active_choice["cart_item_id"],
                 active_choice["field_name"],
                 selected["option_id"],
             )
             if response.success and response.next_action == "offer_upsell":
-                response = self.carts.handle_upsell(response.data["cart_id"], "get_options")
+                response = self.carts.handle_upsell(
+                    user_id, response.data["cart_id"], "get_options"
+                )
             return self._cart_result("save_customization_choice", response)
 
         if status in {"item_ready", "awaiting_upsell_decision"}:
-            options_response = self.carts.handle_upsell(cart_id, "get_options")
+            options_response = self.carts.handle_upsell(
+                user_id, cart_id, "get_options"
+            )
             proceed_without_addon = bool(
                 PROCEED_WITHOUT_ADDON_PATTERN.fullmatch(normalized)
             )
             if status == "item_ready" and not proceed_without_addon:
                 return self._cart_result("handle_cart_upsell", options_response)
             if proceed_without_addon:
-                return self._proceed_without_addon(cart_id)
+                return self._proceed_without_addon(user_id, cart_id)
 
             upsell_items = (options_response.data or {}).get("upsell_items", [])
             selected = self._select(upsell_items, normalized, ("name", "product_id"))
@@ -469,7 +533,7 @@ class WhatsAppOrderFlowService:
                     "proceed_without_addon",
                     "skip_upsell",
                 }:
-                    return self._proceed_without_addon(cart_id)
+                    return self._proceed_without_addon(user_id, cart_id)
                 selected = self._selected_by_intent(
                     intent,
                     action="select_upsell",
@@ -479,6 +543,7 @@ class WhatsAppOrderFlowService:
             if selected is None:
                 return self._cart_result("handle_cart_upsell", options_response)
             response = self.carts.handle_upsell(
+                user_id,
                 cart_id,
                 "add_item",
                 selected["product_id"],
@@ -503,7 +568,7 @@ class WhatsAppOrderFlowService:
                     text="Your cart is ready. Reply checkout to continue.",
                     tool_calls=[],
                 )
-            response = self.carts.create_pending_order(cart_id)
+            response = self.carts.create_pending_order(user_id, cart_id)
             return self._result(
                 "create_pending_order_from_cart",
                 response,
@@ -526,11 +591,17 @@ class WhatsAppOrderFlowService:
         status = order.get("status")
         if status == "awaiting_fulfillment_method":
             action = None
-            if DELIVERY_PATTERN.search(normalized) or normalized == "1":
+            if (
+                DELIVERY_PATTERN.search(normalized) or normalized == "1"
+            ) and not NEGATED_FULFILLMENT_PATTERN.search(normalized):
                 action = "delivery"
-            elif TAKEAWAY_PATTERN.search(normalized) or normalized == "2":
+            elif (
+                TAKEAWAY_PATTERN.search(normalized) or normalized == "2"
+            ) and not NEGATED_FULFILLMENT_PATTERN.search(normalized):
                 action = "takeaway"
-            elif CANCEL_PATTERN.search(normalized):
+            elif CANCEL_PATTERN.fullmatch(normalized) and not NEGATED_CANCEL_PATTERN.search(
+                normalized
+            ):
                 action = "cancel"
             else:
                 intent = self._interpret(
@@ -543,15 +614,15 @@ class WhatsAppOrderFlowService:
                 )
                 action = intent.action if intent is not None else None
             if action == "delivery":
-                response = self.orders.update_order_flow(order_id, "set_delivery")
+                response = self.orders.update_order_flow(user_id, order_id, "set_delivery")
                 tool_name = "update_order_flow"
                 is_write = True
             elif action == "takeaway":
-                response = self.orders.update_order_flow(order_id, "set_takeaway")
+                response = self.orders.update_order_flow(user_id, order_id, "set_takeaway")
                 tool_name = "update_order_flow"
                 is_write = True
             elif action == "cancel":
-                response = self.orders.update_order_flow(order_id, "cancel")
+                response = self.orders.update_order_flow(user_id, order_id, "cancel")
                 tool_name = "update_order_flow"
                 is_write = True
             else:
@@ -576,12 +647,17 @@ class WhatsAppOrderFlowService:
             )
 
         if status == "awaiting_delivery_address":
-            if TAKEAWAY_PATTERN.search(normalized):
-                response = self.orders.update_order_flow(order_id, "set_takeaway")
-            elif CANCEL_PATTERN.search(normalized) and normalized != "cancel address":
-                response = self.orders.update_order_flow(order_id, "cancel")
+            if TAKEAWAY_PATTERN.fullmatch(normalized):
+                response = self.orders.update_order_flow(user_id, order_id, "set_takeaway")
+            elif (
+                CANCEL_PATTERN.fullmatch(normalized)
+                and normalized != "cancel address"
+                and not NEGATED_CANCEL_PATTERN.search(normalized)
+            ):
+                response = self.orders.update_order_flow(user_id, order_id, "cancel")
             else:
                 response = self.orders.update_order_flow(
+                    user_id,
                     order_id,
                     "save_address",
                     original_message.strip(),
@@ -608,28 +684,45 @@ class WhatsAppOrderFlowService:
                         tool_calls=[],
                     )
                 response = self.orders.update_order_flow(
+                    user_id,
                     order_id,
                     "save_customer_name",
                     cleaned_name,
                 )
-            elif CANCEL_PATTERN.search(normalized):
-                response = self.orders.update_order_flow(order_id, "cancel")
+            elif NEGATED_CONFIRM_PATTERN.search(
+                normalized
+            ) or NEGATED_CANCEL_PATTERN.search(normalized):
+                return WhatsAppOrderFlowResult(
+                    text=(
+                        "I haven't changed the name. Reply yes to use the "
+                        "suggested name, or send the correct name for the order."
+                    ),
+                    tool_calls=[],
+                )
+            elif (
+                CANCEL_PATTERN.fullmatch(normalized)
+                and not NEGATED_CANCEL_PATTERN.search(normalized)
+            ):
+                response = self.orders.update_order_flow(user_id, order_id, "cancel")
             elif suggested_name and not suggestion_rejected and CONFIRM_PATTERN.search(
                 normalized
             ):
                 response = self.orders.update_order_flow(
+                    user_id,
                     order_id,
                     "confirm_customer_name",
                 )
-            elif suggested_name and not suggestion_rejected and SKIP_PATTERN.search(
-                normalized
+            elif suggested_name and not suggestion_rejected and (
+                SKIP_PATTERN.search(normalized) or normalized == "reject"
             ):
                 response = self.orders.update_order_flow(
+                    user_id,
                     order_id,
                     "reject_customer_name",
                 )
             else:
                 response = self.orders.update_order_flow(
+                    user_id,
                     order_id,
                     "save_customer_name",
                     original_message.strip(),
@@ -642,6 +735,16 @@ class WhatsAppOrderFlowService:
             )
 
         if status == "pending_confirmation":
+            if NEGATED_CONFIRM_PATTERN.search(normalized) or NEGATED_CANCEL_PATTERN.search(
+                normalized
+            ):
+                return WhatsAppOrderFlowResult(
+                    text=(
+                        "I haven't changed the order. Reply confirm to submit it, "
+                        "or cancel to discard it."
+                    ),
+                    tool_calls=[],
+                )
             correction_match = CUSTOMER_NAME_PATTERN.search(original_message)
             intent = None
             if correction_match is None and not (
@@ -683,6 +786,7 @@ class WhatsAppOrderFlowService:
                         tool_calls=[],
                     )
                 response = self.orders.update_order_flow(
+                    user_id,
                     order_id,
                     "save_customer_name",
                     cleaned_name,
@@ -695,14 +799,15 @@ class WhatsAppOrderFlowService:
                 )
 
             action = None
-            if CONFIRM_PATTERN.search(normalized):
+            if CONFIRM_PATTERN.fullmatch(normalized):
                 action = "confirm"
-            elif CANCEL_PATTERN.search(normalized):
+            elif CANCEL_PATTERN.fullmatch(normalized):
                 action = "cancel"
             else:
                 action = intent.action if intent is not None else None
             if action == "confirm":
                 response = self.orders.update_order_flow(
+                    user_id,
                     order_id,
                     "confirm",
                     idempotency_key=request_id,
@@ -710,7 +815,7 @@ class WhatsAppOrderFlowService:
                 tool_name = "update_order_flow"
                 is_write = True
             elif action == "cancel":
-                response = self.orders.update_order_flow(order_id, "cancel")
+                response = self.orders.update_order_flow(user_id, order_id, "cancel")
                 tool_name = "update_order_flow"
                 is_write = True
             else:
@@ -738,7 +843,22 @@ class WhatsAppOrderFlowService:
         request_id: str,
         options: list[dict[str, str]] | None = None,
     ) -> OrderIntentClassification | None:
-        if state != "upsell" and SKIP_PATTERN.search(self._normalize(message)):
+        normalized = self._normalize(message)
+        if state != "upsell" and SKIP_PATTERN.search(normalized):
+            return None
+        if "confirm" in allowed_actions and NEGATED_CONFIRM_PATTERN.search(normalized):
+            return None
+        if "cancel" in allowed_actions and NEGATED_CANCEL_PATTERN.search(normalized):
+            return None
+        if {"delivery", "takeaway"}.intersection(allowed_actions) and (
+            NEGATED_FULFILLMENT_PATTERN.search(normalized)
+        ):
+            return None
+        if state != "upsell" and any(
+            action.startswith("select_") for action in allowed_actions
+        ) and (
+            NEGATED_SELECTION_PATTERN.search(normalized)
+        ):
             return None
         try:
             intent_client = self.intent_client
@@ -866,12 +986,14 @@ class WhatsAppOrderFlowService:
             text=self._cart_step_text(response),
         )
 
-    def _proceed_without_addon(self, cart_id: str) -> WhatsAppOrderFlowResult:
-        skip_response = self.carts.handle_upsell(cart_id, "skip")
+    def _proceed_without_addon(
+        self, user_id: str, cart_id: str
+    ) -> WhatsAppOrderFlowResult:
+        skip_response = self.carts.handle_upsell(user_id, cart_id, "skip")
         skip_result = self._cart_result("handle_cart_upsell", skip_response)
         if not skip_result.tool_calls[0]["success"]:
             return skip_result
-        order_response = self.carts.create_pending_order(cart_id)
+        order_response = self.carts.create_pending_order(user_id, cart_id)
         order_result = self._result(
             "create_pending_order_from_cart",
             order_response,
@@ -998,6 +1120,11 @@ class WhatsAppOrderFlowService:
         normalized: str,
         text_fields: tuple[str, ...],
     ) -> dict[str, Any] | None:
+        if NEGATED_SELECTION_PATTERN.search(normalized):
+            return None
+        number_matches = re.findall(r"\b(\d+)\b", normalized)
+        if len(set(number_matches)) > 1:
+            return None
         number_match = re.search(r"\b(\d+)\b", normalized)
         if number_match:
             index = int(number_match.group(1)) - 1
@@ -1026,7 +1153,14 @@ class WhatsAppOrderFlowService:
 
     @staticmethod
     def _is_choice_attempt(normalized: str) -> bool:
-        return bool(re.fullmatch(r"(?:option\s+|item\s+)?\d+", normalized))
+        return bool(
+            re.fullmatch(r"(?:option\s+|item\s+)?\d+", normalized)
+            or (
+                NEGATED_SELECTION_PATTERN.search(normalized)
+                and re.search(r"\b\d+\b", normalized)
+            )
+            or len(set(re.findall(r"\b\d+\b", normalized))) > 1
+        )
 
     @staticmethod
     def _normalize(value: str) -> str:

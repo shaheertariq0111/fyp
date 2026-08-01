@@ -59,13 +59,38 @@ class MemoryAgentRequestService:
         self.next_id = 1
         self.agentflo_message_ids = set()
         self.agentflo_claims = []
+        self.agentflo_markers = {}
 
     def claim_agentflo_whatsapp_message(self, message_id):
         self.agentflo_claims.append(message_id)
         if message_id in self.agentflo_message_ids:
             return False
         self.agentflo_message_ids.add(message_id)
+        self.agentflo_markers[message_id] = {"delivery_state": "processing"}
         return True
+
+    def get_agentflo_whatsapp_message(self, message_id):
+        marker = self.agentflo_markers.get(message_id)
+        return deepcopy(marker) if marker else None
+
+    def cache_agentflo_whatsapp_response(
+        self, message_id, *, request_id, session_id, customer_id, reply
+    ):
+        self.agentflo_markers[message_id] = {
+            "delivery_state": "response_ready",
+            "request_id": request_id,
+            "session_id": session_id,
+            "customer_id": customer_id,
+            "reply": reply,
+        }
+
+    def complete_agentflo_whatsapp_message(self, message_id):
+        if message_id in self.agentflo_markers:
+            self.agentflo_markers[message_id]["delivery_state"] = "completed"
+
+    def release_agentflo_whatsapp_message(self, message_id):
+        self.agentflo_message_ids.discard(message_id)
+        self.agentflo_markers.pop(message_id, None)
 
     def start_processing(self, **kwargs):
         request_id = f"req-{self.next_id}"
@@ -923,8 +948,9 @@ def test_agentflo_whatsapp_duplicate_confirm_does_not_create_duplicate_order(mon
                 }],
             })
             order_id = pending.data["order_id"]
-            order_service.update_order_flow(order_id, "set_takeaway")
+            order_service.update_order_flow(request.user_id, order_id, "set_takeaway")
             confirmed = order_service.update_order_flow(
+                request.user_id,
                 order_id,
                 "confirm",
                 idempotency_key=request.request_id,
@@ -1163,6 +1189,61 @@ def test_agentflo_whatsapp_gateway_failure_preserves_reply_safely(monkeypatch):
         "sent": False,
         "error_code": "AGENTFLO_OUTBOUND_FAILED",
     }
+
+
+def test_agentflo_whatsapp_retries_cached_reply_without_reprocessing(monkeypatch):
+    services = WhatsAppIdentityServices()
+    gateway = StubAgentfloGateway(
+        configured=True,
+        result={"sent": False, "error_code": "AGENTFLO_OUTBOUND_FAILED"},
+    )
+    invocations = []
+
+    class CountingAgentRuntimeClient:
+        def invoke(self, request):
+            invocations.append(request)
+            return AgentInvocationResult(
+                text="Cached authoritative reply.",
+                raw_result=SimpleNamespace(),
+            )
+
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+    monkeypatch.setattr(
+        main,
+        "get_agent_runtime_client",
+        lambda: CountingAgentRuntimeClient(),
+    )
+    payload = {
+        "message": "Synthetic retry message",
+        "from": "+10000000000",
+        "sender_id": "sender-retry",
+        "message_id": "message-retry-1",
+    }
+
+    first = client().post("/api/channels/agentflo/whatsapp", json=payload)
+    gateway.result = {
+        "sent": True,
+        "status": "accepted",
+        "providerMessageId": "provider-retry-1",
+    }
+    retried = client().post("/api/channels/agentflo/whatsapp", json=payload)
+
+    assert first.json()["success"] is False
+    assert retried.json()["success"] is True
+    assert retried.json()["reply"] == "Cached authoritative reply."
+    assert len(invocations) == 1
+    assert len(services.agent_requests.requests) == 1
+    assert services.profile_update_count == 1
+    assert len(services.conversation_history.records) == 2
+    assert len(gateway.calls) == 2
+    assert services.agent_requests.agentflo_markers["message-retry-1"][
+        "delivery_state"
+    ] == "completed"
 
 
 def test_agentflo_whatsapp_unexpected_gateway_error_is_sanitized(monkeypatch):
@@ -2172,9 +2253,12 @@ def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypa
         lambda customer_id, session_id: deepcopy(whatsapp_state)
     )
 
-    def save_whatsapp_order_state(customer_id, session_id, *, offered_menu_items):
+    def save_whatsapp_order_state(
+        customer_id, session_id, *, offered_menu_items, **menu_state
+    ):
         whatsapp_state.clear()
         whatsapp_state["offered_menu_items"] = deepcopy(offered_menu_items)
+        whatsapp_state.update(deepcopy(menu_state))
         return deepcopy(whatsapp_state)
 
     services.agent_sessions.save_whatsapp_order_state = save_whatsapp_order_state
@@ -2461,8 +2545,8 @@ def test_whatsapp_order_status_uses_actual_confirmed_order(monkeypatch):
         }],
     })
     order_id = next(iter(order_repository.data))
-    order_service.update_order_flow(order_id, "set_takeaway")
-    order_service.update_order_flow(order_id, "confirm")
+    order_service.update_order_flow("whatsapp-user", order_id, "set_takeaway")
+    order_service.update_order_flow("whatsapp-user", order_id, "confirm")
     services = IdentityServices(customer_id="whatsapp-user", session_id="whatsapp-session")
     services.orders = order_service
     monkeypatch.setattr(main, "get_services", lambda: services)

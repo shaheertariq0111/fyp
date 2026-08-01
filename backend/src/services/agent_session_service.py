@@ -139,18 +139,32 @@ class AgentSessionService:
         agent_session_id: str,
         *,
         offered_menu_items: list[dict],
+        menu_query: str | None = None,
+        shown_menu_item_ids: list[str] | None = None,
+        menu_has_more: bool = False,
     ) -> dict:
         if not isinstance(offered_menu_items, list) or not offered_menu_items:
             raise ValueError("offered menu items are required")
         updated_at = self._now().isoformat()
+        stored_shown_ids = shown_menu_item_ids or [
+            str(item["product_id"])
+            for item in offered_menu_items
+            if item.get("product_id")
+        ]
         self.repository.update_whatsapp_order_state(
             customer_id,
             agent_session_id,
             offered_menu_items=offered_menu_items,
+            menu_query=menu_query,
+            shown_menu_item_ids=stored_shown_ids,
+            menu_has_more=menu_has_more,
             updated_at=updated_at,
         )
         return {
             "offered_menu_items": offered_menu_items,
+            "whatsapp_menu_query": menu_query or "",
+            "shown_menu_item_ids": stored_shown_ids,
+            "whatsapp_menu_has_more": menu_has_more,
             "whatsapp_order_state_updated_at": updated_at,
         }
 
