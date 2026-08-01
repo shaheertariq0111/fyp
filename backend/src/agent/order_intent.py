@@ -34,6 +34,8 @@ Intent guidance:
   order is or whether it is progressing/coming.
 - These actions only identify intent. Never infer an ETA or order status.
 - A request to browse, choose, or order food is not an order-status action.
+- proceed_without_addon means the customer clearly wants to skip add-ons and
+  continue checkout while the backend is awaiting an add-on decision.
 - customer_name_correction means the customer explicitly corrects or provides
   the name for an order that is awaiting final confirmation. Extract only the
   intended name, never the surrounding sentence. Do not infer or rewrite it.

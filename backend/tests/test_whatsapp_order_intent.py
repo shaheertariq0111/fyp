@@ -110,7 +110,11 @@ class FakeOrders:
                     "currency": "PKR",
                 },
                 "submission_confirmation": "Backend confirmation.",
-                "confirmation_summary": "Backend confirmation summary.",
+                "confirmation_summary": (
+                    f"Backend confirmation summary.\nName: {data['customer_name']}"
+                    if data.get("customer_name")
+                    else "Backend confirmation summary."
+                ),
             },
         )
 
@@ -350,7 +354,7 @@ def test_invalid_name_correction_does_not_update_or_submit(message):
     assert orders.updates == []
     assert orders.order["status"] == "pending_confirmation"
     assert result.tool_calls == []
-    assert "corrected customer name only" in result.text
+    assert "customer name only" in result.text
 
 
 def test_classifier_cannot_invent_a_name_missing_from_customer_message():
@@ -454,17 +458,75 @@ def test_fulfilment_language_executes_only_backend_order_action(message, expecte
     assert intent.requests == []
 
 
-def test_no_thanks_skips_upsell_only_in_upsell_state_without_llm():
+@pytest.mark.parametrize(
+    "message",
+    [
+        "checkout",
+        "continue",
+        "proceed",
+        "skip",
+        "no",
+        "no thanks",
+        "nothing else",
+        "that's all",
+    ],
+)
+def test_addon_proceed_language_skips_upsell_and_starts_fulfilment(message):
     intent = IntentClient("checkout")
     flow, carts, _ = service(
         cart_status="awaiting_upsell_decision",
         intent=intent,
     )
 
-    handle(flow, "no thanks")
+    result = handle(flow, message)
 
     assert [call[1] for call in carts.upsell_calls] == ["get_options", "skip"]
+    assert carts.checkout_calls == ["CART-1"]
+    assert [call["tool_name"] for call in result.tool_calls] == [
+        "handle_cart_upsell",
+        "create_pending_order_from_cart",
+    ]
+    assert "Choose fulfilment" in result.text
     assert intent.requests == []
+
+
+def test_addon_selection_still_adds_selected_backend_item():
+    flow, carts, _ = service(cart_status="awaiting_upsell_decision")
+
+    handle(flow, "Cola")
+
+    assert [call[1] for call in carts.upsell_calls] == ["get_options", "add_item"]
+    assert carts.checkout_calls == []
+
+
+def test_invalid_addon_reply_repeats_backend_options_without_checkout():
+    flow, carts, _ = service(cart_status="awaiting_upsell_decision")
+
+    result = handle(flow, "maybe something different")
+
+    assert [call[1] for call in carts.upsell_calls] == ["get_options"]
+    assert carts.checkout_calls == []
+    assert result.text == "Would you like a drink?"
+
+
+def test_interpreted_addon_progression_uses_state_specific_backend_action():
+    intent = IntentClient("proceed_without_addon")
+    flow, carts, _ = service(
+        cart_status="awaiting_upsell_decision",
+        intent=intent,
+    )
+
+    result = handle(flow, "I do not need anything on the side")
+
+    assert intent.requests[-1].state == "upsell"
+    assert intent.requests[-1].allowed_actions == [
+        "proceed_without_addon",
+        "skip_upsell",
+        "select_upsell",
+    ]
+    assert [call[1] for call in carts.upsell_calls] == ["get_options", "skip"]
+    assert carts.checkout_calls == ["CART-1"]
+    assert "Choose fulfilment" in result.text
 
 
 def test_no_thanks_does_not_become_checkout_outside_upsell_state():
@@ -570,6 +632,68 @@ def test_customer_name_is_saved_only_while_order_awaits_name():
     assert result.tool_calls[0]["result"]["data"]["status"] == (
         "pending_confirmation"
     )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "my name is Marco",
+        "it's Marco",
+        "it is Marco",
+        "name is Marco",
+        "put it under Marco",
+    ],
+)
+def test_customer_name_phrase_saves_only_extracted_name(message):
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_customer_name",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, message)
+
+    assert orders.updates == [
+        ("ORD-REAL", "save_customer_name", "Marco", None)
+    ]
+    assert result.tool_calls[0]["result"]["data"]["status"] == (
+        "pending_confirmation"
+    )
+    assert "Name: Marco" in result.text
+
+
+def test_rejected_suggestion_with_explicit_name_saves_name_in_same_turn():
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_customer_name",
+        "suggested_customer_name": "Profile Alias",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, "no, my name is Marco")
+
+    assert orders.updates == [
+        ("ORD-REAL", "save_customer_name", "Marco", None)
+    ]
+    assert result.tool_calls[0]["result"]["data"]["status"] == (
+        "pending_confirmation"
+    )
+    assert "Name: Marco" in result.text
+
+
+@pytest.mark.parametrize("message", ["my name is yes", "name is no"])
+def test_invalid_explicit_name_is_not_saved_while_awaiting_name(message):
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_customer_name",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, message)
+
+    assert orders.updates == []
+    assert result.tool_calls == []
+    assert "customer name only" in result.text
 
 
 def test_yes_confirms_only_backend_suggested_whatsapp_name():

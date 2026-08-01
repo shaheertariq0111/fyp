@@ -213,6 +213,8 @@ def test_order_and_recommendation_intents_use_backend_menu(message):
     }]
     assert "Backend Spicy Paneer" in result.text
     assert "Backend Hot Chicken" in result.text
+    assert result.text.startswith("Sure, here are some options you can choose from:")
+    assert "PKR 1,200" in result.text
     assert "Spicy Supreme Pizza" not in result.text
     assert "Spicy Buffalo Chicken Flatbread" not in result.text
     assert [item["product_id"] for item in sessions.offered] == [
