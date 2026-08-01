@@ -49,7 +49,9 @@ class FakeOrders:
     def get_active_order_for_session(self, user_id, session_id):
         return deepcopy(self.order)
 
-    def update_order_flow(self, order_id, action, value=None, idempotency_key=None):
+    def update_order_flow(
+        self, user_id, order_id, action, value=None, idempotency_key=None
+    ):
         self.updates.append((order_id, action, value, idempotency_key))
         if action == "save_address" and not OrderService.is_valid_delivery_address(value):
             return ToolResponse.error(
@@ -148,7 +150,7 @@ class FakeCarts:
             agent={},
         )
 
-    def create_pending_order(self, cart_id):
+    def create_pending_order(self, user_id, cart_id):
         self.checkout_calls.append(cart_id)
         return ToolResponse.ok(
             data={
@@ -168,7 +170,7 @@ class FakeCarts:
             },
         )
 
-    def handle_upsell(self, cart_id, action, item_id=None, quantity=1):
+    def handle_upsell(self, user_id, cart_id, action, item_id=None, quantity=1):
         self.upsell_calls.append((cart_id, action, item_id, quantity))
         if action == "get_options":
             self.cart["status"] = "awaiting_upsell_decision"
@@ -243,6 +245,7 @@ def test_latest_order_eta_intent_precedes_menu_routing_and_uses_backend_status()
         "latest_order_eta",
         "latest_order_status",
         "menu_browse",
+        "menu_browse_more",
     ]
     assert orders.status_calls == [("user-1", "ORD-LATEST")]
     assert carts.checkout_calls == []
@@ -541,6 +544,34 @@ def test_no_thanks_does_not_become_checkout_outside_upsell_state():
     assert result.text == "Your cart is ready. Reply checkout to continue."
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["don't confirm", "do not confirm", "don't cancel", "do not cancel"],
+)
+def test_negated_pending_confirmation_commands_never_write(message):
+    flow, _, orders = service(
+        order={"order_id": "ORD-1", "status": "pending_confirmation"}
+    )
+
+    result = handle(flow, message)
+
+    assert orders.updates == []
+    assert "haven't changed the order" in result.text
+
+
+def test_negated_fulfilment_choice_never_writes():
+    intent = IntentClient("delivery")
+    flow, _, orders = service(
+        order={"order_id": "ORD-1", "status": "awaiting_fulfillment_method"},
+        intent=intent,
+    )
+
+    result = handle(flow, "not delivery")
+
+    assert orders.updates == []
+    assert "choose fulfilment" in result.text.lower()
+
+
 def test_low_confidence_message_asks_for_state_specific_clarification():
     intent = IntentClient("checkout", confidence=0.4)
     flow, carts, _ = service(intent=intent)
@@ -712,6 +743,28 @@ def test_yes_confirms_only_backend_suggested_whatsapp_name():
     ]
     assert result.tool_calls[0]["result"]["data"]["customer_name"] == (
         "Profile Alias"
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["don't confirm", "do not confirm", "never confirm"],
+)
+def test_negated_confirm_does_not_accept_suggested_customer_name(message):
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "awaiting_customer_name",
+        "suggested_customer_name": "Profile Alias",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, message)
+
+    assert orders.updates == []
+    assert result.tool_calls == []
+    assert result.text == (
+        "I haven't changed the name. Reply yes to use the suggested name, "
+        "or send the correct name for the order."
     )
 
 

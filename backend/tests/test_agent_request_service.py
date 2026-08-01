@@ -25,7 +25,19 @@ class MemoryAgentRequestRepository:
 
     def claim_idempotency_key(self, marker, *, now_epoch):
         self.idempotency_claims.append((deepcopy(marker), now_epoch))
+        if self.idempotency_result:
+            self.data[marker["PK"]] = deepcopy(marker)
         return self.idempotency_result
+
+    def get_idempotency_key(self, message_id):
+        marker = self.data.get(f"agentflo-whatsapp-message:{message_id}")
+        return deepcopy(marker) if marker else None
+
+    def save_idempotency_key(self, marker):
+        self.data[marker["PK"]] = deepcopy(marker)
+
+    def delete_idempotency_key(self, message_id):
+        self.data.pop(f"agentflo-whatsapp-message:{message_id}", None)
 
 
 def service():
@@ -96,6 +108,7 @@ def test_agentflo_whatsapp_message_claim_uses_exact_key_and_24_hour_ttl(
         "PK": "agentflo-whatsapp-message:wamid.synthetic-1",
         "SK": "IDEMPOTENCY",
         "record_type": "agentflo_whatsapp_message_idempotency",
+        "delivery_state": "processing",
         "created_at": now.isoformat(),
         "expires_at": int(now.timestamp()) + 24 * 60 * 60,
     }
@@ -107,3 +120,26 @@ def test_agentflo_whatsapp_duplicate_claim_is_reported():
     requests.repository.idempotency_result = False
 
     assert not requests.claim_agentflo_whatsapp_message("wamid.synthetic-1")
+
+
+def test_agentflo_whatsapp_response_marker_tracks_delivery_and_release():
+    requests = service()
+    assert requests.claim_agentflo_whatsapp_message("wamid.synthetic-1")
+
+    requests.cache_agentflo_whatsapp_response(
+        "wamid.synthetic-1",
+        request_id="req-1",
+        session_id="session-1",
+        customer_id="customer-1",
+        reply="Authoritative reply.",
+    )
+    ready = requests.get_agentflo_whatsapp_message("wamid.synthetic-1")
+    assert ready["delivery_state"] == "response_ready"
+    assert ready["reply"] == "Authoritative reply."
+
+    requests.complete_agentflo_whatsapp_message("wamid.synthetic-1")
+    completed = requests.get_agentflo_whatsapp_message("wamid.synthetic-1")
+    assert completed["delivery_state"] == "completed"
+
+    requests.release_agentflo_whatsapp_message("wamid.synthetic-1")
+    assert requests.get_agentflo_whatsapp_message("wamid.synthetic-1") is None

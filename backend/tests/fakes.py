@@ -76,12 +76,16 @@ class MemoryCartRepository:
     def create(self, cart):
         self.data[cart["cart_id"]] = deepcopy(cart)
 
-    def find_by_cart_id(self, cart_id):
-        return deepcopy(self.data.get(cart_id))
+    def find_by_cart_id(self, user_id, cart_id):
+        cart = self.data.get(cart_id)
+        if not cart or cart.get("user_id") != user_id:
+            return None
+        return deepcopy(cart)
 
-    def find_by_cart_item_id(self, item_id):
+    def find_by_cart_item_id(self, user_id, item_id):
         return next((deepcopy(cart) for cart in self.data.values()
-                     if item_id in cart["cart_item_ids"]), None)
+                     if cart.get("user_id") == user_id
+                     and item_id in cart["cart_item_ids"]), None)
 
     def find_active_by_session(self, user_id, agent_session_id, terminal_statuses):
         matches = [
@@ -104,7 +108,10 @@ class MemoryOrderRepository:
         self.data = {}
 
     def create(self, order):
+        if order["order_id"] in self.data:
+            return False
         self.data[order["order_id"]] = deepcopy(order)
+        return True
 
     def get_by_order_id(self, order_id):
         return deepcopy(self.data.get(order_id))

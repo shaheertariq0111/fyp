@@ -49,3 +49,24 @@ class AgentRequestRepository:
                 return False
             raise
         return True
+
+    def get_idempotency_key(self, message_id: str) -> dict | None:
+        response = self.table.get_item(
+            Key={
+                "PK": f"agentflo-whatsapp-message:{message_id}",
+                "SK": "IDEMPOTENCY",
+            },
+            ConsistentRead=True,
+        )
+        return from_dynamodb(response.get("Item"))
+
+    def save_idempotency_key(self, marker: dict) -> None:
+        self.table.put_item(Item=to_dynamodb(marker))
+
+    def delete_idempotency_key(self, message_id: str) -> None:
+        self.table.delete_item(
+            Key={
+                "PK": f"agentflo-whatsapp-message:{message_id}",
+                "SK": "IDEMPOTENCY",
+            }
+        )

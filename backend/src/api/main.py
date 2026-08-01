@@ -1932,6 +1932,57 @@ def _agentflo_outbound_response(
     return response
 
 
+def _retry_cached_agentflo_outbound(
+    inbound: WhatsAppInboundMessage,
+    marker: dict[str, Any],
+) -> dict[str, Any]:
+    reply = marker.get("reply")
+    request_id = marker.get("request_id")
+    session_id = marker.get("session_id")
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (reply, request_id, session_id)
+    ):
+        return _agentflo_failure_response()
+    gateway = _agentflo_gateway_service()
+    if not gateway.configured:
+        outbound = {
+            "sent": False,
+            "skipped": True,
+            "reason": "gateway_not_configured",
+        }
+    elif inbound.sender_id is None or inbound.customer_number is None:
+        outbound = {
+            "sent": False,
+            "error_code": "AGENTFLO_OUTBOUND_FAILED",
+        }
+    else:
+        try:
+            outbound = gateway.send_text(
+                customer_number=inbound.customer_number,
+                conversation_id=session_id,
+                sender_id=inbound.sender_id,
+                text=reply,
+                request_id=request_id,
+            )
+        except Exception:
+            outbound = {
+                "sent": False,
+                "error_code": "AGENTFLO_OUTBOUND_FAILED",
+            }
+    response = _agentflo_outbound_response(
+        reply=reply,
+        request_id=request_id,
+        session_id=session_id,
+        outbound=outbound,
+    )
+    if response["success"] and inbound.message_id is not None:
+        get_services().agent_requests.complete_agentflo_whatsapp_message(
+            inbound.message_id
+        )
+    return response
+
+
 def _require_agentflo_webhook_secret(
     request: Request,
     http_request_id: str | None,
@@ -2051,6 +2102,11 @@ def agentflo_whatsapp(
             )
             return _agentflo_failure_response()
         if not claimed:
+            marker = get_services().agent_requests.get_agentflo_whatsapp_message(
+                inbound.message_id
+            )
+            if marker and marker.get("delivery_state") == "response_ready":
+                return _retry_cached_agentflo_outbound(inbound, marker)
             logger.info(
                 "Agentflo WhatsApp duplicate ignored",
                 extra={
@@ -2089,6 +2145,10 @@ def agentflo_whatsapp(
             allow_requested_session_creation=True,
         )
     except Exception as exc:
+        if inbound.message_id is not None:
+            get_services().agent_requests.release_agentflo_whatsapp_message(
+                inbound.message_id
+            )
         logger.error(
             "Agentflo WhatsApp processing failed",
             extra={
@@ -2103,10 +2163,26 @@ def agentflo_whatsapp(
 
     response.headers["X-Agent-Request-ID"] = record["request_id"]
     if record.get("status") != "completed":
+        if inbound.message_id is not None:
+            get_services().agent_requests.release_agentflo_whatsapp_message(
+                inbound.message_id
+            )
         return _agentflo_failure_response()
     completed = _status_response_from_record(record)
     if not isinstance(completed.text, str) or not completed.text.strip():
+        if inbound.message_id is not None:
+            get_services().agent_requests.release_agentflo_whatsapp_message(
+                inbound.message_id
+            )
         return _agentflo_failure_response()
+    if inbound.message_id is not None:
+        get_services().agent_requests.cache_agentflo_whatsapp_response(
+            inbound.message_id,
+            request_id=record["request_id"],
+            session_id=context.agent_session_id,
+            customer_id=context.customer_id,
+            reply=completed.text,
+        )
     gateway = _agentflo_gateway_service()
     if not gateway.configured:
         outbound = {
@@ -2180,12 +2256,17 @@ def agentflo_whatsapp(
         outbound=outbound,
         http_request_id=http_request_id,
     )
-    return _agentflo_outbound_response(
+    outbound_response = _agentflo_outbound_response(
         reply=completed.text,
         request_id=record["request_id"],
         session_id=context.agent_session_id,
         outbound=outbound,
     )
+    if outbound_response["success"] and inbound.message_id is not None:
+        get_services().agent_requests.complete_agentflo_whatsapp_message(
+            inbound.message_id
+        )
+    return outbound_response
 
 
 @app.get("/api/chat/{request_id}", response_model=ChatRequestStatusResponse)

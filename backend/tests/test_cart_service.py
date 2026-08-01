@@ -57,7 +57,7 @@ def test_two_identical_items_share_one_cart_item():
     service, carts, _ = build_services()
     started = service.start_item_customization("user", "session", "configurable", 2)
     cart_id = started.data["cart_id"]
-    response = service.set_customization_mode(cart_id, "same")
+    response = service.set_customization_mode("user", cart_id, "same")
     assert len(response.data["items"]) == 1
     assert response.data["items"][0]["quantity"] == 2
 
@@ -65,9 +65,9 @@ def test_two_identical_items_share_one_cart_item():
 def test_two_separate_items_are_labeled_and_advanced():
     service, _, _ = build_services()
     cart_id = service.start_item_customization("user", "session", "configurable", 2).data["cart_id"]
-    first = service.set_customization_mode(cart_id, "separate")
+    first = service.set_customization_mode("user", cart_id, "separate")
     first_id = first.data["cart_item_id"]
-    second = service.save_choice(first_id, "dynamic-choice", "choice-a")
+    second = service.save_choice("user", first_id, "dynamic-choice", "choice-a")
     assert [item["quantity"] for item in second.data["items"]] == [1, 1]
     assert second.data["label"] == "Item 2 of 2"
 
@@ -78,20 +78,20 @@ def test_upsell_then_pending_order_reprices_server_side():
         "user", "session", "configurable",
         customer_id="customer-1", customer_name="Ava", customer_phone="+923001234567",
     )
-    ready = service.save_choice(started.data["cart_item_id"], "dynamic-choice", "choice-a")
+    ready = service.save_choice("user", started.data["cart_item_id"], "dynamic-choice", "choice-a")
     cart_id = ready.data["cart_id"]
-    options = service.handle_upsell(cart_id, "get_options")
+    options = service.handle_upsell("user", cart_id, "get_options")
     assert options.data["upsell_items"][0]["product_id"] == "addon"
     assert options.data["items"][0]["item_id"] == "configurable"
     assert options.agent["next_action"] == "choose_upsell"
     assert options.agent["upsell_items"][0]["product_id"] == "addon"
-    added = service.handle_upsell(cart_id, "add_item", "addon")
+    added = service.handle_upsell("user", cart_id, "add_item", "addon")
     assert added.next_action == "create_pending_order"
     assert added.data["status"] == "cart_ready"
-    pending = service.create_pending_order(cart_id)
+    pending = service.create_pending_order("user", cart_id)
     assert pending.success
     assert pending.data["status"] == "awaiting_fulfillment_method"
-    assert carts.find_by_cart_id(cart_id)["status"] == "converted_to_order"
+    assert carts.find_by_cart_id("user", cart_id)["status"] == "converted_to_order"
     assert service.get_active_cart("user", "session").data["cart"] is None
     order = next(iter(orders.data.values()))
     assert order["total"] == 19
@@ -103,14 +103,14 @@ def test_upsell_then_pending_order_reprices_server_side():
 def test_checkout_auto_skips_pending_upsell_decision():
     service, carts, orders = build_services()
     started = service.start_item_customization("user", "session", "configurable")
-    ready = service.save_choice(started.data["cart_item_id"], "dynamic-choice", "choice-a")
-    service.handle_upsell(ready.data["cart_id"], "get_options")
+    ready = service.save_choice("user", started.data["cart_item_id"], "dynamic-choice", "choice-a")
+    service.handle_upsell("user", ready.data["cart_id"], "get_options")
 
-    pending = service.create_pending_order(ready.data["cart_id"])
+    pending = service.create_pending_order("user", ready.data["cart_id"])
 
     assert pending.success
     assert pending.data["status"] == "awaiting_fulfillment_method"
-    saved = carts.find_by_cart_id(ready.data["cart_id"])
+    saved = carts.find_by_cart_id("user", ready.data["cart_id"])
     assert saved["status"] == "converted_to_order"
     assert next(iter(orders.data.values()))["items"][0]["name"] == "Configured Item"
 
@@ -118,10 +118,10 @@ def test_checkout_auto_skips_pending_upsell_decision():
 def test_legacy_pending_confirmation_cart_is_not_returned_as_active_cart():
     service, carts, orders = build_services()
     started = service.start_item_customization("user", "session", "configurable")
-    ready = service.save_choice(started.data["cart_item_id"], "dynamic-choice", "choice-a")
-    pending = service.create_pending_order(ready.data["cart_id"])
+    ready = service.save_choice("user", started.data["cart_item_id"], "dynamic-choice", "choice-a")
+    pending = service.create_pending_order("user", ready.data["cart_id"])
     assert pending.success
-    legacy_cart = carts.find_by_cart_id(ready.data["cart_id"])
+    legacy_cart = carts.find_by_cart_id("user", ready.data["cart_id"])
     legacy_cart["status"] = "pending_confirmation"
     carts.data[legacy_cart["cart_id"]] = legacy_cart
 
@@ -136,26 +136,27 @@ def test_legacy_pending_confirmation_cart_is_not_returned_as_active_cart():
 def test_configurable_upsell_is_customized_before_pending_order():
     service, _, orders = build_services()
     started = service.start_item_customization("user", "session", "configurable")
-    ready = service.save_choice(started.data["cart_item_id"], "dynamic-choice", "choice-a")
-    options = service.handle_upsell(ready.data["cart_id"], "get_options")
+    ready = service.save_choice("user", started.data["cart_item_id"], "dynamic-choice", "choice-a")
+    options = service.handle_upsell("user", ready.data["cart_id"], "get_options")
 
     assert [item["product_id"] for item in options.data["upsell_items"]] == [
         "addon", "addon-configurable"
     ]
 
-    upsell_choice = service.handle_upsell(ready.data["cart_id"], "add_item", "addon-configurable")
+    upsell_choice = service.handle_upsell("user", ready.data["cart_id"], "add_item", "addon-configurable")
     assert upsell_choice.next_action == "ask_customization_choice"
     assert upsell_choice.data["field_name"] == "dynamic-choice"
     assert upsell_choice.agent["active_choice"]["field_name"] == "dynamic-choice"
     assert upsell_choice.agent["valid_next_actions"] == ["save_customization_choice"]
 
     upsell_ready = service.save_choice(
+        "user",
         upsell_choice.data["cart_item_id"], "dynamic-choice", "choice-a"
     )
     assert upsell_ready.next_action == "create_pending_order"
     assert upsell_ready.data["status"] == "cart_ready"
 
-    pending = service.create_pending_order(ready.data["cart_id"])
+    pending = service.create_pending_order("user", ready.data["cart_id"])
     assert pending.success
     assert next(iter(orders.data.values()))["total"] == 20
 
@@ -163,12 +164,12 @@ def test_configurable_upsell_is_customized_before_pending_order():
 def test_add_item_to_active_cart_appends_to_existing_cart():
     service, carts, _ = build_services()
     started = service.start_item_customization("user", "session", "configurable")
-    ready = service.save_choice(started.data["cart_item_id"], "dynamic-choice", "choice-a")
+    ready = service.save_choice("user", started.data["cart_item_id"], "dynamic-choice", "choice-a")
 
     added = service.add_item_to_active_cart("user", "session", "addon")
 
     assert added.success
-    saved = carts.find_by_cart_id(ready.data["cart_id"])
+    saved = carts.find_by_cart_id("user", ready.data["cart_id"])
     assert [item["item_id"] for item in saved["items"]] == ["configurable", "addon"]
     assert saved["status"] == "item_ready"
 
@@ -262,6 +263,7 @@ def test_crust_choice_includes_authoritative_price_deltas():
     )
 
     response = service.save_choice(
+        "user",
         started.data["cart_item_id"],
         "pizza-size",
         "medium",
@@ -293,12 +295,14 @@ def test_upsell_prompt_lists_backend_items_and_prices():
         "configurable",
     )
     ready = service.save_choice(
+        "user",
         started.data["cart_item_id"],
         "dynamic-choice",
         "choice-a",
     )
 
     response = service.handle_upsell(
+        "user",
         ready.data["cart_id"],
         "get_options",
     )
@@ -318,3 +322,112 @@ def test_upsell_prompt_lists_backend_items_and_prices():
         "You can choose one add-on or proceed to checkout."
     )
     assert response.user_message == response.agent["upsell_prompt"]
+
+
+def test_cart_mutations_require_the_cart_owner():
+    service, carts, _ = build_services()
+    started = service.start_item_customization(
+        "customer-a", "session-a", "configurable", 2
+    )
+    cart_id = started.data["cart_id"]
+
+    mode_response = service.set_customization_mode(
+        "customer-b", cart_id, "same"
+    )
+    item_id = carts.find_by_cart_id("customer-a", cart_id)["cart_item_ids"]
+    assert mode_response.error_code == "CART_NOT_FOUND"
+    assert item_id == []
+
+    owner_mode = service.set_customization_mode("customer-a", cart_id, "same")
+    choice_response = service.save_choice(
+        "customer-b",
+        owner_mode.data["cart_item_id"],
+        "dynamic-choice",
+        "choice-a",
+    )
+    checkout_response = service.create_pending_order("customer-b", cart_id)
+
+    assert choice_response.error_code == "CART_NOT_FOUND"
+    assert checkout_response.error_code == "CART_NOT_FOUND"
+
+
+def test_repeated_checkout_for_same_cart_creates_one_order():
+    service, _, orders = build_services()
+    started = service.start_item_customization("user", "session", "configurable")
+    ready = service.save_choice(
+        "user", started.data["cart_item_id"], "dynamic-choice", "choice-a"
+    )
+
+    first = service.create_pending_order("user", ready.data["cart_id"])
+    second = service.create_pending_order("user", ready.data["cart_id"])
+
+    assert first.success and second.success
+    assert first.data["order_id"] == second.data["order_id"]
+    assert len(orders.data) == 1
+
+
+def test_repeated_checkout_reports_the_real_advanced_order_state():
+    service, _, orders = build_services()
+    started = service.start_item_customization("user", "session", "configurable")
+    ready = service.save_choice(
+        "user", started.data["cart_item_id"], "dynamic-choice", "choice-a"
+    )
+    pending = service.create_pending_order("user", ready.data["cart_id"])
+    order_id = pending.data["order_id"]
+    service.order_service.update_order_flow("user", order_id, "set_takeaway")
+    service.order_service.update_order_flow("user", order_id, "confirm")
+
+    repeated = service.create_pending_order("user", ready.data["cart_id"])
+
+    assert len(orders.data) == 1
+    assert repeated.data["status"] == "submitted_to_restaurant"
+    assert repeated.next_action == "await_restaurant_update"
+    assert order_id in repeated.user_message
+
+
+def test_multi_select_choices_are_validated_and_fully_priced():
+    service, _, orders = build_services()
+    service.menu.groups["toppings"] = {
+        "option_group_id": "toppings",
+        "name": "Toppings",
+        "type": "multi_select",
+        "required": True,
+        "min_select": 1,
+        "max_select": 2,
+        "question": "Choose up to two toppings",
+        "options": [
+            {"option_id": "cheese", "name": "Cheese", "price_delta": 2},
+            {"option_id": "olives", "name": "Olives", "price_delta": 3},
+            {"option_id": "jalapeno", "name": "Jalapeno", "price_delta": 4},
+        ],
+    }
+    service.menu.items["multi-item"] = {
+        "product_id": "multi-item",
+        "name": "Multi Item",
+        "category": "dynamic",
+        "currency": "CUR",
+        "available": True,
+        "starting_price": 10,
+        "customization_group_ids": ["toppings"],
+        "upsell_group_ids": [],
+    }
+    started = service.start_item_customization("user", "session", "multi-item")
+
+    invalid = service.save_choice(
+        "user",
+        started.data["cart_item_id"],
+        "toppings",
+        ["cheese", "cheese"],
+    )
+    ready = service.save_choice(
+        "user",
+        started.data["cart_item_id"],
+        "toppings",
+        ["cheese", "olives"],
+    )
+    pending = service.create_pending_order("user", ready.data["cart_id"])
+
+    assert invalid.error_code == "INVALID_OPTION_COUNT"
+    assert ready.data["items"][0]["current_price"] == 15
+    assert pending.data["total"] == 15
+    assert next(iter(orders.data.values()))["total"] == 15

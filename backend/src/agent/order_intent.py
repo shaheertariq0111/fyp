@@ -37,6 +37,8 @@ Intent guidance:
 - menu_browse means the customer broadly asks to see or learn about available
   menu items or options. This action only requests authoritative backend menu
   data; never provide or infer item names, categories, prices, or availability.
+- menu_browse_more means the customer asks for another page of the backend menu
+  after menu options were already shown. It never selects an item.
 - proceed_without_addon means the customer clearly wants to skip add-ons and
   continue checkout while the backend is awaiting an add-on decision.
 - customer_name_correction means the customer explicitly corrects or provides

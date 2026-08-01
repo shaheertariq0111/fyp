@@ -198,18 +198,24 @@ def start_cart_item_customization(item_id: str, quantity: int = 1) -> dict:
 @tool
 def set_customization_mode(cart_id: str, mode: str) -> dict:
     """Set multiple units to same or separate customization, validated by the cart service."""
-    return _result("set_customization_mode", lambda: get_services().carts.set_customization_mode(cart_id, mode),
+    context = get_request_context()
+    return _result("set_customization_mode", lambda: get_services().carts.set_customization_mode(context.user_id, cart_id, mode),
                    is_write=True)
 
 
 @tool
-def save_customization_choice(cart_item_id: str, field_name: str,
-                              selected_option_id: str) -> dict:
-    """Save one customization choice and deterministically fetch final-step upsells."""
+def save_customization_choice(
+    cart_item_id: str,
+    field_name: str,
+    selected_option_id: str | list[str],
+) -> dict:
+    """Save authoritative single- or multi-select customization choices."""
 
     def save_and_fetch_upsells() -> ToolResponse:
         services = get_services()
+        context = get_request_context()
         response = services.carts.save_choice(
+            context.user_id,
             cart_item_id,
             field_name,
             selected_option_id,
@@ -226,6 +232,7 @@ def save_customization_choice(cart_item_id: str, field_name: str,
             return response
 
         return services.carts.handle_upsell(
+            context.user_id,
             cart_id,
             "get_options",
         )
@@ -241,15 +248,17 @@ def save_customization_choice(cart_item_id: str, field_name: str,
 def handle_cart_upsell(cart_id: str, action: str, item_id: str | None = None,
                        quantity: int = 1) -> dict:
     """Get, add, or skip data-driven cart upsells through the cart service."""
+    context = get_request_context()
     return _result("handle_cart_upsell", lambda: get_services().carts.handle_upsell(
-        cart_id, action, item_id, quantity
+        context.user_id, cart_id, action, item_id, quantity
     ), is_write=True)
 
 
 @tool
 def create_pending_order_from_cart(cart_id: str) -> dict:
     """Validate and convert a ready chat cart into a pending-confirmation order."""
-    return _result("create_pending_order_from_cart", lambda: get_services().carts.create_pending_order(cart_id),
+    context = get_request_context()
+    return _result("create_pending_order_from_cart", lambda: get_services().carts.create_pending_order(context.user_id, cart_id),
                    is_write=True)
 
 
@@ -257,8 +266,9 @@ def create_pending_order_from_cart(cart_id: str) -> dict:
 def update_order_flow(order_id: str, action: str, value: str | None = None,
                       idempotency_key: str | None = None) -> dict:
     """Apply a validated order action: confirm, cancel, fulfillment, or address."""
+    context = get_request_context()
     return _result("update_order_flow", lambda: get_services().orders.update_order_flow(
-        order_id, action, value, idempotency_key
+        context.user_id, order_id, action, value, idempotency_key
     ), is_write=True)
 
 

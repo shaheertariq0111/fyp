@@ -29,11 +29,20 @@ class Menu:
 
     def search_menu(self, **kwargs):
         self.calls.append(kwargs)
+        excluded = set(kwargs.get("exclude_product_ids") or [])
+        available = [
+            item for item in self.items if item.get("product_id") not in excluded
+        ]
+        limit = kwargs.get("limit")
+        visible = available[:limit] if limit is not None else available
         return ToolResponse.ok(
-            data={"items": deepcopy(self.items)},
+            data={
+                "items": deepcopy(visible),
+                "has_more": len(available) > len(visible),
+            },
             user_message=(
                 "I found current menu options."
-                if self.items
+                if visible
                 else "I couldn't find a matching available menu item."
             ),
             next_action="present_menu_results",
@@ -112,16 +121,34 @@ class Orders:
 class Sessions:
     def __init__(self):
         self.offered = []
+        self.menu_query = None
+        self.shown_menu_item_ids = []
+        self.menu_has_more = False
         self.pending_support = {}
 
     def get_whatsapp_order_state(self, user_id, session_id):
-        return {"offered_menu_items": deepcopy(self.offered)}
+        return {
+            "offered_menu_items": deepcopy(self.offered),
+            "whatsapp_menu_query": self.menu_query,
+            "shown_menu_item_ids": deepcopy(self.shown_menu_item_ids),
+            "whatsapp_menu_has_more": self.menu_has_more,
+        }
 
-    def save_whatsapp_order_state(self, user_id, session_id, *, offered_menu_items):
+    def save_whatsapp_order_state(
+        self, user_id, session_id, *, offered_menu_items, **menu_state
+    ):
         self.offered = deepcopy(offered_menu_items)
+        self.menu_query = menu_state.get("menu_query")
+        self.shown_menu_item_ids = deepcopy(
+            menu_state.get("shown_menu_item_ids") or []
+        )
+        self.menu_has_more = bool(menu_state.get("menu_has_more"))
 
     def clear_whatsapp_order_state(self, user_id, session_id):
         self.offered = []
+        self.menu_query = None
+        self.shown_menu_item_ids = []
+        self.menu_has_more = False
 
     def get_active_support_state(self, user_id, session_id):
         return deepcopy(self.pending_support)
@@ -230,6 +257,7 @@ def test_order_and_recommendation_intents_use_backend_menu(message):
         "query": expected_query,
         "available_only": True,
         "limit": 5,
+        "exclude_product_ids": [],
     }]
     assert "Backend Spicy Paneer" in result.text
     assert "Backend Hot Chicken" in result.text
@@ -261,11 +289,13 @@ def test_natural_menu_browsing_uses_only_authoritative_backend_items(message):
         "latest_order_eta",
         "latest_order_status",
         "menu_browse",
+        "menu_browse_more",
     ]
     assert menu.calls == [{
         "query": None,
         "available_only": True,
         "limit": 5,
+        "exclude_product_ids": [],
     }]
     assert "Backend Spicy Paneer" in result.text
     assert "Backend Hot Chicken" in result.text
@@ -289,9 +319,58 @@ def test_direct_menu_command_uses_backend_without_classifier():
         "query": None,
         "available_only": True,
         "limit": 5,
+        "exclude_product_ids": [],
     }]
     assert "Backend Spicy Paneer" in result.text
     assert "Classic Cheese Pizza" not in result.text
+
+
+def test_show_more_advances_to_unseen_authoritative_menu_items():
+    items = [
+        {
+            "product_id": f"item-{index}",
+            "name": f"Backend Item {index}",
+            "currency": "PKR",
+            "starting_price": 100 + index,
+        }
+        for index in range(1, 8)
+    ]
+    intent = IntentClient("menu_browse_more")
+    flow, menu, carts, sessions, _ = order_flow(items=items, intent=intent)
+
+    first = order_turn(flow, "menu")
+    second = order_turn(flow, "show me more items")
+
+    assert "Backend Item 1" in first.text
+    assert "Backend Item 6" not in first.text
+    assert "Backend Item 6" in second.text
+    assert "Backend Item 1" not in second.text
+    assert menu.calls[1]["exclude_product_ids"] == [
+        "item-1", "item-2", "item-3", "item-4", "item-5"
+    ]
+    assert [item["product_id"] for item in sessions.offered] == [
+        "item-6", "item-7"
+    ]
+    assert carts.started == []
+
+
+def test_specific_menu_request_wins_over_broad_classifier_result():
+    intent = IntentClient("menu_browse")
+    flow, menu, _, _, _ = order_flow(intent=intent)
+
+    order_turn(flow, "recommend something spicy")
+
+    assert menu.calls[0]["query"] == "spicy"
+
+
+def test_negated_number_does_not_select_an_offered_menu_item():
+    flow, _, carts, _, _ = order_flow()
+    order_turn(flow, "menu")
+
+    result = order_turn(flow, "not 1")
+
+    assert carts.started == []
+    assert "Please choose one of these menu items" in result.text
 
 
 def test_recommended_item_selection_uses_saved_backend_product_id():

@@ -47,9 +47,9 @@ def test_delivery_flow_and_duplicate_idempotency():
         "update_order_flow:set_takeaway",
         "update_order_flow:cancel",
     ]
-    delivery = service.update_order_flow(order_id, "set_delivery")
+    delivery = service.update_order_flow("user", order_id, "set_delivery")
     assert delivery.agent["required_input"] == "delivery_address"
-    addressed = service.update_order_flow(order_id, "save_address", "Configured address")
+    addressed = service.update_order_flow("user", order_id, "save_address", "Configured address")
     assert addressed.data["status"] == "pending_confirmation"
     assert addressed.data["delivery_address"] == "Configured address"
     assert addressed.agent["order_summary"]["delivery_address"] == "Configured address"
@@ -58,8 +58,8 @@ def test_delivery_flow_and_duplicate_idempotency():
     assert "Fulfilment: Delivery" in addressed.user_message
     assert "Delivery address: Configured address" in addressed.user_message
     assert "Should I confirm this order?" in addressed.user_message
-    submitted = service.update_order_flow(order_id, "confirm", idempotency_key="key")
-    duplicate = service.update_order_flow(order_id, "confirm", idempotency_key="key")
+    submitted = service.update_order_flow("user", order_id, "confirm", idempotency_key="key")
+    duplicate = service.update_order_flow("user", order_id, "confirm", idempotency_key="key")
     assert submitted.data["status"] == "submitted_to_restaurant"
     assert submitted.data["delivery_address"] == "Configured address"
     assert submitted.agent["next_action"] == "await_restaurant_update"
@@ -79,7 +79,7 @@ def test_takeaway_skips_address():
          "items": [{"item_id": "item", "name": "Item", "quantity": 1,
                     "selected_options": {}, "current_price": 10}]}
     ).data["order_id"]
-    response = service.update_order_flow(order_id, "set_takeaway")
+    response = service.update_order_flow("user", order_id, "set_takeaway")
     assert response.data["status"] == "pending_confirmation"
     assert response.agent["required_input"] == "confirm_or_cancel"
 
@@ -126,7 +126,7 @@ def _whatsapp_order(*, confirmed_name=None, profile_name=None):
 def test_whatsapp_takeaway_requires_customer_name_before_confirmation():
     service, repository, _, order_id = _whatsapp_order()
 
-    response = service.update_order_flow(order_id, "set_takeaway")
+    response = service.update_order_flow("cust-1", order_id, "set_takeaway")
 
     assert response.data["status"] == "awaiting_customer_name"
     assert response.user_message == "Can I have your name for the order?"
@@ -136,7 +136,7 @@ def test_whatsapp_takeaway_requires_customer_name_before_confirmation():
 def test_confirmed_profile_name_is_reused_for_whatsapp_order_snapshot():
     service, repository, _, order_id = _whatsapp_order(confirmed_name="Ava Khan")
 
-    response = service.update_order_flow(order_id, "set_takeaway")
+    response = service.update_order_flow("cust-1", order_id, "set_takeaway")
 
     assert response.data["status"] == "pending_confirmation"
     assert response.data["customer_name"] == "Ava Khan"
@@ -147,7 +147,7 @@ def test_confirmed_profile_name_is_reused_for_whatsapp_order_snapshot():
 def test_whatsapp_profile_name_is_suggested_but_not_snapshotted():
     service, repository, _, order_id = _whatsapp_order(profile_name="Profile Alias")
 
-    response = service.update_order_flow(order_id, "set_takeaway")
+    response = service.update_order_flow("cust-1", order_id, "set_takeaway")
 
     assert response.data["status"] == "awaiting_customer_name"
     assert response.data["customer_name"] is None
@@ -166,8 +166,8 @@ def test_legacy_whatsapp_display_name_is_suggested_during_checkout():
         "addresses": [],
     }
 
-    response = service.update_order_flow(order_id, "set_takeaway")
-    confirmed = service.update_order_flow(order_id, "confirm_customer_name")
+    response = service.update_order_flow("cust-1", order_id, "set_takeaway")
+    confirmed = service.update_order_flow("cust-1", order_id, "confirm_customer_name")
     profile = customers.get_profile("cust-1").data["customer"]
 
     assert response.data["status"] == "awaiting_customer_name"
@@ -186,9 +186,9 @@ def test_confirming_whatsapp_profile_name_updates_profile_and_order():
     service, repository, customers, order_id = _whatsapp_order(
         profile_name="Profile Alias"
     )
-    service.update_order_flow(order_id, "set_takeaway")
+    service.update_order_flow("cust-1", order_id, "set_takeaway")
 
-    response = service.update_order_flow(order_id, "confirm_customer_name")
+    response = service.update_order_flow("cust-1", order_id, "confirm_customer_name")
 
     profile = customers.get_profile("cust-1").data["customer"]
     assert response.data["status"] == "pending_confirmation"
@@ -203,10 +203,10 @@ def test_rejected_whatsapp_profile_name_cannot_be_confirmed_later():
     service, repository, _, order_id = _whatsapp_order(
         profile_name="Profile Alias"
     )
-    service.update_order_flow(order_id, "set_takeaway")
+    service.update_order_flow("cust-1", order_id, "set_takeaway")
 
-    rejected = service.update_order_flow(order_id, "reject_customer_name")
-    confirmed = service.update_order_flow(order_id, "confirm_customer_name")
+    rejected = service.update_order_flow("cust-1", order_id, "reject_customer_name")
+    confirmed = service.update_order_flow("cust-1", order_id, "confirm_customer_name")
 
     assert rejected.user_message == "Can I have your name for the order?"
     assert rejected.data["suggested_customer_name"] is None
@@ -217,9 +217,10 @@ def test_rejected_whatsapp_profile_name_cannot_be_confirmed_later():
 
 def test_customer_provided_whatsapp_name_updates_profile_and_order():
     service, _, customers, order_id = _whatsapp_order()
-    service.update_order_flow(order_id, "set_takeaway")
+    service.update_order_flow("cust-1", order_id, "set_takeaway")
 
     response = service.update_order_flow(
+        "cust-1",
         order_id,
         "save_customer_name",
         "Ava Khan",
@@ -241,7 +242,7 @@ def test_whatsapp_order_cannot_submit_without_confirmed_name():
         "customer_name_confirmed": False,
     })
 
-    response = service.update_order_flow(order_id, "confirm")
+    response = service.update_order_flow("cust-1", order_id, "confirm")
 
     assert response.success is False
     assert response.error_code == "CUSTOMER_NAME_REQUIRED"
@@ -252,9 +253,10 @@ def test_pending_whatsapp_name_correction_regenerates_summary_before_submit():
     service, repository, customers, order_id = _whatsapp_order(
         confirmed_name="shaheer"
     )
-    service.update_order_flow(order_id, "set_takeaway")
+    service.update_order_flow("cust-1", order_id, "set_takeaway")
 
     corrected = service.update_order_flow(
+        "cust-1",
         order_id,
         "save_customer_name",
         "Shaheer Tariq",
@@ -268,7 +270,7 @@ def test_pending_whatsapp_name_correction_regenerates_summary_before_submit():
         "Shaheer Tariq"
     )
 
-    submitted = service.update_order_flow(order_id, "confirm")
+    submitted = service.update_order_flow("cust-1", order_id, "confirm")
 
     assert submitted.data["status"] == "submitted_to_restaurant"
 
@@ -287,7 +289,7 @@ def _delivery_order():
          "items": [{"item_id": "item", "name": "Item", "quantity": 1,
                     "selected_options": {}, "current_price": 10}]}
     ).data["order_id"]
-    service.update_order_flow(order_id, "set_delivery")
+    service.update_order_flow("user", order_id, "set_delivery")
     return service, repository, order_id
 
 
@@ -298,7 +300,7 @@ def _delivery_order():
 def test_delivery_address_rejects_refusals_and_short_placeholders(address):
     service, repository, order_id = _delivery_order()
 
-    response = service.update_order_flow(order_id, "save_address", address)
+    response = service.update_order_flow("user", order_id, "save_address", address)
 
     assert not response.success
     assert response.error_code == "INVALID_DELIVERY_ADDRESS"
@@ -323,7 +325,7 @@ def test_delivery_address_rejects_refusals_and_short_placeholders(address):
 def test_delivery_address_accepts_realistic_addresses(address):
     service, repository, order_id = _delivery_order()
 
-    response = service.update_order_flow(order_id, "save_address", address)
+    response = service.update_order_flow("user", order_id, "save_address", address)
 
     assert response.success
     assert response.data["status"] == "pending_confirmation"
@@ -336,7 +338,7 @@ def test_delivery_order_with_legacy_invalid_address_cannot_be_confirmed():
     repository.data[order_id]["status"] = "pending_confirmation"
     repository.data[order_id]["delivery_address"] = "No"
 
-    response = service.update_order_flow(order_id, "confirm")
+    response = service.update_order_flow("user", order_id, "confirm")
 
     assert not response.success
     assert response.error_code == "INVALID_DELIVERY_ADDRESS"
@@ -346,7 +348,7 @@ def test_delivery_order_with_legacy_invalid_address_cannot_be_confirmed():
 def test_delivery_address_step_can_switch_to_takeaway():
     service, repository, order_id = _delivery_order()
 
-    response = service.update_order_flow(order_id, "set_takeaway")
+    response = service.update_order_flow("user", order_id, "set_takeaway")
 
     assert response.success
     assert response.data["status"] == "pending_confirmation"
@@ -368,9 +370,9 @@ def test_legacy_submit_action_is_not_supported():
          "items": [{"item_id": "item", "name": "Item", "quantity": 1,
                     "selected_options": {}, "current_price": 10}]}
     ).data["order_id"]
-    service.update_order_flow(order_id, "set_takeaway")
+    service.update_order_flow("user", order_id, "set_takeaway")
 
-    response = service.update_order_flow(order_id, "submit")
+    response = service.update_order_flow("user", order_id, "submit")
 
     assert not response.success
     assert response.error_code == "INVALID_ORDER_STATE"
@@ -422,8 +424,10 @@ def test_saved_customer_address_can_be_reused_as_order_snapshot():
                        "selected_options": {}, "current_price": 10}]}
     order_id = service.create_pending_from_cart(cart).data["order_id"]
 
-    service.update_order_flow(order_id, "set_delivery")
-    addressed = service.update_order_flow(order_id, "save_address", saved["address_text"])
+    service.update_order_flow("cust-1", order_id, "set_delivery")
+    addressed = service.update_order_flow(
+        "cust-1", order_id, "save_address", saved["address_text"]
+    )
     customers.save_address("cust-1", address_text="New default address", label="Office")
 
     assert addressed.data["delivery_address"] == "Original delivery address"
@@ -443,8 +447,8 @@ def test_admin_order_status_transitions_append_history():
          "items": [{"item_id": "item", "name": "Item", "quantity": 1,
                     "selected_options": {}, "current_price": 10}]}
     ).data["order_id"]
-    service.update_order_flow(order_id, "set_takeaway")
-    service.update_order_flow(order_id, "confirm")
+    service.update_order_flow("user", order_id, "set_takeaway")
+    service.update_order_flow("user", order_id, "confirm")
 
     accepted = service.admin_update_status(order_id, "accept", "Kitchen accepted")
     preparing = service.admin_update_status(order_id, "start_preparing")
@@ -470,8 +474,8 @@ def test_admin_invalid_delivery_specific_transition_is_rejected():
          "items": [{"item_id": "item", "name": "Item", "quantity": 1,
                     "selected_options": {}, "current_price": 10}]}
     ).data["order_id"]
-    service.update_order_flow(order_id, "set_takeaway")
-    service.update_order_flow(order_id, "confirm")
+    service.update_order_flow("user", order_id, "set_takeaway")
+    service.update_order_flow("user", order_id, "confirm")
     service.admin_update_status(order_id, "accept")
     service.admin_update_status(order_id, "start_preparing")
 
@@ -535,6 +539,7 @@ def test_takeaway_confirmation_summary_uses_authoritative_prices():
     )
 
     response = service.update_order_flow(
+        "user",
         pending.data["order_id"],
         "set_takeaway",
     )
@@ -601,6 +606,7 @@ def test_price_change_requires_customer_reconfirmation_before_submission():
     order_id = pending.data["order_id"]
 
     initial_summary = service.update_order_flow(
+        "user",
         order_id,
         "set_takeaway",
     )
@@ -612,6 +618,7 @@ def test_price_change_requires_customer_reconfirmation_before_submission():
     menu.items["item"]["starting_price"] = 1200
 
     changed_price = service.update_order_flow(
+        "user",
         order_id,
         "confirm",
         idempotency_key="confirm-key",
@@ -629,6 +636,7 @@ def test_price_change_requires_customer_reconfirmation_before_submission():
     assert repository.get_by_order_id(order_id)["idempotency_keys"] == []
 
     submitted = service.update_order_flow(
+        "user",
         order_id,
         "confirm",
         idempotency_key="confirm-key",
@@ -687,8 +695,9 @@ def test_successful_confirmation_returns_customer_order_tracking_message():
     service, _, create_order = _build_customer_tracking_service()
     order_id = create_order()
 
-    service.update_order_flow(order_id, "set_takeaway")
+    service.update_order_flow("user", order_id, "set_takeaway")
     response = service.update_order_flow(
+        "user",
         order_id,
         "confirm",
         idempotency_key="confirm-key",
@@ -717,14 +726,16 @@ def test_duplicate_confirmation_repeats_customer_tracking_message():
     service, _, create_order = _build_customer_tracking_service()
     order_id = create_order()
 
-    service.update_order_flow(order_id, "set_takeaway")
+    service.update_order_flow("user", order_id, "set_takeaway")
 
     submitted = service.update_order_flow(
+        "user",
         order_id,
         "confirm",
         idempotency_key="confirm-key",
     )
     duplicate = service.update_order_flow(
+        "user",
         order_id,
         "confirm",
         idempotency_key="confirm-key",
@@ -811,3 +822,30 @@ def test_explicit_order_id_does_not_reveal_another_customers_order():
     assert not response.success
     assert response.error_code == "ORDER_NOT_FOUND"
     assert response.user_message == "I couldn't find that order."
+
+
+def test_order_mutation_does_not_accept_another_customers_order_id():
+    service, repository, create_order = _build_customer_tracking_service()
+    order_id = create_order(user_id="customer-a")
+    original = repository.get("customer-a", order_id)
+
+    response = service.update_order_flow(
+        "customer-b", order_id, "set_takeaway"
+    )
+
+    assert response.error_code == "ORDER_NOT_FOUND"
+    assert repository.get("customer-a", order_id) == original
+
+
+def test_invalid_delivery_acknowledgement_does_not_change_order():
+    service, repository, create_order = _build_customer_tracking_service()
+    order_id = create_order(user_id="user")
+    service.update_order_flow("user", order_id, "set_delivery")
+    before = repository.get("user", order_id)
+
+    response = service.update_order_flow(
+        "user", order_id, "save_address", "no thanks"
+    )
+
+    assert response.error_code == "INVALID_DELIVERY_ADDRESS"
+    assert repository.get("user", order_id) == before

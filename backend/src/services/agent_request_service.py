@@ -78,6 +78,7 @@ class AgentRequestService:
             "PK": f"agentflo-whatsapp-message:{message_id}",
             "SK": "IDEMPOTENCY",
             "record_type": "agentflo_whatsapp_message_idempotency",
+            "delivery_state": "processing",
             "created_at": now.isoformat(),
             "expires_at": now_epoch
             + AGENTFLO_WHATSAPP_IDEMPOTENCY_TTL_HOURS * 60 * 60,
@@ -86,6 +87,42 @@ class AgentRequestService:
             marker,
             now_epoch=now_epoch,
         )
+
+    def get_agentflo_whatsapp_message(self, message_id: str) -> dict | None:
+        return self.repository.get_idempotency_key(message_id)
+
+    def cache_agentflo_whatsapp_response(
+        self,
+        message_id: str,
+        *,
+        request_id: str,
+        session_id: str,
+        customer_id: str,
+        reply: str,
+    ) -> None:
+        marker = self.repository.get_idempotency_key(message_id)
+        if marker is None:
+            raise ValueError("AGENTFLO_WHATSAPP_MARKER_NOT_FOUND")
+        marker.update({
+            "delivery_state": "response_ready",
+            "request_id": request_id,
+            "session_id": session_id,
+            "customer_id": customer_id,
+            "reply": reply,
+            "updated_at": self._now().isoformat(),
+        })
+        self.repository.save_idempotency_key(marker)
+
+    def complete_agentflo_whatsapp_message(self, message_id: str) -> None:
+        marker = self.repository.get_idempotency_key(message_id)
+        if marker is None:
+            return
+        marker["delivery_state"] = "completed"
+        marker["updated_at"] = self._now().isoformat()
+        self.repository.save_idempotency_key(marker)
+
+    def release_agentflo_whatsapp_message(self, message_id: str) -> None:
+        self.repository.delete_idempotency_key(message_id)
 
     def _get_required(self, request_id: str) -> dict[str, Any]:
         request = self.repository.get(request_id)

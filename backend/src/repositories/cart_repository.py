@@ -1,6 +1,11 @@
-from boto3.dynamodb.conditions import Attr
+from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
 
 from .base import from_dynamodb, to_dynamodb
+
+
+class CartVersionConflictError(RuntimeError):
+    pass
 
 
 class CartRepository:
@@ -16,21 +21,18 @@ class CartRepository:
         )
         return from_dynamodb(response.get("Item"))
 
-    def find_by_cart_id(self, cart_id: str) -> dict | None:
-        kwargs = {"FilterExpression": Attr("cart_id").eq(cart_id)}
-        while True:
-            response = self.table.scan(**kwargs)
-            items = response.get("Items", [])
-            if items:
-                return from_dynamodb(items[0])
-            if "LastEvaluatedKey" not in response:
-                return None
-            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    def find_by_cart_id(self, user_id: str, cart_id: str) -> dict | None:
+        return self.get(user_id, cart_id)
 
-    def find_by_cart_item_id(self, cart_item_id: str) -> dict | None:
-        kwargs = {"FilterExpression": Attr("cart_item_ids").contains(cart_item_id)}
+    def find_by_cart_item_id(self, user_id: str, cart_item_id: str) -> dict | None:
+        kwargs = {
+            "KeyConditionExpression": (
+                Key("PK").eq(user_id) & Key("SK").begins_with("CART#")
+            ),
+            "FilterExpression": Attr("cart_item_ids").contains(cart_item_id),
+        }
         while True:
-            response = self.table.scan(**kwargs)
+            response = self.table.query(**kwargs)
             items = response.get("Items", [])
             if items:
                 return from_dynamodb(items[0])
@@ -45,15 +47,17 @@ class CartRepository:
         terminal_statuses: set[str],
     ) -> dict | None:
         kwargs = {
+            "KeyConditionExpression": (
+                Key("PK").eq(user_id) & Key("SK").begins_with("CART#")
+            ),
             "FilterExpression": (
-                Attr("user_id").eq(user_id)
-                & Attr("agent_session_id").eq(agent_session_id)
+                Attr("agent_session_id").eq(agent_session_id)
                 & ~Attr("status").is_in(list(terminal_statuses))
             )
         }
         matches: list[dict] = []
         while True:
-            response = self.table.scan(**kwargs)
+            response = self.table.query(**kwargs)
             matches.extend(from_dynamodb(item) for item in response.get("Items", []))
             if "LastEvaluatedKey" not in response:
                 if not matches:
@@ -64,9 +68,17 @@ class CartRepository:
     def save(self, cart: dict, expected_version: int) -> None:
         updated = dict(cart)
         updated["version"] = expected_version + 1
-        self.table.put_item(
-            Item=to_dynamodb(updated),
-            ConditionExpression="#version = :expected",
-            ExpressionAttributeNames={"#version": "version"},
-            ExpressionAttributeValues={":expected": expected_version},
-        )
+        try:
+            self.table.put_item(
+                Item=to_dynamodb(updated),
+                ConditionExpression="#version = :expected",
+                ExpressionAttributeNames={"#version": "version"},
+                ExpressionAttributeValues={":expected": expected_version},
+            )
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                raise CartVersionConflictError("cart version changed") from exc
+            raise

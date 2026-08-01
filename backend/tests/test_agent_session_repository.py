@@ -104,6 +104,9 @@ def test_whatsapp_order_state_uses_owner_bound_session_attributes():
         "cust-1",
         "session-1",
         offered_menu_items=[{"product_id": "pepperoni-passion"}],
+        menu_query="pepperoni",
+        shown_menu_item_ids=["pepperoni-hot", "pepperoni-passion"],
+        menu_has_more=True,
         updated_at="2026-07-31T10:01:00+00:00",
     )
 
@@ -112,10 +115,19 @@ def test_whatsapp_order_state_uses_owner_bound_session_attributes():
         "whatsapp_order_state_updated_at": "2026-07-31T10:00:00+00:00",
     }
     call = table.update_calls[0]
-    assert call["UpdateExpression"] == "SET #items = :items, #updated_at = :updated_at"
+    assert call["UpdateExpression"] == (
+        "SET #items = :items, #menu_query = :menu_query, "
+        "#shown_ids = :shown_ids, #has_more = :has_more, "
+        "#updated_at = :updated_at"
+    )
     assert call["ExpressionAttributeValues"][":items"] == [
         {"product_id": "pepperoni-passion"}
     ]
+    assert call["ExpressionAttributeValues"][":menu_query"] == "pepperoni"
+    assert call["ExpressionAttributeValues"][":shown_ids"] == [
+        "pepperoni-hot", "pepperoni-passion"
+    ]
+    assert call["ExpressionAttributeValues"][":has_more"] is True
     assert "#customer_id = :customer_id" in call["ConditionExpression"]
     assert "#agent_session_id = :agent_session_id" in call["ConditionExpression"]
 
@@ -129,12 +141,17 @@ def test_clear_whatsapp_order_state_removes_only_flow_attributes():
     repository.clear_whatsapp_order_state("cust-1", "session-1")
 
     call = table.update_calls[0]
-    assert call["UpdateExpression"] == "REMOVE #items, #updated_at"
+    assert call["UpdateExpression"] == (
+        "REMOVE #items, #menu_query, #shown_ids, #has_more, #updated_at"
+    )
     assert set(call["ExpressionAttributeNames"].values()) == {
         "PK",
         "customer_id",
         "agent_session_id",
         "offered_menu_items",
+        "whatsapp_menu_query",
+        "shown_menu_item_ids",
+        "whatsapp_menu_has_more",
         "whatsapp_order_state_updated_at",
     }
 

@@ -12,7 +12,7 @@ class MenuService:
         self.branch_id = branch_id
 
     def search_menu(self, query=None, category=None, tags=None, max_price=None,
-                    available_only=True, limit=None) -> ToolResponse:
+                    available_only=True, limit=None, exclude_product_ids=None) -> ToolResponse:
         items = self.repository.search(available_only=available_only)
         normalized_query = query.casefold() if query else None
         required_tags = {tag.casefold() for tag in tags or []}
@@ -47,10 +47,17 @@ class MenuService:
             matches.append((match_score, self._public_item(item)))
         matches.sort(key=lambda entry: (-entry[0], self._recommendation_sort_key(entry[1])))
         matches = [item for _, item in matches]
+        excluded = {str(value) for value in exclude_product_ids or [] if value}
+        if excluded:
+            matches = [
+                item for item in matches
+                if str(item.get("product_id")) not in excluded
+            ]
+        total_matches = len(matches)
         if limit is not None:
             matches = matches[:limit]
         return ToolResponse.ok(
-            data={"items": matches},
+            data={"items": matches, "has_more": total_matches > len(matches)},
             user_message=("I found current menu options." if matches
                           else "I couldn't find a matching available menu item."),
             next_action="present_menu_results",

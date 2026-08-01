@@ -35,6 +35,11 @@ INVALID_DELIVERY_ADDRESSES = {
     "not now",
     "later",
     "cancel address",
+    "no thanks",
+    "yes please",
+    "confirm",
+    "takeaway",
+    "delivery",
 }
 INVALID_DELIVERY_ADDRESS_MESSAGE = (
     "I still need a valid delivery address for delivery. Please send your full "
@@ -68,7 +73,11 @@ class OrderService:
         return datetime.now(timezone.utc).isoformat()
 
     def create_pending_from_cart(self, cart: dict) -> ToolResponse:
-        order_id = f"ORD-{uuid.uuid4()}"
+        cart_identity = f"{cart['user_id']}:{cart['cart_id']}"
+        order_id = f"ORD-{uuid.uuid5(uuid.NAMESPACE_URL, cart_identity)}"
+        existing = self.orders.get(cart["user_id"], order_id)
+        if existing is not None:
+            return self._pending_order_response(existing)
         now = self._now()
         items = [{
             "item_id": item["item_id"], "name": item["name"],
@@ -93,20 +102,45 @@ class OrderService:
             "fulfillment_method": None, "delivery_address": None,
             "idempotency_keys": [], "version": 1, "created_at": now, "updated_at": now,
         }
-        self.orders.create(order)
-        return ToolResponse.ok(data=self._public(order),
-                               user_message="The order is ready for fulfillment details.",
-                               next_action="ask_fulfillment_method",
-                               agent=self._order_agent(
-                                   order,
-                                   "ask_fulfillment_method",
-                                   required_input="fulfillment_method",
-                                   instruction="Summarize this order and ask the customer to choose delivery or takeaway before final confirmation.",
-                               ))
+        if not self.orders.create(order):
+            existing = self.orders.get(cart["user_id"], order_id)
+            if existing is None:
+                return ToolResponse.error(
+                    error_code="ORDER_CREATE_CONFLICT",
+                    user_message="I couldn't safely create that order right now.",
+                    retryable=True,
+                )
+            order = existing
+        return self._pending_order_response(order)
 
-    def update_order_flow(self, order_id: str, action: str, value: str | None = None,
+    def _pending_order_response(self, order: dict) -> ToolResponse:
+        status = order["status"]
+        next_action = self._next_action(status)
+        if status == "awaiting_fulfillment_method":
+            user_message = "The order is ready for fulfillment details."
+        elif status == "pending_confirmation":
+            user_message = self._confirmation_summary(order)
+        elif status == "awaiting_customer_name":
+            user_message = self._customer_name_prompt(order)
+        elif status == "submitted_to_restaurant":
+            user_message = self._submission_confirmation(order)
+        else:
+            user_message = self._status_message(order)
+        return ToolResponse.ok(
+            data=self._public(order),
+            user_message=user_message,
+            next_action=next_action,
+            agent=self._order_agent(
+                order,
+                next_action,
+                required_input=self._required_input(status),
+                instruction=self._instruction(status),
+            ),
+        )
+
+    def update_order_flow(self, user_id: str, order_id: str, action: str, value: str | None = None,
                           idempotency_key: str | None = None) -> ToolResponse:
-        order = self.orders.get_by_order_id(order_id)
+        order = self.orders.get(user_id, order_id)
         if not order:
             return ToolResponse.error(error_code="ORDER_NOT_FOUND", user_message="I couldn't find that order.")
         if idempotency_key and idempotency_key in order.get("idempotency_keys", []):
@@ -513,12 +547,33 @@ class OrderService:
                       if (group := self.menu.get_option_group(group_id))]
             for group in groups:
                 selected = item.get("customizations", {}).get(group["option_group_id"])
-                option = next((entry for entry in group.get("options", [])
-                               if entry.get("option_id") == selected), None)
-                if group.get("required") and not option:
+                selected_ids = selected if isinstance(selected, list) else [selected]
+                selected_ids = [value for value in selected_ids if value]
+                minimum = self._selection_limit(group, "min")
+                maximum = self._selection_limit(group, "max")
+                if (
+                    (group.get("required") and not selected_ids)
+                    or len(set(selected_ids)) != len(selected_ids)
+                    or len(selected_ids) < minimum
+                    or (maximum and len(selected_ids) > maximum)
+                    or (group.get("type") == "single_select" and len(selected_ids) != 1)
+                ):
                     return ToolResponse.error(error_code="INVALID_CUSTOMIZATION",
                                               user_message="An order customization is no longer valid.")
-                if option:
+                for selected_id in selected_ids:
+                    option = next(
+                        (
+                            entry
+                            for entry in group.get("options", [])
+                            if entry.get("option_id") == selected_id
+                        ),
+                        None,
+                    )
+                    if not option:
+                        return ToolResponse.error(
+                            error_code="INVALID_CUSTOMIZATION",
+                            user_message="An order customization is no longer valid.",
+                        )
                     if "price_key" in option:
                         unit = source.get("base_prices", {}).get(option["price_key"], unit)
                     unit += option.get("price_delta", 0)
@@ -528,6 +583,19 @@ class OrderService:
         order["subtotal"] = total
         order["total"] = total + (order.get("delivery_fee") or 0)
         return None
+
+    @staticmethod
+    def _selection_limit(group, boundary: str) -> int:
+        keys = (
+            ("min_select", "min_selections")
+            if boundary == "min"
+            else ("max_select", "max_selections")
+        )
+        for key in keys:
+            value = group.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+        return 0
 
     def _validate_submission(self, order):
         method = order.get("fulfillment_method")

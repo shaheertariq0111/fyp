@@ -1237,6 +1237,7 @@ def test_save_customization_choice_fetches_upsells_after_final_required_choice(
     class CartStub:
         def save_choice(
             self,
+            user_id,
             cart_item_id,
             field_name,
             selected_option_id,
@@ -1244,6 +1245,7 @@ def test_save_customization_choice_fetches_upsells_after_final_required_choice(
             calls.append(
                 (
                     "save_choice",
+                    user_id,
                     cart_item_id,
                     field_name,
                     selected_option_id,
@@ -1268,6 +1270,7 @@ def test_save_customization_choice_fetches_upsells_after_final_required_choice(
 
         def handle_upsell(
             self,
+            user_id,
             cart_id,
             action,
             item_id=None,
@@ -1276,6 +1279,7 @@ def test_save_customization_choice_fetches_upsells_after_final_required_choice(
             calls.append(
                 (
                     "handle_upsell",
+                    user_id,
                     cart_id,
                     action,
                     item_id,
@@ -1323,12 +1327,14 @@ def test_save_customization_choice_fetches_upsells_after_final_required_choice(
     assert calls == [
         (
             "save_choice",
+            "trusted-user",
             "CARTITEM-1",
             "pizza-crust",
             "regular",
         ),
         (
             "handle_upsell",
+            "trusted-user",
             "CART-1",
             "get_options",
             None,
@@ -1349,6 +1355,7 @@ def test_save_customization_choice_preserves_non_upsell_response(
     class CartStub:
         def save_choice(
             self,
+            user_id,
             cart_item_id,
             field_name,
             selected_option_id,

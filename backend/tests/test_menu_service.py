@@ -55,6 +55,23 @@ def test_search_menu_limit_caps_returned_items_after_sorting():
     assert [entry["product_id"] for entry in result.data["items"]] == [
         "item-7", "item-6", "item-5", "item-4", "item-3",
     ]
+    assert result.data["has_more"] is True
+
+
+def test_search_menu_excludes_items_already_shown():
+    menu = service([
+        item(f"item-{index}", score=index, starting_price=10 + index)
+        for index in range(7)
+    ])
+
+    first = menu.search_menu(limit=5)
+    shown = [entry["product_id"] for entry in first.data["items"]]
+    second = menu.search_menu(limit=5, exclude_product_ids=shown)
+
+    assert [entry["product_id"] for entry in second.data["items"]] == [
+        "item-1", "item-0"
+    ]
+    assert second.data["has_more"] is False
 
 
 def test_search_matches_tags_and_metadata_best_for():
