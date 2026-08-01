@@ -242,6 +242,7 @@ def test_latest_order_eta_intent_precedes_menu_routing_and_uses_backend_status()
     assert intent.requests[0].allowed_actions == [
         "latest_order_eta",
         "latest_order_status",
+        "menu_browse",
     ]
     assert orders.status_calls == [("user-1", "ORD-LATEST")]
     assert carts.checkout_calls == []

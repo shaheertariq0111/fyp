@@ -34,6 +34,9 @@ Intent guidance:
   order is or whether it is progressing/coming.
 - These actions only identify intent. Never infer an ETA or order status.
 - A request to browse, choose, or order food is not an order-status action.
+- menu_browse means the customer broadly asks to see or learn about available
+  menu items or options. This action only requests authoritative backend menu
+  data; never provide or infer item names, categories, prices, or availability.
 - proceed_without_addon means the customer clearly wants to skip add-ons and
   continue checkout while the backend is awaiting an add-on decision.
 - customer_name_correction means the customer explicitly corrects or provides
