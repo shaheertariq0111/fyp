@@ -78,6 +78,11 @@ SKIP_PATTERN = re.compile(
     r"\b(?:no|none|skip|without|no\s+thanks|nothing\s+else)\b",
     re.IGNORECASE,
 )
+PROCEED_WITHOUT_ADDON_PATTERN = re.compile(
+    r"^(?:checkout|check\s*out|continue|proceed|skip|no|no\s+thanks|"
+    r"nothing\s+else|that\s+s\s+all|thats\s+all)$",
+    re.IGNORECASE,
+)
 DELIVERY_PATTERN = re.compile(r"\bdelivery\b", re.IGNORECASE)
 TAKEAWAY_PATTERN = re.compile(
     r"\b(?:takeaway|take\s*away|pickup|pick\s*up|collect|collection)\b",
@@ -85,8 +90,8 @@ TAKEAWAY_PATTERN = re.compile(
 )
 ORDER_INTENT_CONFIDENCE_THRESHOLD = 0.85
 LATEST_ORDER_INTENT_ACTIONS = ["latest_order_eta", "latest_order_status"]
-NAME_CORRECTION_PATTERN = re.compile(
-    r"\b(?:my\s+name\s+is|it(?:'s|\s+is)\s+actually|"
+CUSTOMER_NAME_PATTERN = re.compile(
+    r"\b(?:my\s+name\s+is|name\s+is|it(?:'s|\s+is)(?:\s+actually)?|"
     r"change\s+my\s+name\s+to|put\s+it\s+under)\s+"
     r"(?P<name>[A-Za-z][A-Za-z .'-]{1,79})[.!]?\s*$",
     re.IGNORECASE,
@@ -98,7 +103,7 @@ UNSAFE_CUSTOMER_NAME_PATTERN = re.compile(
     re.IGNORECASE,
 )
 INVALID_CUSTOMER_NAME_CORRECTION_MESSAGE = (
-    "Please provide the corrected customer name only, for example: "
+    "Please provide the customer name only, for example: "
     "my name is Shaheer Tariq."
 )
 
@@ -415,18 +420,24 @@ class WhatsAppOrderFlowService:
 
         if status in {"item_ready", "awaiting_upsell_decision"}:
             options_response = self.carts.handle_upsell(cart_id, "get_options")
-            if status == "item_ready" and not SKIP_PATTERN.search(normalized):
+            proceed_without_addon = bool(
+                PROCEED_WITHOUT_ADDON_PATTERN.fullmatch(normalized)
+            )
+            if status == "item_ready" and not proceed_without_addon:
                 return self._cart_result("handle_cart_upsell", options_response)
-            if SKIP_PATTERN.search(normalized):
-                response = self.carts.handle_upsell(cart_id, "skip")
-                return self._cart_result("handle_cart_upsell", response)
+            if proceed_without_addon:
+                return self._proceed_without_addon(cart_id)
 
             upsell_items = (options_response.data or {}).get("upsell_items", [])
             selected = self._select(upsell_items, normalized, ("name", "product_id"))
             if selected is None:
                 intent = self._interpret(
                     state="upsell",
-                    allowed_actions=["skip_upsell", "select_upsell"],
+                    allowed_actions=[
+                        "proceed_without_addon",
+                        "skip_upsell",
+                        "select_upsell",
+                    ],
                     message=message,
                     user_id=user_id,
                     session_id=session_id,
@@ -437,9 +448,11 @@ class WhatsAppOrderFlowService:
                         label_field="name",
                     ),
                 )
-                if intent is not None and intent.action == "skip_upsell":
-                    response = self.carts.handle_upsell(cart_id, "skip")
-                    return self._cart_result("handle_cart_upsell", response)
+                if intent is not None and intent.action in {
+                    "proceed_without_addon",
+                    "skip_upsell",
+                }:
+                    return self._proceed_without_addon(cart_id)
                 selected = self._selected_by_intent(
                     intent,
                     action="select_upsell",
@@ -566,7 +579,23 @@ class WhatsAppOrderFlowService:
         if status == "awaiting_customer_name":
             suggested_name = order.get("suggested_customer_name")
             suggestion_rejected = order.get("customer_name_suggestion_rejected")
-            if CANCEL_PATTERN.search(normalized):
+            name_match = CUSTOMER_NAME_PATTERN.search(original_message)
+            if name_match is not None:
+                cleaned_name = self._clean_corrected_customer_name(
+                    name_match.group("name"),
+                    original_message,
+                )
+                if cleaned_name is None:
+                    return WhatsAppOrderFlowResult(
+                        text=INVALID_CUSTOMER_NAME_CORRECTION_MESSAGE,
+                        tool_calls=[],
+                    )
+                response = self.orders.update_order_flow(
+                    order_id,
+                    "save_customer_name",
+                    cleaned_name,
+                )
+            elif CANCEL_PATTERN.search(normalized):
                 response = self.orders.update_order_flow(order_id, "cancel")
             elif suggested_name and not suggestion_rejected and CONFIRM_PATTERN.search(
                 normalized
@@ -596,7 +625,7 @@ class WhatsAppOrderFlowService:
             )
 
         if status == "pending_confirmation":
-            correction_match = NAME_CORRECTION_PATTERN.search(original_message)
+            correction_match = CUSTOMER_NAME_PATTERN.search(original_message)
             intent = None
             if correction_match is None and not (
                 CONFIRM_PATTERN.fullmatch(normalized)
@@ -755,7 +784,11 @@ class WhatsAppOrderFlowService:
         order: dict[str, Any] | None,
         normalized: str,
     ) -> bool:
-        if normalized.isdigit() or SKIP_PATTERN.search(normalized):
+        if (
+            normalized.isdigit()
+            or SKIP_PATTERN.search(normalized)
+            or PROCEED_WITHOUT_ADDON_PATTERN.fullmatch(normalized)
+        ):
             return False
         if order is None:
             return True
@@ -813,6 +846,23 @@ class WhatsAppOrderFlowService:
             response,
             is_write=True,
             text=self._cart_step_text(response),
+        )
+
+    def _proceed_without_addon(self, cart_id: str) -> WhatsAppOrderFlowResult:
+        skip_response = self.carts.handle_upsell(cart_id, "skip")
+        skip_result = self._cart_result("handle_cart_upsell", skip_response)
+        if not skip_result.tool_calls[0]["success"]:
+            return skip_result
+        order_response = self.carts.create_pending_order(cart_id)
+        order_result = self._result(
+            "create_pending_order_from_cart",
+            order_response,
+            is_write=True,
+            text=self._order_step_text(order_response),
+        )
+        return WhatsAppOrderFlowResult(
+            text=order_result.text,
+            tool_calls=[*skip_result.tool_calls, *order_result.tool_calls],
         )
 
     @staticmethod
@@ -881,7 +931,7 @@ class WhatsAppOrderFlowService:
                 "ask for available categories, or view the menu."
             )
         return "\n".join([
-            "Here are the matching options I found:",
+            "Sure, here are some options you can choose from:",
             *[
                 f"{index}. {item.get('name', 'Menu item')} - {cls._menu_price(item)}"
                 for index, item in enumerate(items, start=1)

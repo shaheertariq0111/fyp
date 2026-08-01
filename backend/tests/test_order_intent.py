@@ -65,3 +65,9 @@ def test_order_intent_prompt_defines_flexible_latest_order_intents():
     assert "latest_order_status" in ORDER_INTENT_SYSTEM_PROMPT
     assert "when will I receive my order" in ORDER_INTENT_SYSTEM_PROMPT
     assert "Never infer an ETA or order status" in ORDER_INTENT_SYSTEM_PROMPT
+
+
+def test_order_intent_prompt_defines_addon_progression_without_transaction_control():
+    assert "proceed_without_addon" in ORDER_INTENT_SYSTEM_PROMPT
+    assert "skip add-ons" in ORDER_INTENT_SYSTEM_PROMPT
+    assert "Never calculate prices or totals" in ORDER_INTENT_SYSTEM_PROMPT
