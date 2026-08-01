@@ -9,11 +9,18 @@ from src.services.whatsapp_order_flow_service import WhatsAppOrderFlowService
 
 
 class IntentClient:
-    def __init__(self, action, confidence=0.95, selected_option=None):
+    def __init__(
+        self,
+        action,
+        confidence=0.95,
+        selected_option=None,
+        extracted_name=None,
+    ):
         self.result = OrderIntentClassification(
             action=action,
             confidence=confidence,
             selected_option=selected_option,
+            extracted_name=extracted_name,
         )
         self.requests = []
 
@@ -81,6 +88,7 @@ class FakeOrders:
         }
         if action == "reject_customer_name":
             data["customer_name_suggestion_rejected"] = True
+        self.order = deepcopy(data)
         return ToolResponse.ok(
             data=data,
             user_message=(
@@ -267,6 +275,136 @@ def test_messy_confirmation_only_confirms_in_pending_confirmation(message):
     assert result.tool_calls[0]["result"]["data"]["status"] == "submitted_to_restaurant"
     assert result.tool_calls[0]["result"]["data"]["order_id"] == "ORD-REAL"
     assert result.tool_calls[0]["result"]["data"]["total"] == 850
+
+
+def test_explicit_name_correction_updates_snapshot_without_submitting():
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "pending_confirmation",
+        "customer_name": "shaheer",
+        "total": 850,
+        "currency": "PKR",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(
+        flow,
+        "you misspelled my name, it's actually Shaheer Tariq",
+    )
+
+    assert orders.updates == [
+        ("ORD-REAL", "save_customer_name", "Shaheer Tariq", None)
+    ]
+    assert result.tool_calls[0]["result"]["data"]["status"] == (
+        "pending_confirmation"
+    )
+    assert orders.order["customer_name"] == "Shaheer Tariq"
+    assert "Backend confirmation summary" in result.text
+
+
+def test_classifier_name_correction_uses_only_validated_extracted_name():
+    intent = IntentClient(
+        "customer_name_correction",
+        extracted_name="Shaheer Tariq",
+    )
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "pending_confirmation",
+        "customer_name": "shaheer",
+    }
+    flow, _, orders = service(order=order, intent=intent)
+
+    handle(flow, "the correct customer name should be Shaheer Tariq")
+
+    assert intent.requests[-1].allowed_actions == [
+        "customer_name_correction",
+        "confirm",
+        "cancel",
+    ]
+    assert orders.updates == [
+        ("ORD-REAL", "save_customer_name", "Shaheer Tariq", None)
+    ]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "my name is yes",
+        "change my name to no",
+        "put it under ok",
+        "put it under delivery",
+        "my name is Pepperoni Pizza",
+        "my name is Shaheer Tariq please",
+    ],
+)
+def test_invalid_name_correction_does_not_update_or_submit(message):
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "pending_confirmation",
+        "customer_name": "shaheer",
+    }
+    flow, _, orders = service(order=order)
+
+    result = handle(flow, message)
+
+    assert orders.updates == []
+    assert orders.order["status"] == "pending_confirmation"
+    assert result.tool_calls == []
+    assert "corrected customer name only" in result.text
+
+
+def test_classifier_cannot_invent_a_name_missing_from_customer_message():
+    intent = IntentClient(
+        "customer_name_correction",
+        extracted_name="Invented Name",
+    )
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "pending_confirmation",
+        "customer_name": "shaheer",
+    }
+    flow, _, orders = service(order=order, intent=intent)
+
+    result = handle(flow, "please correct the customer name")
+
+    assert orders.updates == []
+    assert result.tool_calls == []
+    assert orders.order["status"] == "pending_confirmation"
+
+
+def test_later_yes_submits_after_name_correction():
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "pending_confirmation",
+        "customer_name": "shaheer",
+        "total": 850,
+        "currency": "PKR",
+    }
+    flow, _, orders = service(order=order)
+
+    handle(flow, "my name is Shaheer Tariq")
+    result = handle(flow, "yes")
+
+    assert [update[1] for update in orders.updates] == [
+        "save_customer_name",
+        "confirm",
+    ]
+    assert result.tool_calls[0]["result"]["data"]["status"] == (
+        "submitted_to_restaurant"
+    )
+
+
+def test_yes_alone_still_confirms_pending_order():
+    order = {
+        "order_id": "ORD-REAL",
+        "status": "pending_confirmation",
+        "customer_name": "Shaheer Tariq",
+    }
+    flow, _, orders = service(order=order)
+
+    handle(flow, "yes")
+
+    assert orders.updates == [("ORD-REAL", "confirm", None, "req-1")]
 
 
 def test_interpreted_action_is_rejected_outside_current_state_allowlist():

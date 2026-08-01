@@ -21,8 +21,10 @@ invent menu items or options, summarize a cart, confirm an order, generate an
 order ID, choose an order status, or write a customer-facing response.
 
 selected_option may contain only an option ID supplied in available_options.
-Otherwise it must be null. Typos and natural phrasing may be interpreted only
-when their meaning is clear in the current state.
+extracted_name may contain only the customer's explicitly stated corrected name
+when action is customer_name_correction. Otherwise both fields must be null.
+Typos and natural phrasing may be interpreted only when their meaning is clear
+in the current state.
 
 Intent guidance:
 - latest_order_eta means the customer is asking when their current/latest order
@@ -32,6 +34,9 @@ Intent guidance:
   order is or whether it is progressing/coming.
 - These actions only identify intent. Never infer an ETA or order status.
 - A request to browse, choose, or order food is not an order-status action.
+- customer_name_correction means the customer explicitly corrects or provides
+  the name for an order that is awaiting final confirmation. Extract only the
+  intended name, never the surrounding sentence. Do not infer or rewrite it.
 """.strip()
 
 
@@ -41,6 +46,7 @@ class OrderIntentClassification(BaseModel):
     action: str = Field(min_length=1, max_length=64)
     confidence: float = Field(ge=0, le=1)
     selected_option: str | None = Field(default=None, max_length=256)
+    extracted_name: str | None = Field(default=None, max_length=80)
 
 
 @dataclass(frozen=True)
