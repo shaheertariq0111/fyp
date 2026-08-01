@@ -71,3 +71,9 @@ def test_order_intent_prompt_defines_addon_progression_without_transaction_contr
     assert "proceed_without_addon" in ORDER_INTENT_SYSTEM_PROMPT
     assert "skip add-ons" in ORDER_INTENT_SYSTEM_PROMPT
     assert "Never calculate prices or totals" in ORDER_INTENT_SYSTEM_PROMPT
+
+
+def test_order_intent_prompt_routes_menu_browsing_to_authoritative_data():
+    assert "menu_browse" in ORDER_INTENT_SYSTEM_PROMPT
+    assert "authoritative backend menu" in ORDER_INTENT_SYSTEM_PROMPT
+    assert "never provide or infer item names" in ORDER_INTENT_SYSTEM_PROMPT

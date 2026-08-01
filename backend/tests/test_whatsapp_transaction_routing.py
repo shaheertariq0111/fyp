@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from src.agent.order_intent import OrderIntentClassification
 from src.models.tool_responses import ToolResponse
 from src.services.agent_session_service import AgentSessionService
 from src.services.order_service import OrderService
@@ -37,6 +38,19 @@ class Menu:
             ),
             next_action="present_menu_results",
         )
+
+
+class IntentClient:
+    def __init__(self, action, confidence=0.95):
+        self.result = OrderIntentClassification(
+            action=action,
+            confidence=confidence,
+        )
+        self.requests = []
+
+    def classify_order_intent(self, request):
+        self.requests.append(request)
+        return self.result
 
 
 class Carts:
@@ -174,12 +188,18 @@ BACKEND_SPICY_ITEMS = [
 ]
 
 
-def order_flow(items=BACKEND_SPICY_ITEMS, active_order=None):
+def order_flow(items=BACKEND_SPICY_ITEMS, active_order=None, intent=None):
     menu = Menu(items)
     carts = Carts()
     sessions = Sessions()
     orders = Orders(active_order)
-    flow = WhatsAppOrderFlowService(menu, carts, orders, sessions)
+    flow = WhatsAppOrderFlowService(
+        menu,
+        carts,
+        orders,
+        sessions,
+        intent_client=intent,
+    )
     return flow, menu, carts, sessions, orders
 
 
@@ -221,6 +241,57 @@ def test_order_and_recommendation_intents_use_backend_menu(message):
         "backend-spicy-paneer",
         "backend-hot-chicken",
     ]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "what other items do you have in your menu",
+        "i would like to know about the menu",
+    ],
+)
+def test_natural_menu_browsing_uses_only_authoritative_backend_items(message):
+    intent = IntentClient("menu_browse")
+    flow, menu, _, sessions, _ = order_flow(intent=intent)
+
+    result = order_turn(flow, message)
+
+    assert intent.requests[-1].state == "conversation"
+    assert intent.requests[-1].allowed_actions == [
+        "latest_order_eta",
+        "latest_order_status",
+        "menu_browse",
+    ]
+    assert menu.calls == [{
+        "query": None,
+        "available_only": True,
+        "limit": 5,
+    }]
+    assert "Backend Spicy Paneer" in result.text
+    assert "Backend Hot Chicken" in result.text
+    assert "outside of my scope" not in result.text
+    assert "Classic Cheese Pizza" not in result.text
+    assert "Margherita Pizza" not in result.text
+    assert [item["product_id"] for item in sessions.offered] == [
+        "backend-spicy-paneer",
+        "backend-hot-chicken",
+    ]
+
+
+def test_direct_menu_command_uses_backend_without_classifier():
+    intent = IntentClient("latest_order_status")
+    flow, menu, _, _, _ = order_flow(intent=intent)
+
+    result = order_turn(flow, "menu")
+
+    assert intent.requests == []
+    assert menu.calls == [{
+        "query": None,
+        "available_only": True,
+        "limit": 5,
+    }]
+    assert "Backend Spicy Paneer" in result.text
+    assert "Classic Cheese Pizza" not in result.text
 
 
 def test_recommended_item_selection_uses_saved_backend_product_id():

@@ -28,6 +28,10 @@ MENU_PREFERENCE_PATTERN = re.compile(
     r"\b(spicy|cheap|affordable|budget|chicken|vegetarian|veggie)\b",
     re.IGNORECASE,
 )
+DIRECT_MENU_BROWSE_PATTERN = re.compile(
+    r"^(?:menu|show\s+menu)$",
+    re.IGNORECASE,
+)
 PRIVACY_BYPASS_PATTERN = re.compile(
     r"\b(?:all|every|other)\s+(?:customer|user|people|person)(?:'s|\s+)orders?\b|"
     r"\bcustomer\s+orders?\b",
@@ -89,7 +93,11 @@ TAKEAWAY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ORDER_INTENT_CONFIDENCE_THRESHOLD = 0.85
-LATEST_ORDER_INTENT_ACTIONS = ["latest_order_eta", "latest_order_status"]
+CONVERSATION_INTENT_ACTIONS = [
+    "latest_order_eta",
+    "latest_order_status",
+    "menu_browse",
+]
 CUSTOMER_NAME_PATTERN = re.compile(
     r"\b(?:my\s+name\s+is|name\s+is|it(?:'s|\s+is)(?:\s+actually)?|"
     r"change\s+my\s+name\s+to|put\s+it\s+under)\s+"
@@ -175,23 +183,27 @@ class WhatsAppOrderFlowService:
                 tool_calls=[],
             )
 
-        latest_order_intent = None
-        if self._should_classify_latest_order_intent(order, normalized):
-            latest_order_intent = self._interpret(
+        conversation_intent = None
+        if self._should_classify_conversation_intent(order, normalized):
+            conversation_intent = self._interpret(
                 state="conversation",
-                allowed_actions=LATEST_ORDER_INTENT_ACTIONS,
+                allowed_actions=CONVERSATION_INTENT_ACTIONS,
                 message=message,
                 user_id=user_id,
                 session_id=session_id,
                 request_id=request_id,
             )
         is_eta_intent = (
-            latest_order_intent is not None
-            and latest_order_intent.action == "latest_order_eta"
+            conversation_intent is not None
+            and conversation_intent.action == "latest_order_eta"
         )
         is_status_intent = (
-            latest_order_intent is not None
-            and latest_order_intent.action == "latest_order_status"
+            conversation_intent is not None
+            and conversation_intent.action == "latest_order_status"
+        )
+        is_menu_browse_intent = (
+            conversation_intent is not None
+            and conversation_intent.action == "menu_browse"
         )
         if (
             is_eta_intent
@@ -247,7 +259,7 @@ class WhatsAppOrderFlowService:
 
         menu_state = self.agent_sessions.get_whatsapp_order_state(user_id, session_id)
         offered_items = menu_state.get("offered_menu_items", [])
-        if offered_items:
+        if offered_items and not is_menu_browse_intent:
             selected = self._select(offered_items, normalized, ("name", "product_id"))
             if selected is None:
                 intent = self._interpret(
@@ -288,7 +300,12 @@ class WhatsAppOrderFlowService:
                     tool_calls=[],
                 )
 
-        query = self._menu_query(normalized)
+        direct_menu_browse = bool(DIRECT_MENU_BROWSE_PATTERN.fullmatch(normalized))
+        query = (
+            ""
+            if is_menu_browse_intent or direct_menu_browse
+            else self._menu_query(normalized)
+        )
         if query is None:
             return None
         response = self.menu.search_menu(
@@ -780,7 +797,7 @@ class WhatsAppOrderFlowService:
         return cleaned_name
 
     @staticmethod
-    def _should_classify_latest_order_intent(
+    def _should_classify_conversation_intent(
         order: dict[str, Any] | None,
         normalized: str,
     ) -> bool:
@@ -788,6 +805,7 @@ class WhatsAppOrderFlowService:
             normalized.isdigit()
             or SKIP_PATTERN.search(normalized)
             or PROCEED_WITHOUT_ADDON_PATTERN.fullmatch(normalized)
+            or DIRECT_MENU_BROWSE_PATTERN.fullmatch(normalized)
         ):
             return False
         if order is None:
