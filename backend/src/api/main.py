@@ -1932,9 +1932,115 @@ def _agentflo_outbound_response(
     return response
 
 
+def _agentflo_duplicate_response() -> dict[str, Any]:
+    return {
+        "success": True,
+        "ignored": True,
+        "duplicate": True,
+        "reason": "duplicate_message",
+    }
+
+
+def _log_agentflo_delivery_transition(
+    *,
+    previous_state: str,
+    next_state: str,
+    applied: bool,
+    http_request_id: str | None,
+    request_id: str | None = None,
+) -> None:
+    logger.info(
+        "Agentflo WhatsApp delivery state transition",
+        extra={
+            "event": "agentflo_whatsapp_delivery_transition",
+            "http_request_id": http_request_id,
+            "request_id": request_id,
+            "channel": "whatsapp",
+            "previous_delivery_state": previous_state,
+            "delivery_state": next_state,
+            "transition_applied": applied,
+        },
+    )
+
+
+def _claim_agentflo_outbound_send(
+    message_id: str,
+    *,
+    http_request_id: str | None,
+    request_id: str | None = None,
+) -> bool:
+    try:
+        claimed = get_services().agent_requests.claim_agentflo_whatsapp_outbound(
+            message_id
+        )
+    except Exception as exc:
+        logger.error(
+            "Agentflo WhatsApp outbound claim failed",
+            extra={
+                "event": "agentflo_whatsapp_delivery_transition_failed",
+                "http_request_id": http_request_id,
+                "request_id": request_id,
+                "channel": "whatsapp",
+                "previous_delivery_state": "response_ready",
+                "delivery_state": "outbound_sending",
+                "exception_type": type(exc).__name__,
+                "error_code": "AGENTFLO_OUTBOUND_FAILED",
+            },
+        )
+        return False
+    _log_agentflo_delivery_transition(
+        previous_state="response_ready",
+        next_state="outbound_sending",
+        applied=claimed,
+        http_request_id=http_request_id,
+        request_id=request_id,
+    )
+    return claimed
+
+
+def _finalize_agentflo_outbound_send(
+    message_id: str,
+    *,
+    success: bool,
+    http_request_id: str | None,
+    request_id: str | None = None,
+) -> None:
+    next_state = "completed" if success else "response_ready"
+    transition = (
+        get_services().agent_requests.complete_agentflo_whatsapp_message
+        if success
+        else get_services().agent_requests.retry_agentflo_whatsapp_outbound
+    )
+    try:
+        applied = transition(message_id)
+    except Exception as exc:
+        logger.error(
+            "Agentflo WhatsApp delivery finalization failed",
+            extra={
+                "event": "agentflo_whatsapp_delivery_transition_failed",
+                "http_request_id": http_request_id,
+                "request_id": request_id,
+                "channel": "whatsapp",
+                "previous_delivery_state": "outbound_sending",
+                "delivery_state": next_state,
+                "exception_type": type(exc).__name__,
+                "error_code": "AGENTFLO_OUTBOUND_FAILED",
+            },
+        )
+        return
+    _log_agentflo_delivery_transition(
+        previous_state="outbound_sending",
+        next_state=next_state,
+        applied=applied,
+        http_request_id=http_request_id,
+        request_id=request_id,
+    )
+
+
 def _retry_cached_agentflo_outbound(
     inbound: WhatsAppInboundMessage,
     marker: dict[str, Any],
+    http_request_id: str | None,
 ) -> dict[str, Any]:
     reply = marker.get("reply")
     request_id = marker.get("request_id")
@@ -1976,9 +2082,12 @@ def _retry_cached_agentflo_outbound(
         session_id=session_id,
         outbound=outbound,
     )
-    if response["success"] and inbound.message_id is not None:
-        get_services().agent_requests.complete_agentflo_whatsapp_message(
-            inbound.message_id
+    if inbound.message_id is not None:
+        _finalize_agentflo_outbound_send(
+            inbound.message_id,
+            success=response["success"],
+            http_request_id=http_request_id,
+            request_id=request_id,
         )
     return response
 
@@ -2105,8 +2214,21 @@ def agentflo_whatsapp(
             marker = get_services().agent_requests.get_agentflo_whatsapp_message(
                 inbound.message_id
             )
-            if marker and marker.get("delivery_state") == "response_ready":
-                return _retry_cached_agentflo_outbound(inbound, marker)
+            delivery_state = marker.get("delivery_state") if marker else None
+            request_id = marker.get("request_id") if marker else None
+            if (
+                delivery_state == "response_ready"
+                and _claim_agentflo_outbound_send(
+                    inbound.message_id,
+                    http_request_id=http_request_id,
+                    request_id=request_id,
+                )
+            ):
+                return _retry_cached_agentflo_outbound(
+                    inbound,
+                    marker,
+                    http_request_id,
+                )
             logger.info(
                 "Agentflo WhatsApp duplicate ignored",
                 extra={
@@ -2115,14 +2237,10 @@ def agentflo_whatsapp(
                     "channel": "whatsapp",
                     "reason": "duplicate_message",
                     "idempotency_status": "duplicate",
+                    "delivery_state": delivery_state,
                 },
             )
-            return {
-                "success": True,
-                "ignored": True,
-                "duplicate": True,
-                "reason": "duplicate_message",
-            }
+            return _agentflo_duplicate_response()
 
     try:
         customer_id, session_id = _whatsapp_identity(inbound)
@@ -2183,6 +2301,19 @@ def agentflo_whatsapp(
             customer_id=context.customer_id,
             reply=completed.text,
         )
+        _log_agentflo_delivery_transition(
+            previous_state="processing",
+            next_state="response_ready",
+            applied=True,
+            http_request_id=http_request_id,
+            request_id=record["request_id"],
+        )
+        if not _claim_agentflo_outbound_send(
+            inbound.message_id,
+            http_request_id=http_request_id,
+            request_id=record["request_id"],
+        ):
+            return _agentflo_duplicate_response()
     gateway = _agentflo_gateway_service()
     if not gateway.configured:
         outbound = {
@@ -2262,9 +2393,12 @@ def agentflo_whatsapp(
         session_id=context.agent_session_id,
         outbound=outbound,
     )
-    if outbound_response["success"] and inbound.message_id is not None:
-        get_services().agent_requests.complete_agentflo_whatsapp_message(
-            inbound.message_id
+    if inbound.message_id is not None:
+        _finalize_agentflo_outbound_send(
+            inbound.message_id,
+            success=outbound_response["success"],
+            http_request_id=http_request_id,
+            request_id=record["request_id"],
         )
     return outbound_response
 

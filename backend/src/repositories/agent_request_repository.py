@@ -63,6 +63,43 @@ class AgentRequestRepository:
     def save_idempotency_key(self, marker: dict) -> None:
         self.table.put_item(Item=to_dynamodb(marker))
 
+    def transition_idempotency_delivery_state(
+        self,
+        message_id: str,
+        *,
+        expected_state: str,
+        next_state: str,
+        updated_at: str,
+    ) -> bool:
+        try:
+            self.table.update_item(
+                Key={
+                    "PK": f"agentflo-whatsapp-message:{message_id}",
+                    "SK": "IDEMPOTENCY",
+                },
+                UpdateExpression=(
+                    "SET #delivery_state = :next_state, #updated_at = :updated_at"
+                ),
+                ConditionExpression="#delivery_state = :expected_state",
+                ExpressionAttributeNames={
+                    "#delivery_state": "delivery_state",
+                    "#updated_at": "updated_at",
+                },
+                ExpressionAttributeValues={
+                    ":expected_state": expected_state,
+                    ":next_state": next_state,
+                    ":updated_at": updated_at,
+                },
+            )
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return False
+            raise
+        return True
+
     def delete_idempotency_key(self, message_id: str) -> None:
         self.table.delete_item(
             Key={

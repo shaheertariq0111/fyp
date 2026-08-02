@@ -12,6 +12,8 @@ class FakeTable:
         self.put_error = None
         self.get_calls = []
         self.get_response = {}
+        self.update_calls = []
+        self.update_error = None
         self.delete_calls = []
 
     def put_item(self, **kwargs):
@@ -22,6 +24,11 @@ class FakeTable:
     def get_item(self, **kwargs):
         self.get_calls.append(deepcopy(kwargs))
         return deepcopy(self.get_response)
+
+    def update_item(self, **kwargs):
+        self.update_calls.append(deepcopy(kwargs))
+        if self.update_error:
+            raise self.update_error
 
     def delete_item(self, **kwargs):
         self.delete_calls.append(deepcopy(kwargs))
@@ -126,3 +133,48 @@ def test_whatsapp_idempotency_marker_read_save_and_delete_use_exact_key():
     assert dynamo.table.get_calls == [{"Key": key, "ConsistentRead": True}]
     assert dynamo.table.put_calls == [{"Item": marker}]
     assert dynamo.table.delete_calls == [{"Key": key}]
+
+
+def test_transition_idempotency_delivery_state_uses_conditional_update():
+    dynamo = FakeDynamo()
+    repository = AgentRequestRepository(dynamo, "agent-requests")
+
+    assert repository.transition_idempotency_delivery_state(
+        "wamid.synthetic-1",
+        expected_state="response_ready",
+        next_state="outbound_sending",
+        updated_at="2026-08-02T10:00:00+00:00",
+    )
+
+    assert dynamo.table.update_calls == [{
+        "Key": {
+            "PK": "agentflo-whatsapp-message:wamid.synthetic-1",
+            "SK": "IDEMPOTENCY",
+        },
+        "UpdateExpression": (
+            "SET #delivery_state = :next_state, #updated_at = :updated_at"
+        ),
+        "ConditionExpression": "#delivery_state = :expected_state",
+        "ExpressionAttributeNames": {
+            "#delivery_state": "delivery_state",
+            "#updated_at": "updated_at",
+        },
+        "ExpressionAttributeValues": {
+            ":expected_state": "response_ready",
+            ":next_state": "outbound_sending",
+            ":updated_at": "2026-08-02T10:00:00+00:00",
+        },
+    }]
+
+
+def test_transition_idempotency_delivery_state_reports_lost_claim():
+    dynamo = FakeDynamo()
+    dynamo.table.update_error = client_error("ConditionalCheckFailedException")
+    repository = AgentRequestRepository(dynamo, "agent-requests")
+
+    assert not repository.transition_idempotency_delivery_state(
+        "wamid.synthetic-1",
+        expected_state="response_ready",
+        next_state="outbound_sending",
+        updated_at="2026-08-02T10:00:00+00:00",
+    )

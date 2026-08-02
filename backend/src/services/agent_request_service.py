@@ -113,13 +113,29 @@ class AgentRequestService:
         })
         self.repository.save_idempotency_key(marker)
 
-    def complete_agentflo_whatsapp_message(self, message_id: str) -> None:
-        marker = self.repository.get_idempotency_key(message_id)
-        if marker is None:
-            return
-        marker["delivery_state"] = "completed"
-        marker["updated_at"] = self._now().isoformat()
-        self.repository.save_idempotency_key(marker)
+    def complete_agentflo_whatsapp_message(self, message_id: str) -> bool:
+        return self.repository.transition_idempotency_delivery_state(
+            message_id,
+            expected_state="outbound_sending",
+            next_state="completed",
+            updated_at=self._now().isoformat(),
+        )
+
+    def claim_agentflo_whatsapp_outbound(self, message_id: str) -> bool:
+        return self.repository.transition_idempotency_delivery_state(
+            message_id,
+            expected_state="response_ready",
+            next_state="outbound_sending",
+            updated_at=self._now().isoformat(),
+        )
+
+    def retry_agentflo_whatsapp_outbound(self, message_id: str) -> bool:
+        return self.repository.transition_idempotency_delivery_state(
+            message_id,
+            expected_state="outbound_sending",
+            next_state="response_ready",
+            updated_at=self._now().isoformat(),
+        )
 
     def release_agentflo_whatsapp_message(self, message_id: str) -> None:
         self.repository.delete_idempotency_key(message_id)
