@@ -11,6 +11,7 @@ from src.agent.whatsapp_turn_intent import (
     WhatsAppTurnInterpretation,
 )
 from src.models.tool_responses import ToolResponse
+from src.services.menu_information_service import MenuInformationService
 from src.services.menu_query_service import MenuQueryResolver, MenuSearchPlan
 from src.services.whatsapp_turn_policy_service import (
     INFORMATIONAL_ACTIONS,
@@ -206,6 +207,7 @@ class WhatsAppOrderFlowService:
         intent_client_factory=None,
         menu_query_resolver=None,
         turn_policy=None,
+        menu_information=None,
     ):
         self.menu = menu
         self.carts = carts
@@ -215,6 +217,7 @@ class WhatsAppOrderFlowService:
         self.intent_client_factory = intent_client_factory
         self.menu_query_resolver = menu_query_resolver or MenuQueryResolver()
         self.turn_policy = turn_policy or WhatsAppTurnPolicyService()
+        self.menu_information = menu_information or MenuInformationService(menu)
 
     def handle(
         self,
@@ -1197,118 +1200,14 @@ class WhatsAppOrderFlowService:
         self,
         interpretation: WhatsAppTurnInterpretation,
     ) -> WhatsAppOrderFlowResult:
-        targets = [value.strip() for value in interpretation.target_items if value.strip()]
-        search_targets = (
-            targets
-            if interpretation.action == "menu_compare"
-            else [targets[0] if targets else None]
-        )
-        items: list[dict[str, Any]] = []
-        tool_calls: list[dict[str, Any]] = []
-        last_response = None
-        for target in search_targets:
-            search_kwargs: dict[str, Any] = {
-                "query": target,
-                "available_only": True,
-                "limit": 1 if interpretation.action == "menu_compare" else 5,
-                "exclude_product_ids": [],
-            }
-            if interpretation.facet:
-                search_kwargs["tags"] = [interpretation.facet]
-            last_response = self.menu.search_menu(**search_kwargs)
-            tool_calls.extend(
-                self._result("search_menu", last_response, is_write=False).tool_calls
-            )
-            if last_response.success:
-                items.extend((last_response.data or {}).get("items", []))
-        if not items:
-            return WhatsAppOrderFlowResult(
-                text=(
-                    last_response.user_message
-                    if last_response is not None
-                    else "I couldn't find a matching available menu item."
-                ),
-                tool_calls=tool_calls,
-            )
-
-        detail_actions = {"menu_item_detail", "menu_compare"}
-        if interpretation.action not in detail_actions:
-            return WhatsAppOrderFlowResult(
-                text=self._informational_menu_list(items),
-                tool_calls=tool_calls,
-            )
-
-        details: list[dict[str, Any]] = []
-        get_menu_item = getattr(self.menu, "get_menu_item", None)
-        for item in items:
-            detail = item
-            if get_menu_item is not None and item.get("product_id"):
-                response = get_menu_item(str(item["product_id"]))
-                tool_calls.extend(
-                    self._result("get_menu_item", response, is_write=False).tool_calls
-                )
-                if response.success:
-                    detail = (response.data or {}).get("item") or item
-            details.append(detail)
+        result = self.menu_information.answer(interpretation)
         return WhatsAppOrderFlowResult(
-            text=self._informational_detail_text(
-                details,
-                question_type=interpretation.question_type,
-            ),
-            tool_calls=tool_calls,
-        )
-
-    @classmethod
-    def _informational_menu_list(cls, items: list[dict[str, Any]]) -> str:
-        return "\n".join([
-            "Here is what I found in the current menu:",
-            *[
-                f"{index}. {item.get('name', 'Menu item')} - {cls._menu_price(item)}"
-                for index, item in enumerate(items, start=1)
+            text=result.text,
+            tool_calls=[
+                self._result(read.tool_name, read.response, is_write=False).tool_calls[0]
+                for read in result.reads
             ],
-        ])
-
-    @classmethod
-    def _informational_detail_text(
-        cls,
-        items: list[dict[str, Any]],
-        *,
-        question_type: str | None,
-    ) -> str:
-        sections = []
-        for item in items:
-            lines = [
-                f"{item.get('name', 'Menu item')} - {cls._menu_price(item)}"
-            ]
-            description = str(item.get("description") or "").strip()
-            if description:
-                lines.append(description)
-            if question_type in {"dietary", "spice", "ingredients"}:
-                labels = [
-                    str(value)
-                    for value in [
-                        *item.get("tags", []),
-                        *(item.get("metadata") or {}).get("best_for", []),
-                    ]
-                    if value
-                ]
-                if labels:
-                    lines.append(f"Menu labels: {', '.join(labels)}")
-            if question_type in {"options", "size"}:
-                groups = item.get("customization_groups") or []
-                if groups:
-                    lines.append("Available options:")
-                    for group in groups:
-                        option_labels = [
-                            str(option.get("label") or option.get("name") or "").strip()
-                            for option in group.get("options", [])
-                        ]
-                        option_labels = [label for label in option_labels if label]
-                        lines.append(
-                            f"- {group.get('name', 'Choice')}: {', '.join(option_labels)}"
-                        )
-            sections.append("\n".join(lines))
-        return "\n\n".join(sections)
+        )
 
     @staticmethod
     def _clean_corrected_customer_name(
