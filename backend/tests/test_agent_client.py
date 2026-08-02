@@ -157,7 +157,7 @@ def test_agentcore_runtime_client_invokes_bedrock_agentcore_runtime():
     assert result.text == "AgentCore response"
     assert result.raw_result["memory"] == {"session_id": "session-1"}
     assert captured["agentRuntimeArn"] == "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/example"
-    assert captured["runtimeSessionId"] == "session-1"
+    assert captured["runtimeSessionId"] == "req-trusted"
     assert captured["runtimeUserId"] == "user-1"
     assert captured["contentType"] == "application/json"
     assert captured["accept"] == "application/json"
@@ -221,6 +221,7 @@ def test_agentcore_runtime_client_requests_strict_order_intent_classification():
 
     payload = json.loads(captured["payload"].decode("utf-8"))
     assert result == OrderIntentClassification(action="checkout", confidence=0.95)
+    assert captured["runtimeSessionId"] == "req-1"
     assert payload == {
         "task": "classify_order_intent",
         "message": "checkouttt",
@@ -307,6 +308,33 @@ def test_agentcore_runtime_sends_structured_whatsapp_turn_task():
         target_items=["choco bread"],
     )
     assert payload["task"] == "classify_whatsapp_turn"
+    assert captured["runtimeSessionId"] == "req-1"
+
+
+def test_agentcore_runtime_session_falls_back_to_agent_session_without_request_id():
+    captured = {}
+
+    class FakeAgentCoreClient:
+        def invoke_agent_runtime(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "statusCode": 200,
+                "response": io.BytesIO(json.dumps({"text": "ok"}).encode("utf-8")),
+            }
+
+    AgentCoreRuntimeClient(
+        runtime_arn="arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/example",
+        aws_region="us-east-1",
+        client=FakeAgentCoreClient(),
+    ).invoke(
+        AgentInvocationRequest(
+            message="hello",
+            user_id="user-1",
+            agent_session_id="session-1",
+        )
+    )
+
+    assert captured["runtimeSessionId"] == "session-1"
 
 
 def test_agent_runtime_factory_uses_agentcore_when_runtime_arn_is_set(monkeypatch):
