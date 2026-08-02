@@ -79,6 +79,10 @@ class OrderService:
         if existing is not None:
             return self._pending_order_response(existing)
         now = self._now()
+        customer_id = cart.get("customer_id") or cart["user_id"]
+        customer_phone = cart.get("customer_phone") or self._trusted_profile_phone(
+            customer_id,
+        )
         items = [{
             "item_id": item["item_id"], "name": item["name"],
             "quantity": item["quantity"], "customizations": deepcopy(item["selected_options"]),
@@ -89,10 +93,10 @@ class OrderService:
             "PK": cart["user_id"], "SK": f"ORDER#{order_id}",
             "GSI1PK": f"ORDER#{order_id}", "GSI1SK": "METADATA",
             "order_id": order_id, "user_id": cart["user_id"],
-            "customer_id": cart.get("customer_id") or cart["user_id"],
+            "customer_id": customer_id,
             "customer_name": cart.get("customer_name"),
             "customer_name_confirmed": cart.get("channel", "web") != "whatsapp",
-            "customer_phone": cart.get("customer_phone"),
+            "customer_phone": customer_phone,
             "channel": cart.get("channel", "web"),
             "agent_session_id": cart["agent_session_id"],
             "restaurant_id": cart["restaurant_id"], "branch_id": cart["branch_id"],
@@ -112,6 +116,15 @@ class OrderService:
                 )
             order = existing
         return self._pending_order_response(order)
+
+    def _trusted_profile_phone(self, customer_id: str) -> str | None:
+        if self.customers is None:
+            return None
+        customer = self.customers.repository.get(customer_id)
+        if not customer or not customer.get("phone_verified"):
+            return None
+        phone = customer.get("phone_e164")
+        return phone if isinstance(phone, str) and phone.strip() else None
 
     def _pending_order_response(self, order: dict) -> ToolResponse:
         status = order["status"]
@@ -802,8 +815,8 @@ class OrderService:
     def _instruction(cls, status):
         return {
             "pending_confirmation": "Summarize the complete order, fulfillment details, and total. Ask the customer to confirm or cancel. Confirm submits the order.",
-            "awaiting_fulfillment_method": "Ask the customer to choose delivery or takeaway.",
-            "awaiting_delivery_address": "Ask the customer for a delivery address.",
+            "awaiting_fulfillment_method": "Ask only whether the customer wants delivery or takeaway. Do not ask for contact number or special instructions.",
+            "awaiting_delivery_address": "Ask only for the delivery address. Do not ask for contact number or special instructions.",
             "awaiting_customer_name": (
                 "Ask the customer to confirm the suggested profile name or provide "
                 "a name for this order. Never invent a customer name."
@@ -838,6 +851,7 @@ class OrderService:
         if order.get("status") == "pending_confirmation":
             agent["confirmation_summary"] = cls._confirmation_summary(order)
         if order.get("status") == "submitted_to_restaurant":
+            agent["submitted_order_id"] = order.get("order_id")
             agent["submission_confirmation"] = cls._submission_confirmation(order)
         return agent
 

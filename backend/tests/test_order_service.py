@@ -42,6 +42,7 @@ def test_delivery_flow_and_duplicate_idempotency():
     order_id = pending.data["order_id"]
     assert pending.data["status"] == "awaiting_fulfillment_method"
     assert pending.agent["required_input"] == "fulfillment_method"
+    assert "Do not ask for contact number" in pending.agent["instruction"]
     assert pending.agent["valid_next_actions"] == [
         "update_order_flow:set_delivery",
         "update_order_flow:set_takeaway",
@@ -49,6 +50,7 @@ def test_delivery_flow_and_duplicate_idempotency():
     ]
     delivery = service.update_order_flow("user", order_id, "set_delivery")
     assert delivery.agent["required_input"] == "delivery_address"
+    assert "Ask only for the delivery address" in delivery.agent["instruction"]
     addressed = service.update_order_flow("user", order_id, "save_address", "Configured address")
     assert addressed.data["status"] == "pending_confirmation"
     assert addressed.data["delivery_address"] == "Configured address"
@@ -84,8 +86,15 @@ def test_takeaway_skips_address():
     assert response.agent["required_input"] == "confirm_or_cancel"
 
 
-def _whatsapp_order(*, confirmed_name=None, profile_name=None):
+def _whatsapp_order(*, confirmed_name=None, profile_name=None, phone_number=None):
     customers = CustomerService(MemoryCustomerRepository())
+    if phone_number:
+        customers.update_profile(
+            "cust-1",
+            phone_number=phone_number,
+            channel="whatsapp",
+            phone_verified=True,
+        )
     if confirmed_name:
         customers.confirm_customer_name("cust-1", confirmed_name)
     if profile_name:
@@ -131,6 +140,15 @@ def test_whatsapp_takeaway_requires_customer_name_before_confirmation():
     assert response.data["status"] == "awaiting_customer_name"
     assert response.user_message == "Can I have your name for the order?"
     assert repository.data[order_id]["customer_name"] is None
+
+
+def test_whatsapp_order_uses_verified_profile_phone_when_cart_phone_missing():
+    service, repository, _, order_id = _whatsapp_order(phone_number="+92 300 1234567")
+
+    response = service.update_order_flow("cust-1", order_id, "set_takeaway")
+
+    assert response.data["customer_phone"] == "+923001234567"
+    assert repository.data[order_id]["customer_phone"] == "+923001234567"
 
 
 def test_confirmed_profile_name_is_reused_for_whatsapp_order_snapshot():
@@ -714,6 +732,9 @@ def test_successful_confirmation_returns_customer_order_tracking_message():
 
     assert response.success
     assert response.data["status"] == "submitted_to_restaurant"
+    assert response.data["order_id"] == order_id
+    assert response.agent["order_id"] == order_id
+    assert response.agent["submitted_order_id"] == order_id
     assert response.user_message == expected
     assert response.agent["submission_confirmation"] == expected
     assert response.agent["status_message"] == (
@@ -742,6 +763,9 @@ def test_duplicate_confirmation_repeats_customer_tracking_message():
     )
 
     assert duplicate.success
+    assert duplicate.data["order_id"] == order_id
+    assert duplicate.agent["order_id"] == order_id
+    assert duplicate.agent["submitted_order_id"] == order_id
     assert duplicate.user_message == submitted.user_message
     assert duplicate.agent["submission_confirmation"] == (
         submitted.agent["submission_confirmation"]

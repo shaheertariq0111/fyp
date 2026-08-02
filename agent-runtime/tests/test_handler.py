@@ -48,10 +48,17 @@ def reset_fake_memory():
     FakeMemorySessionManager.history_by_session = {}
 
 
-def settings(memory_id="memory-1", environment="production"):
+def settings(
+    memory_id="memory-1",
+    environment="production",
+    whatsapp_memory_namespace="whatsapp-agent-v2",
+    whatsapp_memory_ttl_hours=6,
+):
     return SimpleNamespace(
         environment=environment,
         agentcore_memory_id=memory_id,
+        whatsapp_agentcore_memory_namespace=whatsapp_memory_namespace,
+        whatsapp_agentcore_memory_ttl_hours=whatsapp_memory_ttl_hours,
         log_level="INFO",
         session_token_secret_arn="",
         aws_region="us-east-1",
@@ -135,6 +142,49 @@ def test_handler_invokes_existing_restaurant_agent_with_agentcore_memory(monkeyp
     assert captured["agent_session_id"] == "session-1"
     assert captured["request_id"] == "req-trusted"
     assert FakeMemorySessionManager.closed == [FakeMemorySessionManager.created[0]]
+
+
+def test_handler_uses_versioned_agentcore_memory_session_for_whatsapp(monkeypatch):
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def fake_build_restaurant_agent(*, session_manager):
+        return FakeAgent(session_manager)
+
+    def fake_invoke_restaurant_agent(message, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(message={"content": [{"text": "Ready."}]}, tool_calls=[])
+
+    monkeypatch.setattr(handler, "build_restaurant_agent", fake_build_restaurant_agent)
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke_restaurant_agent)
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: "Ready.")
+    monkeypatch.setattr(handler.time, "time", lambda: 216000)
+    monkeypatch.setattr(
+        handler,
+        "get_agentcore_runtime_settings",
+        lambda: settings(whatsapp_memory_namespace="wa-clean-v3"),
+    )
+
+    response = handler.invoke(runtime_payload(
+        agent_session_id="whatsapp-session-1",
+        channel="whatsapp",
+    ))
+
+    assert captured["agent_session_id"] == "whatsapp-session-1"
+    assert response["memory"] == {
+        "memory_id": "memory-1",
+        "actor_id": "customer-1",
+        "session_id": "wa-clean-v3-whatsapp-session-1-b10",
+    }
+    assert FakeMemoryConfig.created == [{
+        "memory_id": "memory-1",
+        "actor_id": "customer-1",
+        "session_id": "wa-clean-v3-whatsapp-session-1-b10",
+        "batch_size": 1,
+    }]
 
 
 def test_runtime_request_accepts_missing_request_id():
