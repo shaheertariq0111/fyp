@@ -44,6 +44,7 @@ class AgentCoreRuntimeClient:
             payload=self._payload(request),
             user_id=request.user_id,
             agent_session_id=request.agent_session_id,
+            runtime_session_id=self._runtime_session_id(request.agent_session_id, request.request_id),
             channel=request.channel,
         )
         return AgentInvocationResult(
@@ -69,6 +70,10 @@ class AgentCoreRuntimeClient:
             },
             user_id=request.user_id,
             agent_session_id=request.agent_session_id,
+            runtime_session_id=self._runtime_session_id(
+                request.agent_session_id,
+                request.request_id,
+            ),
             channel=request.channel,
         )
         return OrderIntentClassification.model_validate(result.get("intent"))
@@ -91,6 +96,10 @@ class AgentCoreRuntimeClient:
             },
             user_id=request.user_id,
             agent_session_id=request.agent_session_id,
+            runtime_session_id=self._runtime_session_id(
+                request.agent_session_id,
+                request.request_id,
+            ),
             channel=request.channel,
         )
         return WhatsAppTurnInterpretation.model_validate(result.get("turn_intent"))
@@ -101,6 +110,7 @@ class AgentCoreRuntimeClient:
         payload: dict[str, Any],
         user_id: str,
         agent_session_id: str,
+        runtime_session_id: str,
         channel: str,
     ) -> dict[str, Any]:
         started = time.perf_counter()
@@ -110,6 +120,7 @@ class AgentCoreRuntimeClient:
                 "event": "agentcore_invocation_started",
                 "actor_id": user_id,
                 "agent_session_id": agent_session_id,
+                "runtime_session_id": runtime_session_id,
                 "channel": channel,
                 "agentcore_invocation_status": "started",
             },
@@ -117,7 +128,7 @@ class AgentCoreRuntimeClient:
         try:
             response = self.client.invoke_agent_runtime(
                 agentRuntimeArn=self.runtime_arn,
-                runtimeSessionId=agent_session_id,
+                runtimeSessionId=runtime_session_id,
                 runtimeUserId=user_id,
                 contentType="application/json",
                 accept="application/json",
@@ -134,6 +145,7 @@ class AgentCoreRuntimeClient:
                     "event": "agentcore_invocation_failed",
                     "actor_id": user_id,
                     "agent_session_id": agent_session_id,
+                    "runtime_session_id": runtime_session_id,
                     "channel": channel,
                     "agentcore_invocation_status": "failed",
                     "error_code": "AGENT_INVOCATION_FAILED",
@@ -148,12 +160,17 @@ class AgentCoreRuntimeClient:
                 "event": "agentcore_invocation_completed",
                 "actor_id": user_id,
                 "agent_session_id": agent_session_id,
+                "runtime_session_id": runtime_session_id,
                 "channel": channel,
                 "agentcore_invocation_status": "completed",
                 "response_time_ms": round((time.perf_counter() - started) * 1000, 2),
             },
         )
         return result
+
+    @staticmethod
+    def _runtime_session_id(agent_session_id: str, request_id: str | None) -> str:
+        return request_id or agent_session_id
 
     async def start_request(self, request: AgentInvocationRequest) -> dict:
         raise NotImplementedError("Durable AgentCore async requests are handled by request service")
