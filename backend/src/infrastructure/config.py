@@ -72,7 +72,6 @@ class Settings(BaseSettings):
     agentflo_gateway_tenant_id: str = "fyp-dev"
     agentflo_gateway_agent_id: str = "restaurant-agent"
     agentflo_gateway_actor_id: str = ""
-    whatsapp_session_namespace: str = "agent-led-v2"
 
     menu_site_base_url: HttpUrl
     session_token_secret: str = Field(min_length=16)
