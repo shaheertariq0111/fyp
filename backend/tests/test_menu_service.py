@@ -86,6 +86,32 @@ def test_search_matches_tags_and_metadata_best_for():
     assert [entry["product_id"] for entry in tag_result.data["items"]] == ["tag-match"]
 
 
+def test_search_combines_category_and_tag_for_primary_drink_products():
+    result = service([
+        item(
+            "pizza-deal",
+            name="Pizza Deal",
+            description="Pizza deal with drinks.",
+            category="deals",
+            tags=["deal", "drink"],
+        ),
+        item(
+            "pepsi",
+            name="PEPSI",
+            category="drinks-and-extras",
+            tags=["drink"],
+        ),
+        item(
+            "ranch-dip",
+            name="Ranch Dip",
+            category="drinks-and-extras",
+            tags=["extra"],
+        ),
+    ]).search_menu(category="drinks-and-extras", tags=["drink"])
+
+    assert [entry["product_id"] for entry in result.data["items"]] == ["pepsi"]
+
+
 def test_search_ranks_exact_food_terms_before_partial_chicken_matches():
     result = service([
         item("legend-ranch", name="Legend Ranch", description="Chicken pizza",

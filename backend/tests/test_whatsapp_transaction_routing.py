@@ -33,6 +33,46 @@ class Menu:
         available = [
             item for item in self.items if item.get("product_id") not in excluded
         ]
+        category = kwargs.get("category")
+        if category:
+            available = [
+                item
+                for item in available
+                if str(item.get("category") or "").casefold()
+                == str(category).casefold()
+            ]
+        required_tags = {
+            str(tag).casefold() for tag in kwargs.get("tags") or []
+        }
+        if required_tags:
+            available = [
+                item
+                for item in available
+                if required_tags.issubset({
+                    str(tag).casefold()
+                    for tag in [
+                        *item.get("tags", []),
+                        *(item.get("metadata") or {}).get("best_for", []),
+                    ]
+                })
+            ]
+        query = str(kwargs.get("query") or "").casefold()
+        if query:
+            query_terms = query.split()
+            available = [
+                item
+                for item in available
+                if all(
+                    term
+                    in " ".join([
+                        str(item.get("name") or ""),
+                        str(item.get("description") or ""),
+                        str(item.get("category") or ""),
+                        *[str(tag) for tag in item.get("tags", [])],
+                    ]).casefold()
+                    for term in query_terms
+                )
+            ]
         limit = kwargs.get("limit")
         visible = available[:limit] if limit is not None else available
         return ToolResponse.ok(
@@ -213,12 +253,14 @@ BACKEND_SPICY_ITEMS = [
         "name": "Backend Spicy Paneer",
         "currency": "PKR",
         "starting_price": 1200,
+        "tags": ["pizza", "spicy"],
     },
     {
         "product_id": "backend-hot-chicken",
         "name": "Backend Hot Chicken",
         "currency": "PKR",
         "starting_price": 1400,
+        "tags": ["pizza", "spicy"],
     },
 ]
 
@@ -371,26 +413,216 @@ def test_specific_menu_request_wins_over_broad_classifier_result():
     assert menu.calls[0]["query"] == "spicy"
 
 
-@pytest.mark.parametrize(
-    ("message", "expected_query"),
-    [
-        ("do you have choco bread?", "choco bread"),
-        ("do you have drinks?", "drinks"),
-    ],
-)
-def test_specific_menu_query_replaces_stale_broad_menu(
-    message,
-    expected_query,
-):
+def test_specific_product_query_replaces_stale_broad_menu():
     intent = IntentClient("menu_browse")
-    flow, menu, carts, _, _ = order_flow(intent=intent)
+    items = [{
+        "product_id": "choco-bread",
+        "name": "Choco Bread",
+        "currency": "PKR",
+        "starting_price": 450,
+    }]
+    flow, menu, carts, _, _ = order_flow(items=items, intent=intent)
     order_turn(flow, "menu")
 
-    order_turn(flow, message)
+    result = order_turn(flow, "do you have choco bread?")
 
-    assert menu.calls[-1]["query"] == expected_query
+    assert menu.calls[-1]["query"] == "choco bread"
     assert menu.calls[-1]["exclude_product_ids"] == []
     assert carts.started == []
+    assert "Choco Bread" in result.text
+
+
+def test_explicit_cancel_without_cart_or_order_returns_clean_response():
+    flow, _, carts, _, _ = order_flow()
+
+    result = order_turn(flow, "no cancel my order. i dont want to order")
+
+    assert carts.discarded == [("customer-1", "session-1")]
+    assert result.text == "There isn't an active cart or pending order to cancel."
+    assert result.tool_calls[0]["tool_name"] == "discard_active_cart"
+    assert result.tool_calls[0]["success"] is True
+
+
+def test_explicit_cancel_does_not_cancel_submitted_restaurant_order():
+    flow, _, carts, _, orders = order_flow(
+        active_order={
+            "order_id": "ORD-SUBMITTED",
+            "status": "submitted_to_restaurant",
+        }
+    )
+
+    result = order_turn(flow, "cancel my order")
+
+    assert carts.discarded == [("customer-1", "session-1")]
+    assert orders.active_order["status"] == "submitted_to_restaurant"
+    assert "already been submitted" in result.text
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_tags", "expected_names", "excluded_names"),
+    [
+        ("do you have drinks?", ["drink"], ["PEPSI"], ["Pizza N Wings", "Ranch Dip"]),
+        (
+            "recommend me something sweet",
+            ["dessert"],
+            ["Choco Bread", "Lava Cake"],
+            ["Legend Ranch"],
+        ),
+        (
+            "any dessert?",
+            ["dessert"],
+            ["Choco Bread", "Lava Cake"],
+            ["Legend Ranch"],
+        ),
+    ],
+)
+def test_menu_facets_replace_broad_state_with_authoritative_filtered_results(
+    message,
+    expected_tags,
+    expected_names,
+    excluded_names,
+):
+    items = [
+        {
+            "product_id": "pizza-n-wings",
+            "name": "Pizza N Wings",
+            "description": "A pizza deal with drinks.",
+            "category": "deals",
+            "tags": ["drink", "deal"],
+            "currency": "PKR",
+            "starting_price": 1950,
+        },
+        {
+            "product_id": "pepsi",
+            "name": "PEPSI",
+            "category": "drinks-and-extras",
+            "tags": ["drink"],
+            "currency": "PKR",
+            "starting_price": 150,
+        },
+        {
+            "product_id": "ranch-dip",
+            "name": "Ranch Dip",
+            "category": "drinks-and-extras",
+            "tags": ["extra"],
+            "currency": "PKR",
+            "starting_price": 100,
+        },
+        {
+            "product_id": "choco-bread",
+            "name": "Choco Bread",
+            "category": "chicken-and-sides",
+            "tags": ["side", "dessert"],
+            "currency": "PKR",
+            "starting_price": 450,
+        },
+        {
+            "product_id": "lava-cake",
+            "name": "Lava Cake",
+            "category": "chicken-and-sides",
+            "tags": ["side", "dessert"],
+            "currency": "PKR",
+            "starting_price": 450,
+        },
+        {
+            "product_id": "legend-ranch",
+            "name": "Legend Ranch",
+            "category": "classic-flavors",
+            "tags": ["pizza"],
+            "currency": "PKR",
+            "starting_price": 750,
+        },
+    ]
+    flow, menu, carts, sessions, _ = order_flow(
+        items=items,
+        intent=IntentClient("menu_browse"),
+    )
+    order_turn(flow, "menu")
+
+    result = order_turn(flow, message)
+
+    assert menu.calls[-1]["query"] is None
+    assert menu.calls[-1]["tags"] == expected_tags
+    assert menu.calls[-1]["exclude_product_ids"] == []
+    if expected_tags == ["drink"]:
+        assert menu.calls[-1]["category"] == "drinks-and-extras"
+        assert sessions.menu_query == "facet:drink"
+    else:
+        assert "category" not in menu.calls[-1]
+        assert sessions.menu_query == "facet:dessert"
+    for name in expected_names:
+        assert name in result.text
+    for name in excluded_names:
+        assert name not in result.text
+    assert carts.started == []
+
+
+def test_validated_menu_facet_wins_over_unrelated_classifier_action():
+    items = [{
+        "product_id": "lava-cake",
+        "name": "Lava Cake",
+        "category": "chicken-and-sides",
+        "tags": ["dessert"],
+        "currency": "PKR",
+        "starting_price": 450,
+    }]
+    flow, menu, _, _, orders = order_flow(
+        items=items,
+        intent=IntentClient("latest_order_status"),
+    )
+
+    result = order_turn(flow, "any dessert?")
+
+    assert menu.calls[-1]["tags"] == ["dessert"]
+    assert orders.status_calls == []
+    assert "Lava Cake" in result.text
+
+
+def test_show_more_preserves_active_menu_facet():
+    items = [
+        {
+            "product_id": f"dessert-{index}",
+            "name": f"Dessert {index}",
+            "category": "chicken-and-sides",
+            "tags": ["dessert"],
+            "currency": "PKR",
+            "starting_price": 400 + index,
+        }
+        for index in range(1, 8)
+    ]
+    flow, menu, _, sessions, _ = order_flow(
+        items=items,
+        intent=IntentClient("menu_browse_more"),
+    )
+
+    first = order_turn(flow, "any dessert?")
+    second = order_turn(flow, "show more")
+
+    assert "Dessert 1" in first.text
+    assert "Dessert 6" not in first.text
+    assert menu.calls[-1]["query"] is None
+    assert menu.calls[-1]["tags"] == ["dessert"]
+    assert menu.calls[-1]["exclude_product_ids"] == [
+        "dessert-1",
+        "dessert-2",
+        "dessert-3",
+        "dessert-4",
+        "dessert-5",
+    ]
+    assert "Dessert 6" in second.text
+    assert "Dessert 1" not in second.text
+    assert sessions.menu_query == "facet:dessert"
+
+
+def test_unknown_specific_menu_query_does_not_return_broad_first_page():
+    flow, menu, _, _, _ = order_flow(items=BACKEND_SPICY_ITEMS)
+
+    result = order_turn(flow, "do you have an unlisted platter?")
+
+    assert menu.calls[-1]["query"] == "unlisted platter"
+    assert menu.calls[-1]["exclude_product_ids"] == []
+    assert "Backend Spicy Paneer" not in result.text
+    assert "couldn't find a matching available menu item" in result.text
 
 
 def test_whole_menu_first_page_explains_pagination():
