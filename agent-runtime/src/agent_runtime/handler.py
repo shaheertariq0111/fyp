@@ -43,6 +43,24 @@ def ensure_session_token_secret(settings: Any) -> None:
     get_services.cache_clear()
 
 
+def agentcore_memory_session_id(request: RuntimeRequest, settings: Any) -> str:
+    if request.channel != "whatsapp":
+        return request.agent_session_id
+    namespace = str(
+        getattr(settings, "whatsapp_agentcore_memory_namespace", "")
+        or "whatsapp-agent-v2"
+    ).strip()
+    ttl_hours = int(getattr(settings, "whatsapp_agentcore_memory_ttl_hours", 6) or 6)
+    ttl_seconds = max(ttl_hours, 1) * 60 * 60
+    bucket = int(time.time() // ttl_seconds)
+    base_session_id = (
+        f"{namespace}-{request.agent_session_id}"
+        if namespace
+        else request.agent_session_id
+    )
+    return f"{base_session_id}-b{bucket}"
+
+
 def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     request = RuntimeRequest.model_validate(event)
     settings = get_agentcore_runtime_settings()
@@ -107,11 +125,12 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     ensure_session_token_secret(settings)
     memory_id = require_agentcore_memory_id(settings)
     actor_id = agentcore_actor_id(customer_id=request.customer_id, user_id=request.user_id)
+    memory_session_id = agentcore_memory_session_id(request, settings)
     memory_config_cls, session_manager_cls = load_agentcore_memory_integration()
     memory_config = memory_config_cls(
         memory_id=memory_id,
         actor_id=actor_id,
-        session_id=request.agent_session_id,
+        session_id=memory_session_id,
         batch_size=1,
     )
     logger.info(
@@ -120,6 +139,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             "event": "agentcore_invocation_started",
             "actor_id": actor_id,
             "agent_session_id": request.agent_session_id,
+            "memory_session_id": memory_session_id,
             "channel": request.channel,
             "agentcore_invocation_status": "started",
         },
@@ -150,6 +170,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 "event": "agentcore_invocation_failed",
                 "actor_id": actor_id,
                 "agent_session_id": request.agent_session_id,
+                "memory_session_id": memory_session_id,
                 "channel": request.channel,
                 "agentcore_invocation_status": "failed",
                 "error_code": "AGENT_INVOCATION_FAILED",
@@ -168,6 +189,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 "event": "agent_tool_completed",
                 "actor_id": actor_id,
                 "agent_session_id": request.agent_session_id,
+                "memory_session_id": memory_session_id,
                 "channel": request.channel,
                 "tool_name": call.tool_name,
                 "tool_success": call.success,
@@ -181,6 +203,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             "event": "agentcore_invocation_completed",
             "actor_id": actor_id,
             "agent_session_id": request.agent_session_id,
+            "memory_session_id": memory_session_id,
             "channel": request.channel,
             "agentcore_invocation_status": "completed",
             "response_time_ms": round((time.perf_counter() - started) * 1000, 2),
@@ -192,7 +215,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
         memory={
             "memory_id": memory_id,
             "actor_id": actor_id,
-            "session_id": request.agent_session_id,
+            "session_id": memory_session_id,
         },
     )
     return response.model_dump(exclude_none=True)

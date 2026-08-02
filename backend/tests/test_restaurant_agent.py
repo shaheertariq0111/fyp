@@ -129,6 +129,11 @@ def test_system_prompt_requires_tool_grounding():
         in normalized_prompt
     )
     assert "The backend sends one outbound WhatsApp reply" in normalized_prompt
+    assert "WHATSAPP RESPONSE DISCIPLINE" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "WhatsApp replies must be short and action-oriented" in normalized_prompt
+    assert "Ask exactly one next-step question" in normalized_prompt
+    assert "Do not provide long explanations" in normalized_prompt
+    assert "answer any brief safe side question" in normalized_prompt
     assert "Silently call required tools during the same turn" in normalized_prompt
     assert "always end with a clear next step" in normalized_prompt
     assert "reinterpret the customer's intent using the returned state" in normalized_prompt
@@ -143,6 +148,13 @@ def test_system_prompt_requires_tool_grounding():
     assert "customer refuses the address step" in normalized_prompt
     assert "do not keep asking for an address" in normalized_prompt
     assert "switch to takeaway or cancel the order" in normalized_prompt
+    assert "never ask the customer to type a contact number during checkout" in (
+        normalized_prompt
+    )
+    assert "Use that WhatsApp number as the contact number" in normalized_prompt
+    assert "Checkout does not require special instructions" in normalized_prompt
+    assert "Ask only for the backend-required next input" in normalized_prompt
+    assert "Never refuse to collect a delivery address" in normalized_prompt
     assert "hello I would like to order a pepperoni pizza" in normalized_prompt
     assert "choose the item and size" in normalized_prompt
     assert "MENU GROUNDING" in RESTAURANT_AGENT_SYSTEM_PROMPT
@@ -158,6 +170,10 @@ def test_system_prompt_requires_tool_grounding():
     assert (
         "latest successful menu tool result" in normalized_prompt
     )
+    assert "include only customer-facing details" in normalized_prompt
+    assert "Do not expose internal menu metadata" in normalized_prompt
+    assert "recommendation scores" in normalized_prompt
+    assert "upsell group IDs" in normalized_prompt
     assert (
         "customer saying they want an item is not proof" in normalized_prompt
     )
