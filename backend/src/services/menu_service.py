@@ -81,6 +81,51 @@ class MenuService:
         return ToolResponse.ok(data={"item": result}, user_message="Here are the current item details.",
                                next_action="present_item")
 
+    def search_menu_options(self, query: str) -> ToolResponse:
+        """Find an available choice that may not be a standalone menu item."""
+        normalized_query = self._normalize_search_text(query)
+        occurrences = []
+        menu_items = self.repository.search(available_only=True)
+        for group in self.repository.list_entities("option_group"):
+            matching_options = [
+                option for option in group.get("options", [])
+                if option.get("available", True)
+                and normalized_query in {
+                    self._normalize_search_text(str(option.get("name") or "")),
+                    self._normalize_search_text(str(option.get("option_id") or "")),
+                }
+            ]
+            if not matching_options:
+                continue
+            hosts = [
+                self._public_item(item)
+                for item in menu_items
+                if group.get("option_group_id")
+                in (item.get("customization_group_ids") or [])
+            ]
+            public_group = self._public_group(group)
+            for option in matching_options:
+                occurrences.append({
+                    "option": {
+                        key: option.get(key)
+                        for key in (
+                            "option_id", "name", "product_id", "price_delta", "available"
+                        )
+                        if key in option
+                    },
+                    "group": public_group,
+                    "menu_items": hosts,
+                })
+        return ToolResponse.ok(
+            data={"occurrences": occurrences},
+            user_message=(
+                "I found that choice in the current menu."
+                if occurrences
+                else "I couldn't find that item or choice in the current menu."
+            ),
+            next_action="present_menu_information",
+        )
+
     def admin_list_entities(self, entity_type: str) -> dict:
         self._validate_entity_type(entity_type)
         return {"items": sorted(
@@ -191,7 +236,7 @@ class MenuService:
         allowed = ("product_id", "name", "description", "category", "currency",
                    "available", "price", "starting_price", "base_prices", "source_category",
                    "requires_customization", "customization_group_ids", "upsell_group_ids",
-                   "tags", "image_url", "metadata")
+                   "tags", "image_url", "metadata", "customization_rules")
         return {key: item.get(key) for key in allowed if key in item}
 
     @staticmethod
