@@ -26,14 +26,6 @@ from src.services.menu_session_service import MenuSessionService
 from src.services.order_service import OrderService
 from src.services.support_flow_service import SupportFlowService
 from src.services.ticket_service import TicketService
-from src.services.whatsapp_order_flow_service import WhatsAppOrderFlowService
-from src.services.whatsapp_support_flow_service import WhatsAppSupportFlowService
-
-
-def _get_agent_runtime_client():
-    from src.agent_client import get_agent_runtime_client
-
-    return get_agent_runtime_client()
 
 
 @dataclass
@@ -50,8 +42,6 @@ class ServiceContainer:
     support_flow: SupportFlowService
     knowledge: KnowledgeService
     audit: AuditService
-    whatsapp_order_flow: WhatsAppOrderFlowService
-    whatsapp_support_flow: WhatsAppSupportFlowService
 
 
 @lru_cache
@@ -112,17 +102,4 @@ def get_services() -> ServiceContainer:
             settings.knowledge_base_max_results,
         ),
         audit=AuditService(AuditRepository(dynamodb, settings.audit_table_name)),
-        whatsapp_order_flow=WhatsAppOrderFlowService(
-            menu_service,
-            cart_service,
-            order_service,
-            agent_session_service,
-            intent_client_factory=_get_agent_runtime_client,
-        ),
-        whatsapp_support_flow=WhatsAppSupportFlowService(
-            support_flow=support_flow_service,
-            tickets=ticket_service,
-            agent_sessions=agent_session_service,
-            orders=order_service,
-        ),
     )
