@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.agent.order_intent import OrderIntentClassification
+from src.agent.whatsapp_turn_intent import WhatsAppTurnInterpretation
 from src.models.tool_responses import ToolResponse
 from src.services.agent_session_service import AgentSessionService
 from src.services.order_service import OrderService
@@ -98,6 +99,16 @@ class IntentClient:
         self.requests = []
 
     def classify_order_intent(self, request):
+        self.requests.append(request)
+        return self.result
+
+
+class TurnIntentClient:
+    def __init__(self, **result):
+        self.result = WhatsAppTurnInterpretation(**result)
+        self.requests = []
+
+    def classify_whatsapp_turn(self, request):
         self.requests.append(request)
         return self.result
 
@@ -430,6 +441,123 @@ def test_specific_product_query_replaces_stale_broad_menu():
     assert menu.calls[-1]["exclude_product_ids"] == []
     assert carts.started == []
     assert "Choco Bread" in result.text
+
+
+@pytest.mark.parametrize(
+    ("message", "question_type", "target", "item"),
+    [
+        (
+            "what is choco bread?",
+            "contents",
+            "choco bread",
+            {
+                "product_id": "choco-bread",
+                "name": "Choco Bread",
+                "description": "Chocolate-filled bread from the current menu.",
+                "currency": "PKR",
+                "starting_price": 450,
+            },
+        ),
+        (
+            "lava cake comes with 2 pieces?",
+            "pieces",
+            "lava cake",
+            {
+                "product_id": "lava-cake-2",
+                "name": "Lava Cake - 2 Pcs",
+                "description": "Two pieces of lava cake.",
+                "currency": "PKR",
+                "starting_price": 850,
+            },
+        ),
+        (
+            "what comes in epic medium?",
+            "combo_contents",
+            "epic medium",
+            {
+                "product_id": "epic-medium",
+                "name": "Epic Medium",
+                "description": "Backend-authored combo contents.",
+                "currency": "PKR",
+                "starting_price": 1900,
+            },
+        ),
+        (
+            "can I choose crust for chicken fajita?",
+            "options",
+            "chicken fajita",
+            {
+                "product_id": "chicken-fajita",
+                "name": "Chicken Fajita",
+                "description": "A current menu pizza.",
+                "currency": "PKR",
+                "starting_price": 650,
+            },
+        ),
+    ],
+)
+def test_structured_informational_questions_read_menu_without_selecting_item(
+    message,
+    question_type,
+    target,
+    item,
+):
+    intent = TurnIntentClient(
+        action="menu_item_detail",
+        confidence=0.97,
+        informational_only=True,
+        wants_to_order=False,
+        question_type=question_type,
+        target_items=[target],
+    )
+    flow, menu, carts, sessions, _ = order_flow(items=[item], intent=intent)
+    sessions.offered = [item]
+
+    result = order_turn(flow, message)
+
+    assert intent.requests[-1].state == "menu_selection"
+    assert menu.calls[-1]["query"] == target
+    assert carts.started == []
+    assert carts.discarded == []
+    assert sessions.offered == [item]
+    assert item["name"] in result.text
+    assert result.tool_calls[0]["is_write"] is False
+
+
+def test_informational_question_does_not_advance_pending_order():
+    order = {
+        "order_id": "ORD-PENDING",
+        "status": "awaiting_fulfillment_method",
+    }
+    intent = TurnIntentClient(
+        action="menu_item_detail",
+        confidence=0.96,
+        informational_only=True,
+        wants_to_order=False,
+        question_type="contents",
+        target_items=["choco bread"],
+    )
+    item = {
+        "product_id": "choco-bread",
+        "name": "Choco Bread",
+        "description": "Backend-authored description.",
+        "currency": "PKR",
+        "starting_price": 450,
+    }
+    flow, _, carts, _, orders = order_flow(
+        items=[item],
+        active_order=order,
+        intent=intent,
+    )
+
+    result = order_turn(flow, "what is choco bread?")
+
+    assert orders.active_order == order
+    assert orders.status_calls == []
+    assert carts.started == []
+    assert carts.discarded == []
+    assert "Choco Bread" in result.text
+    assert all(call["is_write"] is False for call in result.tool_calls)
 
 
 def test_explicit_cancel_without_cart_or_order_returns_clean_response():

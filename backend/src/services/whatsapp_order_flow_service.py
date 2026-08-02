@@ -6,8 +6,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
+from src.agent.whatsapp_turn_intent import (
+    WhatsAppTurnIntentRequest,
+    WhatsAppTurnInterpretation,
+)
 from src.models.tool_responses import ToolResponse
 from src.services.menu_query_service import MenuQueryResolver, MenuSearchPlan
+from src.services.whatsapp_turn_policy_service import (
+    INFORMATIONAL_ACTIONS,
+    WhatsAppTurnPolicyService,
+)
 
 
 MENU_REQUEST_PATTERN = re.compile(
@@ -141,6 +149,17 @@ CONVERSATION_INTENT_ACTIONS = [
     "menu_browse",
     "menu_browse_more",
 ]
+WHATSAPP_TURN_BASE_ACTIONS = [
+    "menu_browse",
+    "menu_search",
+    "menu_item_detail",
+    "menu_compare",
+    "menu_recommendation",
+    "order_status",
+    "support_ticket",
+    "general_chat",
+    "clarify",
+]
 CANCELLABLE_ORDER_FLOW_STATUSES = {
     "awaiting_fulfillment_method",
     "awaiting_delivery_address",
@@ -186,6 +205,7 @@ class WhatsAppOrderFlowService:
         intent_client=None,
         intent_client_factory=None,
         menu_query_resolver=None,
+        turn_policy=None,
     ):
         self.menu = menu
         self.carts = carts
@@ -194,6 +214,7 @@ class WhatsAppOrderFlowService:
         self.intent_client = intent_client
         self.intent_client_factory = intent_client_factory
         self.menu_query_resolver = menu_query_resolver or MenuQueryResolver()
+        self.turn_policy = turn_policy or WhatsAppTurnPolicyService()
 
     def handle(
         self,
@@ -225,8 +246,6 @@ class WhatsAppOrderFlowService:
             )
 
         order = self.orders.get_active_order_for_session(user_id, session_id)
-        resolved_menu_plan = self.menu_query_resolver.resolve(message)
-        deterministic_menu_query = self._menu_query(normalized)
         reset_requested = bool(RESET_ORDER_FLOW_PATTERN.fullmatch(normalized))
         cancel_requested = bool(
             EXPLICIT_ORDER_CANCEL_PATTERN.search(normalized)
@@ -247,6 +266,27 @@ class WhatsAppOrderFlowService:
                 text=DOMAIN_SCOPE_RESPONSE,
                 tool_calls=[],
             )
+
+        cart_response = self.carts.get_active_cart(user_id, session_id)
+        cart = (cart_response.data or {}).get("cart") if cart_response.success else None
+        menu_state = self.agent_sessions.get_whatsapp_order_state(user_id, session_id)
+        turn_intent = self._interpret_turn(
+            order=order,
+            cart=cart if isinstance(cart, dict) else None,
+            menu_state=menu_state,
+            normalized=normalized,
+            message=message,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=request_id,
+        )
+        if turn_intent is not None and turn_intent.action in INFORMATIONAL_ACTIONS:
+            return self._handle_informational_turn(turn_intent)
+
+        # The structured interpreter gets first refusal. Existing semantic menu
+        # routing remains a compatibility fallback during this migration phase.
+        resolved_menu_plan = self.menu_query_resolver.resolve(message)
+        deterministic_menu_query = self._menu_query(normalized)
 
         conversation_intent = None
         if self._should_classify_conversation_intent(order, normalized):
@@ -318,8 +358,6 @@ class WhatsAppOrderFlowService:
                 request_id,
             )
 
-        cart_response = self.carts.get_active_cart(user_id, session_id)
-        cart = (cart_response.data or {}).get("cart") if cart_response.success else None
         if isinstance(cart, dict):
             return self._handle_cart(
                 cart_response,
@@ -331,7 +369,6 @@ class WhatsAppOrderFlowService:
                 request_id,
             )
 
-        menu_state = self.agent_sessions.get_whatsapp_order_state(user_id, session_id)
         offered_items = menu_state.get("offered_menu_items", [])
         deterministic_menu_more = bool(
             offered_items and MENU_MORE_PATTERN.search(normalized)
@@ -1021,6 +1058,258 @@ class WhatsAppOrderFlowService:
             return None
         return intent
 
+    def _interpret_turn(
+        self,
+        *,
+        order: dict[str, Any] | None,
+        cart: dict[str, Any] | None,
+        menu_state: dict[str, Any],
+        normalized: str,
+        message: str,
+        user_id: str,
+        session_id: str,
+        request_id: str,
+    ) -> WhatsAppTurnInterpretation | None:
+        offered_items = menu_state.get("offered_menu_items") or []
+        state = "conversation"
+        allowed_actions = list(WHATSAPP_TURN_BASE_ACTIONS)
+        options: list[dict[str, str]] = []
+
+        if order is not None:
+            state = str(order.get("status") or "active_order")
+            if state in CANCELLABLE_ORDER_FLOW_STATUSES:
+                allowed_actions.append("cancel_cart")
+        elif cart is not None:
+            state = str(cart.get("status") or "active_cart")
+            if state == "customizing_item":
+                allowed_actions.append("answer_customization_step")
+            elif state == "cart_ready":
+                allowed_actions.extend(["checkout", "cancel_cart"])
+        elif offered_items:
+            state = "menu_selection"
+            allowed_actions.append("select_menu_item")
+            options = self._intent_options(
+                offered_items,
+                id_field="product_id",
+                label_field="name",
+            )
+
+        if not self._should_interpret_turn(
+            state=state,
+            normalized=normalized,
+            has_pagination=bool(offered_items),
+            has_options=bool(options),
+        ):
+            return None
+
+        try:
+            intent_client = self.intent_client
+            if intent_client is None and self.intent_client_factory is not None:
+                intent_client = self.intent_client_factory()
+            classify_turn = getattr(intent_client, "classify_whatsapp_turn", None)
+            if classify_turn is None:
+                return None
+            interpretation = classify_turn(
+                WhatsAppTurnIntentRequest(
+                    message=message,
+                    state=state,
+                    allowed_actions=allowed_actions,
+                    available_options=options,
+                    user_id=user_id,
+                    agent_session_id=session_id,
+                    request_id=request_id,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "WhatsApp turn classification failed",
+                extra={
+                    "event": "whatsapp_turn_classification_failed",
+                    "request_id": request_id,
+                    "actor_id": user_id,
+                    "agent_session_id": session_id,
+                    "channel": "whatsapp",
+                    "order_state": state,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return None
+
+        decision = self.turn_policy.validate(
+            interpretation,
+            allowed_actions=allowed_actions,
+            available_options=options,
+        )
+        if not decision.accepted:
+            logger.info(
+                "WhatsApp turn interpretation rejected by policy",
+                extra={
+                    "event": "whatsapp_turn_policy_rejected",
+                    "request_id": request_id,
+                    "actor_id": user_id,
+                    "agent_session_id": session_id,
+                    "channel": "whatsapp",
+                    "order_state": state,
+                    "interpreted_action": interpretation.action,
+                    "rejection_reason": decision.reason,
+                },
+            )
+            return None
+        return interpretation
+
+    @staticmethod
+    def _should_interpret_turn(
+        *,
+        state: str,
+        normalized: str,
+        has_pagination: bool,
+        has_options: bool,
+    ) -> bool:
+        if DIRECT_MENU_BROWSE_PATTERN.fullmatch(normalized):
+            return False
+        if has_pagination and MENU_MORE_PATTERN.fullmatch(normalized):
+            return False
+        if has_options and re.fullmatch(r"(?:option\s+|item\s+)?\d+", normalized):
+            return False
+        if state == "cart_ready" and CHECKOUT_PATTERN.fullmatch(normalized):
+            return False
+        if state == "awaiting_fulfillment_method" and (
+            normalized in {"1", "2"}
+            or DELIVERY_PATTERN.fullmatch(normalized)
+            or TAKEAWAY_PATTERN.fullmatch(normalized)
+            or CANCEL_PATTERN.fullmatch(normalized)
+        ):
+            return False
+        if state == "pending_confirmation" and (
+            CONFIRM_PATTERN.fullmatch(normalized)
+            or CANCEL_PATTERN.fullmatch(normalized)
+        ):
+            return False
+        if state == "awaiting_customer_name" and (
+            CONFIRM_PATTERN.fullmatch(normalized)
+            or CANCEL_PATTERN.fullmatch(normalized)
+            or CUSTOMER_NAME_PATTERN.search(normalized)
+        ):
+            return False
+        return True
+
+    def _handle_informational_turn(
+        self,
+        interpretation: WhatsAppTurnInterpretation,
+    ) -> WhatsAppOrderFlowResult:
+        targets = [value.strip() for value in interpretation.target_items if value.strip()]
+        search_targets = (
+            targets
+            if interpretation.action == "menu_compare"
+            else [targets[0] if targets else None]
+        )
+        items: list[dict[str, Any]] = []
+        tool_calls: list[dict[str, Any]] = []
+        last_response = None
+        for target in search_targets:
+            search_kwargs: dict[str, Any] = {
+                "query": target,
+                "available_only": True,
+                "limit": 1 if interpretation.action == "menu_compare" else 5,
+                "exclude_product_ids": [],
+            }
+            if interpretation.facet:
+                search_kwargs["tags"] = [interpretation.facet]
+            last_response = self.menu.search_menu(**search_kwargs)
+            tool_calls.extend(
+                self._result("search_menu", last_response, is_write=False).tool_calls
+            )
+            if last_response.success:
+                items.extend((last_response.data or {}).get("items", []))
+        if not items:
+            return WhatsAppOrderFlowResult(
+                text=(
+                    last_response.user_message
+                    if last_response is not None
+                    else "I couldn't find a matching available menu item."
+                ),
+                tool_calls=tool_calls,
+            )
+
+        detail_actions = {"menu_item_detail", "menu_compare"}
+        if interpretation.action not in detail_actions:
+            return WhatsAppOrderFlowResult(
+                text=self._informational_menu_list(items),
+                tool_calls=tool_calls,
+            )
+
+        details: list[dict[str, Any]] = []
+        get_menu_item = getattr(self.menu, "get_menu_item", None)
+        for item in items:
+            detail = item
+            if get_menu_item is not None and item.get("product_id"):
+                response = get_menu_item(str(item["product_id"]))
+                tool_calls.extend(
+                    self._result("get_menu_item", response, is_write=False).tool_calls
+                )
+                if response.success:
+                    detail = (response.data or {}).get("item") or item
+            details.append(detail)
+        return WhatsAppOrderFlowResult(
+            text=self._informational_detail_text(
+                details,
+                question_type=interpretation.question_type,
+            ),
+            tool_calls=tool_calls,
+        )
+
+    @classmethod
+    def _informational_menu_list(cls, items: list[dict[str, Any]]) -> str:
+        return "\n".join([
+            "Here is what I found in the current menu:",
+            *[
+                f"{index}. {item.get('name', 'Menu item')} - {cls._menu_price(item)}"
+                for index, item in enumerate(items, start=1)
+            ],
+        ])
+
+    @classmethod
+    def _informational_detail_text(
+        cls,
+        items: list[dict[str, Any]],
+        *,
+        question_type: str | None,
+    ) -> str:
+        sections = []
+        for item in items:
+            lines = [
+                f"{item.get('name', 'Menu item')} - {cls._menu_price(item)}"
+            ]
+            description = str(item.get("description") or "").strip()
+            if description:
+                lines.append(description)
+            if question_type in {"dietary", "spice", "ingredients"}:
+                labels = [
+                    str(value)
+                    for value in [
+                        *item.get("tags", []),
+                        *(item.get("metadata") or {}).get("best_for", []),
+                    ]
+                    if value
+                ]
+                if labels:
+                    lines.append(f"Menu labels: {', '.join(labels)}")
+            if question_type in {"options", "size"}:
+                groups = item.get("customization_groups") or []
+                if groups:
+                    lines.append("Available options:")
+                    for group in groups:
+                        option_labels = [
+                            str(option.get("label") or option.get("name") or "").strip()
+                            for option in group.get("options", [])
+                        ]
+                        option_labels = [label for label in option_labels if label]
+                        lines.append(
+                            f"- {group.get('name', 'Choice')}: {', '.join(option_labels)}"
+                        )
+            sections.append("\n".join(lines))
+        return "\n\n".join(sections)
+
     @staticmethod
     def _clean_corrected_customer_name(
         value: object,
@@ -1263,10 +1552,10 @@ class WhatsAppOrderFlowService:
     ) -> dict[str, Any] | None:
         if NEGATED_SELECTION_PATTERN.search(normalized):
             return None
-        number_matches = re.findall(r"\b(\d+)\b", normalized)
-        if len(set(number_matches)) > 1:
-            return None
-        number_match = re.search(r"\b(\d+)\b", normalized)
+        number_match = re.fullmatch(
+            r"(?:(?:option|item|[a-z][a-z0-9_-]*)\s+)?(\d+)",
+            normalized,
+        )
         if number_match:
             index = int(number_match.group(1)) - 1
             if 0 <= index < len(choices):

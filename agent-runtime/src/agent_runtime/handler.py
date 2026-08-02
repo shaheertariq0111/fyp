@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from src.agent.order_intent import classify_order_intent
+from src.agent.whatsapp_turn_intent import classify_whatsapp_turn
 from src.agent.restaurant_agent import agent_result_text, build_restaurant_agent, invoke_restaurant_agent
 from src.agent.dependencies import get_services
 from src.infrastructure.config import get_settings
@@ -46,6 +47,21 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     request = RuntimeRequest.model_validate(event)
     settings = get_agentcore_runtime_settings()
     configure_logging(settings.log_level)
+    if request.task == "classify_whatsapp_turn":
+        if not request.state or not request.allowed_actions:
+            raise ValueError(
+                "WhatsApp turn classification requires state and allowed_actions"
+            )
+        turn_intent = classify_whatsapp_turn(
+            message=request.message,
+            state=request.state,
+            allowed_actions=request.allowed_actions,
+            available_options=request.available_options,
+        )
+        return RuntimeResponse(
+            text="",
+            turn_intent=turn_intent,
+        ).model_dump(exclude_none=True)
     if request.task == "classify_order_intent":
         if not request.state or not request.allowed_actions:
             raise ValueError(
