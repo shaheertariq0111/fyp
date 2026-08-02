@@ -2656,6 +2656,52 @@ def test_chat_blocks_fake_whatsapp_transaction_write_without_backend_result(monk
     assert "added" not in completed["text"].lower()
 
 
+def test_chat_preserves_authoritative_submitted_order_cancel_protection():
+    context = AgentRequestContext(
+        user_id="user",
+        agent_session_id="session",
+        customer_id="user",
+        channel="whatsapp",
+        current_message="cancel my order",
+    )
+    text = (
+        "That order has already been submitted, so I haven't cancelled "
+        "the restaurant order."
+    )
+    invocation = AgentInvocationResult(
+        text=text,
+        raw_result={
+            "tool_calls": [{
+                "tool_name": "discard_active_cart",
+                "success": True,
+                "is_write": False,
+                "result": {
+                    "success": True,
+                    "data": {"discarded": False},
+                    "user_message": "There isn't an active cart to discard.",
+                },
+                "error_code": None,
+            }]
+        },
+    )
+
+    response = main._chat_response_from_invocation(
+        context,
+        {
+            "customer": {
+                "customer_id": "user",
+                "display_name": None,
+                "phone_e164": None,
+                "phone_verified": False,
+            },
+            "session": {"agent_session_id": "session"},
+        },
+        invocation,
+    )
+
+    assert response.text == text
+
+
 def test_whatsapp_order_status_uses_actual_confirmed_order(monkeypatch):
     menu_repository = MemoryMenuRepository(
         [{"product_id": "item", "name": "Item", "available": True,

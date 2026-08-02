@@ -7,6 +7,7 @@ from typing import Any
 
 from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
 from src.models.tool_responses import ToolResponse
+from src.services.menu_query_service import MenuQueryResolver, MenuSearchPlan
 
 
 MENU_REQUEST_PATTERN = re.compile(
@@ -184,6 +185,7 @@ class WhatsAppOrderFlowService:
         agent_sessions,
         intent_client=None,
         intent_client_factory=None,
+        menu_query_resolver=None,
     ):
         self.menu = menu
         self.carts = carts
@@ -191,6 +193,7 @@ class WhatsAppOrderFlowService:
         self.agent_sessions = agent_sessions
         self.intent_client = intent_client
         self.intent_client_factory = intent_client_factory
+        self.menu_query_resolver = menu_query_resolver or MenuQueryResolver()
 
     def handle(
         self,
@@ -222,6 +225,7 @@ class WhatsAppOrderFlowService:
             )
 
         order = self.orders.get_active_order_for_session(user_id, session_id)
+        resolved_menu_plan = self.menu_query_resolver.resolve(message)
         deterministic_menu_query = self._menu_query(normalized)
         reset_requested = bool(RESET_ORDER_FLOW_PATTERN.fullmatch(normalized))
         cancel_requested = bool(
@@ -270,6 +274,11 @@ class WhatsAppOrderFlowService:
             conversation_intent is not None
             and conversation_intent.action == "menu_browse_more"
         )
+        if resolved_menu_plan is not None:
+            is_eta_intent = False
+            is_status_intent = False
+            is_menu_browse_intent = False
+            is_menu_more_intent = False
         if (
             is_eta_intent
             or is_status_intent
@@ -331,6 +340,7 @@ class WhatsAppOrderFlowService:
         if offered_items and not (
             is_menu_browse_intent
             or is_menu_more_intent
+            or resolved_menu_plan is not None
             or deterministic_menu_query is not None
         ):
             selected = self._select(offered_items, normalized, ("name", "product_id"))
@@ -374,15 +384,24 @@ class WhatsAppOrderFlowService:
                 )
 
         direct_menu_browse = bool(DIRECT_MENU_BROWSE_PATTERN.fullmatch(normalized))
-        if deterministic_menu_query is not None:
-            query = deterministic_menu_query
-        elif is_menu_more_intent:
-            query = str(menu_state.get("whatsapp_menu_query") or "")
-        elif is_menu_browse_intent or direct_menu_browse:
-            query = ""
-        else:
-            query = None
-        if query is None:
+        search_plan = resolved_menu_plan
+        if search_plan is None:
+            if deterministic_menu_query is not None:
+                search_plan = (
+                    MenuSearchPlan(mode="browse")
+                    if not deterministic_menu_query
+                    else MenuSearchPlan(
+                        mode="product_search",
+                        query=deterministic_menu_query,
+                    )
+                )
+            elif is_menu_more_intent:
+                search_plan = self.menu_query_resolver.from_state_value(
+                    menu_state.get("whatsapp_menu_query")
+                )
+            elif is_menu_browse_intent or direct_menu_browse:
+                search_plan = MenuSearchPlan(mode="browse")
+        if search_plan is None:
             return None
         shown_ids = (
             list(menu_state.get("shown_menu_item_ids") or [])
@@ -394,12 +413,17 @@ class WhatsAppOrderFlowService:
                 text="Please ask to see the menu first, then I can show more options.",
                 tool_calls=[],
             )
-        response = self.menu.search_menu(
-            query=query or None,
-            available_only=True,
-            limit=5,
-            exclude_product_ids=shown_ids,
-        )
+        search_kwargs = {
+            "query": search_plan.query,
+            "available_only": True,
+            "limit": 5,
+            "exclude_product_ids": shown_ids,
+        }
+        if search_plan.category:
+            search_kwargs["category"] = search_plan.category
+        if search_plan.tags:
+            search_kwargs["tags"] = list(search_plan.tags)
+        response = self.menu.search_menu(**search_kwargs)
         items = (response.data or {}).get("items", []) if response.success else []
         if items:
             self.agent_sessions.save_whatsapp_order_state(
@@ -417,7 +441,7 @@ class WhatsAppOrderFlowService:
                     for item in items
                     if item.get("product_id")
                 ],
-                menu_query=query,
+                menu_query=search_plan.state_value,
                 shown_menu_item_ids=[
                     *shown_ids,
                     *[

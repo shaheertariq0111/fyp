@@ -873,6 +873,7 @@ def _authoritative_order_message(
             "set_customization_mode",
             "save_customization_choice",
             "handle_cart_upsell",
+            "discard_active_cart",
             "create_pending_order_from_cart",
             "update_order_flow",
             "get_active_cart",
