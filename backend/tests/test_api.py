@@ -85,8 +85,25 @@ class MemoryAgentRequestService:
         }
 
     def complete_agentflo_whatsapp_message(self, message_id):
-        if message_id in self.agentflo_markers:
-            self.agentflo_markers[message_id]["delivery_state"] = "completed"
+        marker = self.agentflo_markers.get(message_id)
+        if marker is None or marker.get("delivery_state") != "outbound_sending":
+            return False
+        marker["delivery_state"] = "completed"
+        return True
+
+    def claim_agentflo_whatsapp_outbound(self, message_id):
+        marker = self.agentflo_markers.get(message_id)
+        if marker is None or marker.get("delivery_state") != "response_ready":
+            return False
+        marker["delivery_state"] = "outbound_sending"
+        return True
+
+    def retry_agentflo_whatsapp_outbound(self, message_id):
+        marker = self.agentflo_markers.get(message_id)
+        if marker is None or marker.get("delivery_state") != "outbound_sending":
+            return False
+        marker["delivery_state"] = "response_ready"
+        return True
 
     def release_agentflo_whatsapp_message(self, message_id):
         self.agentflo_message_ids.discard(message_id)
@@ -908,6 +925,99 @@ def test_agentflo_whatsapp_duplicate_is_ignored_before_side_effects(
     assert duplicate_log.idempotency_status == "duplicate"
 
 
+@pytest.mark.parametrize(
+    "delivery_state",
+    ["processing", "outbound_sending", "completed"],
+)
+def test_agentflo_whatsapp_duplicate_in_non_sendable_state_is_accepted_without_send(
+    monkeypatch,
+    delivery_state,
+):
+    services = WhatsAppIdentityServices()
+    gateway = StubAgentfloGateway(configured=True)
+    message_id = f"wamid.duplicate-{delivery_state}"
+    services.agent_requests.agentflo_message_ids.add(message_id)
+    services.agent_requests.agentflo_markers[message_id] = {
+        "delivery_state": delivery_state,
+        "request_id": "req-existing",
+        "session_id": "session-existing",
+        "customer_id": "customer-existing",
+        "reply": "Cached reply.",
+    }
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Duplicate inbound message",
+            "from": "+10000000000",
+            "sender_id": "sender-duplicate-state",
+            "message_id": message_id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "ignored": True,
+        "duplicate": True,
+        "reason": "duplicate_message",
+    }
+    assert gateway.calls == []
+    assert services.agent_requests.requests == {}
+    assert services.profile_update_count == 0
+    assert services.agent_requests.agentflo_markers[message_id][
+        "delivery_state"
+    ] == delivery_state
+
+
+def test_agentflo_whatsapp_response_ready_duplicate_claims_and_sends_once(
+    monkeypatch,
+):
+    services = WhatsAppIdentityServices()
+    gateway = StubAgentfloGateway(configured=True)
+    message_id = "wamid.duplicate-response-ready"
+    services.agent_requests.agentflo_message_ids.add(message_id)
+    services.agent_requests.agentflo_markers[message_id] = {
+        "delivery_state": "response_ready",
+        "request_id": "req-existing",
+        "session_id": "session-existing",
+        "customer_id": "customer-existing",
+        "reply": "Cached authoritative reply.",
+    }
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "AgentfloGatewayService",
+        lambda **kwargs: gateway,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={
+            "message": "Duplicate inbound message",
+            "from": "+10000000000",
+            "sender_id": "sender-response-ready",
+            "message_id": message_id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert response.json()["reply"] == "Cached authoritative reply."
+    assert len(gateway.calls) == 1
+    assert services.agent_requests.requests == {}
+    assert services.profile_update_count == 0
+    assert services.agent_requests.agentflo_markers[message_id][
+        "delivery_state"
+    ] == "completed"
+
+
 def test_agentflo_whatsapp_duplicate_confirm_does_not_create_duplicate_order(monkeypatch):
     menu_repository = MemoryMenuRepository(
         [{"product_id": "item", "name": "Item", "available": True,
@@ -1076,6 +1186,9 @@ def test_agentflo_whatsapp_sends_generated_reply_through_gateway(monkeypatch):
         "text": "Synthetic outbound reply.",
         "request_id": "req-1",
     }]
+    assert services.agent_requests.agentflo_markers["message-synthetic-1"][
+        "delivery_state"
+    ] == "completed"
 
 
 def test_agentflo_whatsapp_missing_sender_returns_safe_outbound_failure(
@@ -1189,6 +1302,9 @@ def test_agentflo_whatsapp_gateway_failure_preserves_reply_safely(monkeypatch):
         "sent": False,
         "error_code": "AGENTFLO_OUTBOUND_FAILED",
     }
+    assert services.agent_requests.agentflo_markers["message-synthetic-4"][
+        "delivery_state"
+    ] == "response_ready"
 
 
 def test_agentflo_whatsapp_retries_cached_reply_without_reprocessing(monkeypatch):
@@ -1226,6 +1342,26 @@ def test_agentflo_whatsapp_retries_cached_reply_without_reprocessing(monkeypatch
     }
 
     first = client().post("/api/channels/agentflo/whatsapp", json=payload)
+    assert services.agent_requests.agentflo_markers["message-retry-1"][
+        "delivery_state"
+    ] == "response_ready"
+
+    assert services.agent_requests.claim_agentflo_whatsapp_outbound(
+        "message-retry-1"
+    )
+    concurrent_duplicate = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=payload,
+    )
+    assert concurrent_duplicate.json()["duplicate"] is True
+    assert len(gateway.calls) == 1
+    assert services.agent_requests.agentflo_markers["message-retry-1"][
+        "delivery_state"
+    ] == "outbound_sending"
+    assert services.agent_requests.retry_agentflo_whatsapp_outbound(
+        "message-retry-1"
+    )
+
     gateway.result = {
         "sent": True,
         "status": "accepted",

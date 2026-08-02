@@ -36,6 +36,21 @@ class MemoryAgentRequestRepository:
     def save_idempotency_key(self, marker):
         self.data[marker["PK"]] = deepcopy(marker)
 
+    def transition_idempotency_delivery_state(
+        self,
+        message_id,
+        *,
+        expected_state,
+        next_state,
+        updated_at,
+    ):
+        marker = self.data.get(f"agentflo-whatsapp-message:{message_id}")
+        if marker is None or marker.get("delivery_state") != expected_state:
+            return False
+        marker["delivery_state"] = next_state
+        marker["updated_at"] = updated_at
+        return True
+
     def delete_idempotency_key(self, message_id):
         self.data.pop(f"agentflo-whatsapp-message:{message_id}", None)
 
@@ -137,9 +152,35 @@ def test_agentflo_whatsapp_response_marker_tracks_delivery_and_release():
     assert ready["delivery_state"] == "response_ready"
     assert ready["reply"] == "Authoritative reply."
 
-    requests.complete_agentflo_whatsapp_message("wamid.synthetic-1")
+    assert requests.claim_agentflo_whatsapp_outbound("wamid.synthetic-1")
+    sending = requests.get_agentflo_whatsapp_message("wamid.synthetic-1")
+    assert sending["delivery_state"] == "outbound_sending"
+
+    assert requests.complete_agentflo_whatsapp_message("wamid.synthetic-1")
     completed = requests.get_agentflo_whatsapp_message("wamid.synthetic-1")
     assert completed["delivery_state"] == "completed"
 
     requests.release_agentflo_whatsapp_message("wamid.synthetic-1")
     assert requests.get_agentflo_whatsapp_message("wamid.synthetic-1") is None
+
+
+def test_agentflo_whatsapp_outbound_lock_can_be_released_for_retry():
+    requests = service()
+    assert requests.claim_agentflo_whatsapp_message("wamid.synthetic-1")
+    requests.cache_agentflo_whatsapp_response(
+        "wamid.synthetic-1",
+        request_id="req-1",
+        session_id="session-1",
+        customer_id="customer-1",
+        reply="Authoritative reply.",
+    )
+
+    assert requests.claim_agentflo_whatsapp_outbound("wamid.synthetic-1")
+    assert not requests.claim_agentflo_whatsapp_outbound("wamid.synthetic-1")
+    assert requests.retry_agentflo_whatsapp_outbound("wamid.synthetic-1")
+    assert (
+        requests.get_agentflo_whatsapp_message("wamid.synthetic-1")[
+            "delivery_state"
+        ]
+        == "response_ready"
+    )
