@@ -7,6 +7,10 @@ import pytest
 
 from src.agent_client.agentcore import AgentCoreRuntimeClient
 from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
+from src.agent.whatsapp_turn_intent import (
+    WhatsAppTurnIntentRequest,
+    WhatsAppTurnInterpretation,
+)
 from src.agent_client.factory import get_agent_runtime_client
 from src.agent_client.local import LocalStrandsAgentRuntimeClient
 from src.agent_client.schemas import AgentInvocationRequest
@@ -256,6 +260,53 @@ def test_local_runtime_order_intent_path_does_not_invoke_transactional_agent(mon
 
     assert result.action == "confirm"
     assert result.confidence == 0.92
+
+
+def test_agentcore_runtime_sends_structured_whatsapp_turn_task():
+    captured = {}
+
+    class FakeAgentCoreClient:
+        def invoke_agent_runtime(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "statusCode": 200,
+                "response": io.BytesIO(json.dumps({
+                    "text": "",
+                    "turn_intent": {
+                        "action": "menu_item_detail",
+                        "confidence": 0.96,
+                        "informational_only": True,
+                        "wants_to_order": False,
+                        "question_type": "contents",
+                        "target_items": ["choco bread"],
+                    },
+                }).encode("utf-8")),
+            }
+
+    result = AgentCoreRuntimeClient(
+        runtime_arn="arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/example",
+        aws_region="us-east-1",
+        client=FakeAgentCoreClient(),
+    ).classify_whatsapp_turn(WhatsAppTurnIntentRequest(
+        message="what is choco bread?",
+        state="conversation",
+        allowed_actions=["menu_item_detail"],
+        available_options=[],
+        user_id="user-1",
+        agent_session_id="session-1",
+        request_id="req-1",
+    ))
+
+    payload = json.loads(captured["payload"].decode("utf-8"))
+    assert result == WhatsAppTurnInterpretation(
+        action="menu_item_detail",
+        confidence=0.96,
+        informational_only=True,
+        wants_to_order=False,
+        question_type="contents",
+        target_items=["choco bread"],
+    )
+    assert payload["task"] == "classify_whatsapp_turn"
 
 
 def test_agent_runtime_factory_uses_agentcore_when_runtime_arn_is_set(monkeypatch):

@@ -9,6 +9,11 @@ from src.agent.order_intent import (
     classify_order_intent,
 )
 from src.agent.restaurant_agent import agent_result_text, invoke_restaurant_agent
+from src.agent.whatsapp_turn_intent import (
+    WhatsAppTurnIntentRequest,
+    WhatsAppTurnInterpretation,
+    classify_whatsapp_turn,
+)
 from src.agent_client.schemas import (
     AgentInvocationRequest,
     AgentInvocationResult,
@@ -80,6 +85,17 @@ class LocalStrandsAgentRuntimeClient:
         request: OrderIntentRequest,
     ) -> OrderIntentClassification:
         return classify_order_intent(
+            message=request.message,
+            state=request.state,
+            allowed_actions=request.allowed_actions,
+            available_options=request.available_options,
+        )
+
+    def classify_whatsapp_turn(
+        self,
+        request: WhatsAppTurnIntentRequest,
+    ) -> WhatsAppTurnInterpretation:
+        return classify_whatsapp_turn(
             message=request.message,
             state=request.state,
             allowed_actions=request.allowed_actions,

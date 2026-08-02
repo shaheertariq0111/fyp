@@ -9,6 +9,12 @@ from src.agent.order_intent import (
     OrderIntentClassification,
     classify_order_intent,
 )
+from src.agent.whatsapp_turn_intent import (
+    WHATSAPP_TURN_INTENT_SYSTEM_PROMPT,
+    WhatsAppTurnInterpretation,
+    classify_whatsapp_turn,
+)
+from src.services.whatsapp_turn_policy_service import WhatsAppTurnPolicyService
 
 
 class StructuredAgent:
@@ -78,3 +84,103 @@ def test_order_intent_prompt_routes_menu_browsing_to_authoritative_data():
     assert "authoritative backend menu" in ORDER_INTENT_SYSTEM_PROMPT
     assert "never provide or infer item names" in ORDER_INTENT_SYSTEM_PROMPT
     assert "menu_browse_more" in ORDER_INTENT_SYSTEM_PROMPT
+
+
+def test_whatsapp_turn_classifier_uses_strict_structured_context():
+    agent = StructuredAgent(WhatsAppTurnInterpretation(
+        action="menu_item_detail",
+        confidence=0.95,
+        informational_only=True,
+        wants_to_order=False,
+        question_type="contents",
+        target_items=["choco bread"],
+    ))
+
+    result = classify_whatsapp_turn(
+        message="what is choco bread?",
+        state="menu_selection",
+        allowed_actions=["menu_item_detail", "select_menu_item"],
+        available_options=[{"id": "choco-bread", "label": "Choco Bread"}],
+        agent=agent,
+    )
+
+    assert result.informational_only is True
+    assert result.target_items == ["choco bread"]
+    assert agent.calls[0][1]["structured_output_model"] is WhatsAppTurnInterpretation
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "action": "unknown_action",
+            "confidence": 0.95,
+            "informational_only": False,
+            "wants_to_order": False,
+        },
+        {
+            "action": "menu_item_detail",
+            "confidence": 0.95,
+            "informational_only": True,
+            "wants_to_order": True,
+            "target_items": ["lava cake"],
+        },
+    ],
+)
+def test_whatsapp_turn_schema_rejects_unknown_actions_and_conflicting_flags(payload):
+    with pytest.raises(ValidationError):
+        WhatsAppTurnInterpretation.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("interpretation", "options", "reason"),
+    [
+        (
+            WhatsAppTurnInterpretation(
+                action="menu_item_detail",
+                confidence=0.4,
+                informational_only=True,
+                wants_to_order=False,
+                target_items=["lava cake"],
+            ),
+            [],
+            "low_confidence",
+        ),
+        (
+            WhatsAppTurnInterpretation(
+                action="select_menu_item",
+                confidence=0.95,
+                informational_only=False,
+                wants_to_order=True,
+                selected_option="invented-item",
+            ),
+            [{"id": "real-item", "label": "Real Item"}],
+            "invalid_selected_option",
+        ),
+        (
+            WhatsAppTurnInterpretation(
+                action="checkout",
+                confidence=0.95,
+                informational_only=True,
+                wants_to_order=False,
+            ),
+            [],
+            "invalid_transactional_flags",
+        ),
+    ],
+)
+def test_whatsapp_turn_policy_rejects_unsafe_output(interpretation, options, reason):
+    decision = WhatsAppTurnPolicyService().validate(
+        interpretation,
+        allowed_actions=[interpretation.action],
+        available_options=options,
+    )
+
+    assert decision.accepted is False
+    assert decision.reason == reason
+
+
+def test_whatsapp_turn_prompt_keeps_menu_facts_and_transactions_backend_owned():
+    assert "informational_only=true" in WHATSAPP_TURN_INTENT_SYSTEM_PROMPT
+    assert "backend validates every extracted value" in WHATSAPP_TURN_INTENT_SYSTEM_PROMPT
+    assert "Never answer the customer" in WHATSAPP_TURN_INTENT_SYSTEM_PROMPT

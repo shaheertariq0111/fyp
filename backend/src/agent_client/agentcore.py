@@ -9,6 +9,10 @@ import boto3
 from botocore.config import Config
 
 from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
+from src.agent.whatsapp_turn_intent import (
+    WhatsAppTurnIntentRequest,
+    WhatsAppTurnInterpretation,
+)
 from src.agent_client.schemas import (
     AgentInvocationRequest,
     AgentInvocationResult,
@@ -68,6 +72,28 @@ class AgentCoreRuntimeClient:
             channel=request.channel,
         )
         return OrderIntentClassification.model_validate(result.get("intent"))
+
+    def classify_whatsapp_turn(
+        self,
+        request: WhatsAppTurnIntentRequest,
+    ) -> WhatsAppTurnInterpretation:
+        result = self._invoke_payload(
+            payload={
+                "task": "classify_whatsapp_turn",
+                "message": request.message,
+                "state": request.state,
+                "allowed_actions": request.allowed_actions,
+                "available_options": request.available_options,
+                "user_id": request.user_id,
+                "agent_session_id": request.agent_session_id,
+                "request_id": request.request_id,
+                "channel": request.channel,
+            },
+            user_id=request.user_id,
+            agent_session_id=request.agent_session_id,
+            channel=request.channel,
+        )
+        return WhatsAppTurnInterpretation.model_validate(result.get("turn_intent"))
 
     def _invoke_payload(
         self,

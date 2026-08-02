@@ -9,6 +9,7 @@ from agent_runtime.server import app
 from agent_runtime.schemas import RuntimeRequest
 from src.agent import order_intent, restaurant_agent
 from src.agent.order_intent import OrderIntentClassification
+from src.agent.whatsapp_turn_intent import WhatsAppTurnInterpretation
 
 
 class FakeMemoryConfig:
@@ -191,6 +192,41 @@ def test_handler_classifies_order_intent_without_tools_or_conversation_memory(mo
         "allowed_actions": ["checkout"],
         "available_options": [],
     }
+    assert FakeMemoryConfig.created == []
+    assert FakeMemorySessionManager.created == []
+
+
+def test_handler_classifies_whatsapp_turn_without_tools_or_memory(monkeypatch):
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="menu_item_detail",
+            confidence=0.96,
+            informational_only=True,
+            wants_to_order=False,
+            question_type="contents",
+            target_items=["choco bread"],
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda **kwargs: pytest.fail("transactional agent must not be built"),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        task="classify_whatsapp_turn",
+        message="what is choco bread?",
+        state="conversation",
+        allowed_actions=["menu_item_detail"],
+        available_options=[],
+        channel="whatsapp",
+    ))
+
+    assert response["turn_intent"]["action"] == "menu_item_detail"
+    assert response["turn_intent"]["informational_only"] is True
     assert FakeMemoryConfig.created == []
     assert FakeMemorySessionManager.created == []
 

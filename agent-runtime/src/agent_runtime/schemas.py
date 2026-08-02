@@ -3,10 +3,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from src.agent.order_intent import OrderIntentClassification
+from src.agent.whatsapp_turn_intent import WhatsAppTurnInterpretation
 
 
 class RuntimeRequest(BaseModel):
-    task: Literal["conversation", "classify_order_intent"] = "conversation"
+    task: Literal[
+        "conversation",
+        "classify_order_intent",
+        "classify_whatsapp_turn",
+    ] = "conversation"
     message: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
     agent_session_id: str = Field(min_length=1)
@@ -34,3 +39,4 @@ class RuntimeResponse(BaseModel):
     tool_calls: list[ToolCallResult] = Field(default_factory=list)
     memory: dict[str, str] = Field(default_factory=dict)
     intent: OrderIntentClassification | None = None
+    turn_intent: WhatsAppTurnInterpretation | None = None
