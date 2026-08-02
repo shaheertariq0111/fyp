@@ -6,7 +6,6 @@ import hmac
 import json
 import logging
 import os
-import re
 import time
 import uuid
 from typing import Any, Callable
@@ -29,7 +28,6 @@ from src.agent.context import AgentRequestContext, request_context
 from src.agent.dependencies import get_services
 from src.agent_client import (
     AgentInvocationRequest,
-    AgentInvocationResult,
     get_agent_runtime_client,
 )
 from src.api.schemas import (
@@ -76,109 +74,6 @@ ADMIN_TICKET_CURSOR_DOMAIN = b"admin-ticket-http-cursor-v1."
 ADMIN_TICKET_CURSOR_TTL_SECONDS = 3600
 ADMIN_TICKET_CURSOR_FUTURE_SKEW_SECONDS = 60
 MAX_ADMIN_TICKET_CURSOR_LENGTH = 16 * 1024
-AUTHORITATIVE_SUPPORT_TICKET_TOOLS = frozenset({
-    "create_human_assistance_ticket",
-    "handle_order_complaint",
-    "get_support_ticket_status",
-})
-WAITING_FINAL_RESPONSE_PATTERN = re.compile(
-    r"\b(?:please\s+hold|hold\s+on|please\s+wait|i['’]ll\s+check|"
-    r"i\s+will\s+check|let\s+me\s+check|let\s+me\s+retrieve|"
-    r"retrieve\s+that\s+information|fetch\s+the\s+information|"
-    r"give\s+me\s+(?:a\s+)?moment)\b",
-    re.IGNORECASE,
-)
-FAKE_ORDER_CONFIRMATION_PATTERN = re.compile(
-    r"\b(?:order\s+(?:is\s+)?(?:confirmed|placed|being\s+prepared)|"
-    r"order\s+has\s+been\s+(?:confirmed|placed)|"
-    r"confirmed\s+and\s+(?:will\s+be\s+)?delivered|"
-    r"will\s+be\s+delivered)\b",
-    re.IGNORECASE,
-)
-FAKE_CART_SUMMARY_PATTERN = re.compile(
-    r"\b(?:cart|order)\s+summary\b.*\btotal\b|"
-    r"\btotal\b.*\b(?:cart|order)\s+summary\b",
-    re.IGNORECASE | re.DOTALL,
-)
-FAKE_TICKET_COMPLETION_PATTERN = re.compile(
-    r"\b(?:i(?:'ve|\s+have)\s+)?(?:logged|recorded|created|opened|raised)\b"
-    r".*\b(?:complaint|ticket|support\s+request)\b|"
-    r"\b(?:complaint|ticket|support\s+request)\b.*"
-    r"\b(?:logged|recorded|created|opened|raised)\b",
-    re.IGNORECASE | re.DOTALL,
-)
-FAKE_TRANSACTION_COMPLETION_PATTERN = re.compile(
-    r"\b(?:added|saved|updated|changed|cancelled|canceled|refunded)\b.*"
-    r"\b(?:cart|order|address|fulfilment|fulfillment|item|refund)\b|"
-    r"\b(?:cart|order|address|fulfilment|fulfillment|item|refund)\b.*"
-    r"\b(?:added|saved|updated|changed|cancelled|canceled|refunded)\b",
-    re.IGNORECASE | re.DOTALL,
-)
-ORDER_STATUS_INTENT_PATTERN = re.compile(
-    r"\b(?:status|track|tracking|where\s+is)\b.*\border\b|"
-    r"\border\b.*\b(?:status|track|tracking)\b",
-    re.IGNORECASE,
-)
-SAFE_UNCONFIRMED_ORDER_RESPONSE = (
-    "I couldn't confirm the order yet. Please confirm the missing details first."
-)
-SAFE_UNCONFIRMED_TICKET_RESPONSE = (
-    "I couldn't verify that the support request was logged. Please try again or contact staff."
-)
-SAFE_UNCOMPLETED_TRANSACTION_RESPONSE = (
-    "I couldn't verify that action with the backend. Please try the requested action again."
-)
-NO_CONFIRMED_ORDER_STATUS_RESPONSE = (
-    "I couldn't find a confirmed order for this conversation. Please provide your order ID."
-)
-CONFIRMED_ORDER_STATUSES = frozenset({
-    "submitted_to_restaurant",
-    "accepted",
-    "preparing",
-    "ready_for_pickup",
-    "out_for_delivery",
-    "delivered",
-    "completed",
-})
-MENU_ITEM_REQUEST_PATTERN = re.compile(
-    r"\b(?:order|want|would\s+like|like\s+to|can\s+i|could\s+i|show\s+me|"
-    r"menu|options?|have|get|need|one|1|small|medium|large)\b",
-    re.IGNORECASE,
-)
-MENU_ITEM_WORD_PATTERN = re.compile(r"\b(?:pizza|pepperoni)\b", re.IGNORECASE)
-NON_MENU_CUSTOMER_SERVICE_PATTERN = re.compile(
-    r"\b(?:complain|complaint|refund|support|human|agent|manager|status|"
-    r"track|tracking|where\s+is|cancel|cancellation|wrong|missing|late|cold|"
-    r"damaged|issue|problem)\b",
-    re.IGNORECASE,
-)
-MENU_QUERY_STOPWORDS = frozenset({
-    "a",
-    "an",
-    "and",
-    "can",
-    "could",
-    "get",
-    "have",
-    "hello",
-    "hey",
-    "hi",
-    "i",
-    "large",
-    "like",
-    "medium",
-    "me",
-    "need",
-    "one",
-    "options",
-    "order",
-    "please",
-    "show",
-    "small",
-    "to",
-    "want",
-    "would",
-})
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_frontend_cors_origins(
@@ -233,6 +128,12 @@ ACTION_HANDLERS: dict[str, Callable[..., dict]] = {
     "handle_cart_upsell": tools.handle_cart_upsell,
     "create_pending_order_from_cart": tools.create_pending_order_from_cart,
     "update_order_flow": tools.update_order_flow,
+    "begin_checkout": tools.begin_checkout,
+    "choose_delivery": tools.choose_delivery,
+    "choose_takeaway": tools.choose_takeaway,
+    "save_order_address": tools.save_order_address,
+    "confirm_order": tools.confirm_order,
+    "cancel_order": tools.cancel_order,
     "get_active_cart": tools.get_active_cart,
     "get_order_status": tools.get_order_status,
     "get_customer_profile": tools.get_customer_profile,
@@ -637,31 +538,7 @@ def _buttons_from_tool_calls(tool_calls: list[ToolCallResult]) -> list[dict[str,
     return []
 
 
-def _authoritative_ticket_message(
-    text: str,
-    tool_calls: list[ToolCallResult],
-    context: AgentRequestContext,
-) -> str | None:
-    for call in reversed(tool_calls):
-        if call.tool_name not in AUTHORITATIVE_SUPPORT_TICKET_TOOLS:
-            continue
-        result = call.result if isinstance(call.result, dict) else {}
-        message = result.get("user_message")
-        if isinstance(message, str) and message.strip():
-            return message
-    if (
-        context.channel == "whatsapp"
-        and FAKE_TICKET_COMPLETION_PATTERN.search(text or "")
-    ):
-        return SAFE_UNCONFIRMED_TICKET_RESPONSE
-    return None
-
-
-def _is_waiting_final_response(text: str) -> bool:
-    return bool(WAITING_FINAL_RESPONSE_PATTERN.search(text or ""))
-
-
-def _price_label(item: dict[str, Any]) -> str:
+def _menu_price_label(item: dict[str, Any]) -> str:
     currency = str(item.get("currency") or "").strip()
     if item.get("price") is not None:
         return f"{currency} {item['price']}".strip()
@@ -669,369 +546,119 @@ def _price_label(item: dict[str, Any]) -> str:
         return f"from {currency} {item['starting_price']}".strip()
     base_prices = item.get("base_prices")
     if isinstance(base_prices, dict):
-        ordered_sizes = [
+        sizes = [
             size
             for size in ("small", "medium", "large")
             if base_prices.get(size) is not None
         ]
-        ordered_sizes.extend(
+        sizes.extend(
             size
-            for size in base_prices
-            if size not in ordered_sizes and base_prices.get(size) is not None
+            for size, price in base_prices.items()
+            if size not in sizes and price is not None
         )
-        if ordered_sizes:
+        if sizes:
             return ", ".join(
-                f"{size} {currency} {base_prices[size]}".strip()
-                for size in ordered_sizes
+                f"{str(size).replace('_', ' ')} {currency} {base_prices[size]}".strip()
+                for size in sizes
             )
     return "price shown on menu"
 
 
-def _money_label(amount: Any, currency: Any) -> str:
-    currency_text = str(currency or "").strip()
-    currency_label = "Rs" if currency_text.upper() == "PKR" else currency_text
-    if amount is None:
-        return "not available"
-    try:
-        numeric = float(amount)
-    except (TypeError, ValueError):
-        return f"{currency_label} {amount}".strip()
-    return f"{currency_label} {numeric:,.2f}".strip()
-
-
-def _status_label(status: Any) -> str:
-    return str(status or "unknown").replace("_", " ").capitalize()
-
-
-def _order_from_tool_result(call: ToolCallResult) -> dict[str, Any] | None:
-    result = call.result if isinstance(call.result, dict) else {}
-    data = result.get("data")
-    if not isinstance(data, dict):
-        return None
-    order = data.get("order")
-    if isinstance(order, dict):
-        return order
-    if isinstance(data.get("order_id"), str):
-        return data
+def _menu_item_name(item: dict[str, Any]) -> str | None:
+    name = item.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
     return None
 
 
-def _orders_from_tool_result(call: ToolCallResult) -> list[dict[str, Any]]:
+def _search_menu_guard_response(call: ToolCallResult) -> str | None:
     result = call.result if isinstance(call.result, dict) else {}
     data = result.get("data")
-    if not isinstance(data, dict):
-        return []
-    order = data.get("order")
-    if isinstance(order, dict):
-        return [order]
-    orders = data.get("orders")
-    if isinstance(orders, list):
-        return [order for order in orders if isinstance(order, dict)]
-    if isinstance(data.get("order_id"), str):
-        return [data]
-    return []
-
-
-def _latest_confirmed_order(orders: list[dict[str, Any]]) -> dict[str, Any] | None:
-    confirmed = [
-        order
-        for order in orders
-        if str(order.get("status") or "") in CONFIRMED_ORDER_STATUSES
-    ]
-    if not confirmed:
-        return None
-    return max(
-        confirmed,
-        key=lambda order: str(order.get("updated_at") or order.get("created_at") or ""),
-    )
-
-
-def _submitted_order_from_tool_calls(
-    tool_calls: list[ToolCallResult],
-) -> dict[str, Any] | None:
-    for call in reversed(tool_calls):
-        if call.tool_name != "update_order_flow" or not call.success:
-            continue
-        order = _order_from_tool_result(call)
-        if order and order.get("order_id") and order.get("status") == "submitted_to_restaurant":
-            return order
-    return None
-
-
-def _item_summary_lines(order: dict[str, Any]) -> list[str]:
-    currency = order.get("currency")
-    lines = []
-    items = order.get("items")
-    if not isinstance(items, list) or not items:
-        return ["- Item summary unavailable"]
-    for index, item in enumerate(items, start=1):
-        if not isinstance(item, dict):
-            continue
-        quantity = item.get("quantity") or 1
-        name = str(item.get("name") or "Item").strip()
-        line_total = _money_label(item.get("line_total"), currency)
-        lines.append(f"{index}. {name} x {quantity} - {line_total}")
-    return lines or ["- Item summary unavailable"]
-
-
-def _submitted_order_confirmation(order: dict[str, Any]) -> str:
-    lines = [
-        "Your order has been confirmed and sent to the restaurant.",
-        "",
-        f"Order ID: {order.get('order_id')}",
-        f"Status: {_status_label(order.get('status'))}",
-        f"Total: {_money_label(order.get('total'), order.get('currency'))}",
-        "",
-        "Items:",
-        *_item_summary_lines(order),
-    ]
-    fulfillment_method = order.get("fulfillment_method")
-    if fulfillment_method:
-        lines.extend([
-            "",
-            f"Fulfilment: {str(fulfillment_method).replace('_', ' ').title()}",
-        ])
-    if fulfillment_method == "delivery" and order.get("delivery_address"):
-        lines.append(f"Delivery address: {order['delivery_address']}")
-    lines.extend([
-        "",
-        "Please keep this Order ID for tracking.",
-    ])
-    return "\n".join(lines)
-
-
-def _confirmed_order_status_message(order: dict[str, Any]) -> str:
-    lines = [
-        f"Order ID: {order.get('order_id')}",
-        f"Status: {_status_label(order.get('status'))}",
-    ]
-    if order.get("total") is not None:
-        lines.append(f"Total: {_money_label(order.get('total'), order.get('currency'))}")
-    return "\n".join(lines)
-
-
-def _orders_from_status_tool_calls(tool_calls: list[ToolCallResult]) -> list[dict[str, Any]]:
-    for call in reversed(tool_calls):
-        if call.tool_name == "get_order_status" and call.success:
-            orders = _orders_from_tool_result(call)
-            if orders:
-                return orders
-            return []
-    return []
-
-
-def _whatsapp_order_status_response(
-    context: AgentRequestContext,
-    tool_calls: list[ToolCallResult],
-) -> str:
-    orders = _orders_from_status_tool_calls(tool_calls)
-    if not orders:
-        try:
-            result = get_services().orders.get_order_status(context.user_id)
-        except Exception as exc:
-            logger.warning(
-                "Deterministic order status lookup failed",
-                extra={
-                    "event": "deterministic_order_status_lookup_failed",
-                    "request_id": context.request_id,
-                    "channel": context.channel,
-                    "error_type": type(exc).__name__,
-                },
-            )
-            return NO_CONFIRMED_ORDER_STATUS_RESPONSE
-        orders = _orders_from_tool_result(
-            ToolCallResult(
-                tool_name="get_order_status",
-                success=result.success,
-                is_write=False,
-                result=result.model_dump(exclude_none=True),
-                error_code=result.error_code,
-            )
-        )
-    confirmed = _latest_confirmed_order(orders)
-    if confirmed is None:
-        return NO_CONFIRMED_ORDER_STATUS_RESPONSE
-    return _confirmed_order_status_message(confirmed)
-
-
-def _authoritative_order_message(
-    context: AgentRequestContext,
-    text: str,
-    tool_calls: list[ToolCallResult],
-) -> str | None:
-    submitted_order = _submitted_order_from_tool_calls(tool_calls)
-    if submitted_order is not None:
-        return _submitted_order_confirmation(submitted_order)
-    if context.channel == "whatsapp" and ORDER_STATUS_INTENT_PATTERN.search(
-        context.current_message or ""
-    ):
-        return _whatsapp_order_status_response(context, tool_calls)
-    has_authoritative_order_result = any(
-        call.success
-        and call.tool_name in {
-            "start_cart_item_customization",
-            "set_customization_mode",
-            "save_customization_choice",
-            "handle_cart_upsell",
-            "discard_active_cart",
-            "create_pending_order_from_cart",
-            "update_order_flow",
-            "get_active_cart",
-            "get_order_status",
-        }
-        for call in tool_calls
-    )
-    if (
-        context.channel == "whatsapp"
-        and not has_authoritative_order_result
-        and FAKE_CART_SUMMARY_PATTERN.search(text or "")
-    ):
-        return SAFE_UNCONFIRMED_ORDER_RESPONSE
-    if FAKE_ORDER_CONFIRMATION_PATTERN.search(text or ""):
-        return SAFE_UNCONFIRMED_ORDER_RESPONSE
-    if (
-        context.channel == "whatsapp"
-        and not has_authoritative_order_result
-        and FAKE_TRANSACTION_COMPLETION_PATTERN.search(text or "")
-    ):
-        return SAFE_UNCOMPLETED_TRANSACTION_RESPONSE
-    return None
-
-
-def _menu_results_response_from_tool(call: ToolCallResult) -> str | None:
-    result = call.result if isinstance(call.result, dict) else {}
-    data = result.get("data")
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or "items" not in data:
         return None
     items = data.get("items")
-    if not isinstance(items, list) or not items:
-        user_message = result.get("user_message")
-        if isinstance(user_message, str) and user_message.strip():
-            return (
-                f"{user_message.strip()} You can try another pizza type "
-                "or ask for the full menu."
-            )
+    if not isinstance(items, list):
         return None
-    lines = []
-    for index, item in enumerate(items[:5], start=1):
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "Menu item").strip()
-        lines.append(f"{index}. {name} - {_price_label(item)}")
-    if not lines:
-        return None
-    return (
-        "Here are the matching options I found:\n"
-        + "\n".join(lines)
-        + "\nWhich item and size would you like?"
-    )
-
-
-def _deterministic_menu_query_from_message(message: str | None) -> str | None:
-    if not message:
-        return None
-    if NON_MENU_CUSTOMER_SERVICE_PATTERN.search(message):
-        return None
-    if not MENU_ITEM_REQUEST_PATTERN.search(message):
-        return None
-    if not MENU_ITEM_WORD_PATTERN.search(message):
-        return None
-
-    normalized = re.sub(r"[^a-z0-9\s]", " ", message.lower())
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    if "pepperoni" in normalized and "pizza" in normalized:
-        return "pepperoni pizza"
-    if "pepperoni" in normalized:
-        return "pepperoni"
-    if "pizza" not in normalized:
-        return None
-
-    before_pizza = normalized.split("pizza", 1)[0]
-    tokens = [
-        token
-        for token in before_pizza.split()
-        if token and token not in MENU_QUERY_STOPWORDS and not token.isdigit()
-    ]
-    if tokens:
-        return f"{' '.join(tokens[-3:])} pizza"
-    return "pizza"
-
-
-def _deterministic_menu_response_for_waiting_text(
-    context: AgentRequestContext,
-    tool_calls: list[ToolCallResult],
-) -> str | None:
-    if context.channel != "whatsapp":
-        return None
-    if any(call.tool_name == "search_menu" and call.success for call in tool_calls):
-        return None
-
-    query = _deterministic_menu_query_from_message(context.current_message)
-    if not query:
-        return None
-
-    try:
-        result = get_services().menu.search_menu(
-            query=query,
-            available_only=True,
-            limit=5,
-        )
-    except Exception as exc:
-        logger.warning(
-            "Deterministic menu lookup failed",
-            extra={
-                "event": "deterministic_menu_lookup_failed",
-                "request_id": context.request_id,
-                "channel": context.channel,
-                "error_type": type(exc).__name__,
-            },
-        )
-        return None
-
-    call = ToolCallResult(
-        tool_name="search_menu",
-        success=result.success,
-        is_write=False,
-        result=result.model_dump(exclude_none=True),
-        error_code=result.error_code,
-    )
-    return _menu_results_response_from_tool(call)
-
-
-def _actionable_response_from_tool_results(
-    text: str,
-    tool_calls: list[ToolCallResult],
-    context: AgentRequestContext | None = None,
-) -> str:
-    if not _is_waiting_final_response(text):
-        return text
-    for call in reversed(tool_calls):
-        if call.tool_name == "search_menu" and call.success:
-            menu_response = _menu_results_response_from_tool(call)
-            if menu_response:
-                return menu_response
-    if context is not None:
-        menu_response = _deterministic_menu_response_for_waiting_text(context, tool_calls)
-        if menu_response:
-            return menu_response
-    for call in reversed(tool_calls):
-        result = call.result if isinstance(call.result, dict) else {}
-        agent = result.get("agent")
-        if isinstance(agent, dict):
-            for key in (
-                "confirmation_summary",
-                "submission_confirmation",
-                "status_message",
-                "choice_prompt",
-                "upsell_prompt",
-            ):
-                value = agent.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
+    if not items:
         user_message = result.get("user_message")
         if isinstance(user_message, str) and user_message.strip():
             return user_message.strip()
-    return text
+        return "I couldn't find a matching available menu item."
+
+    lines = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = _menu_item_name(item)
+        if name is None:
+            continue
+        lines.append(f"{len(lines) + 1}. {name} - {_menu_price_label(item)}")
+    if not lines:
+        user_message = result.get("user_message")
+        return user_message.strip() if isinstance(user_message, str) and user_message.strip() else None
+
+    response = "Here are the current menu options I found:\n" + "\n".join(lines)
+    if data.get("has_more"):
+        response += "\nThere are more matching items too."
+    return response + "\nWhich item would you like?"
+
+
+def _get_menu_item_guard_response(call: ToolCallResult) -> str | None:
+    result = call.result if isinstance(call.result, dict) else {}
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return None
+    item = data.get("item")
+    if not isinstance(item, dict):
+        return None
+    name = _menu_item_name(item)
+    if name is None:
+        return None
+
+    lines = [f"{name} - {_menu_price_label(item)}"]
+    description = item.get("description")
+    if isinstance(description, str) and description.strip():
+        lines.append(description.strip())
+
+    groups = item.get("customization_groups")
+    option_lines = []
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_name = group.get("name")
+            options = group.get("options")
+            if not isinstance(group_name, str) or not isinstance(options, list):
+                continue
+            option_names = [
+                option.get("name").strip()
+                for option in options
+                if isinstance(option, dict)
+                and isinstance(option.get("name"), str)
+                and option.get("name").strip()
+            ]
+            if option_names:
+                option_lines.append(f"{group_name.strip()}: {', '.join(option_names)}")
+    if option_lines:
+        lines.append("Options:")
+        lines.extend(option_lines)
+
+    return "\n".join(lines)
+
+
+def _menu_grounded_response_from_tool_calls(tool_calls: list[ToolCallResult]) -> str | None:
+    for call in reversed(tool_calls):
+        if not call.success:
+            continue
+        if call.tool_name == "get_menu_item":
+            response = _get_menu_item_guard_response(call)
+        elif call.tool_name == "search_menu":
+            response = _search_menu_guard_response(call)
+        else:
+            response = None
+        if response:
+            return response
+    return None
 
 
 def _chat_response_from_invocation(
@@ -1047,11 +674,7 @@ def _chat_response_from_invocation(
     if write_succeeded:
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
-    response_text = (
-        _authoritative_ticket_message(invocation.text, tool_calls, context)
-        or _authoritative_order_message(context, invocation.text, tool_calls)
-        or _actionable_response_from_tool_results(invocation.text, tool_calls, context)
-    )
+    response_text = _menu_grounded_response_from_tool_calls(tool_calls) or invocation.text
     return ChatResponse(
         text=response_text,
         session_id=context.agent_session_id,
@@ -1678,68 +1301,31 @@ def _process_chat_request(
         },
     )
     try:
-        authoritative_flow = None
-        if context.channel == "whatsapp":
-            for coordinator_name in (
-                "whatsapp_support_flow",
-                "whatsapp_order_flow",
-            ):
-                coordinator = getattr(get_services(), coordinator_name, None)
-                if coordinator is None:
-                    continue
-                authoritative_flow = coordinator.handle(
-                    user_id=context.user_id,
-                    session_id=context.agent_session_id,
-                    message=payload.message,
-                    request_id=record["request_id"],
-                    customer_id=context.customer_id,
-                    customer_name=context.customer_name,
-                    customer_phone=context.customer_phone,
-                )
-                if authoritative_flow is not None:
-                    break
-        if authoritative_flow is not None:
-            invocation = AgentInvocationResult(
-                text=authoritative_flow.text,
-                raw_result={"tool_calls": authoritative_flow.tool_calls},
+        invoke_started = time.perf_counter()
+        invocation = get_agent_runtime_client().invoke(
+            AgentInvocationRequest(
+                message=payload.message,
+                user_id=context.user_id,
+                agent_session_id=context.agent_session_id,
+                request_id=record["request_id"],
+                branch_id=payload.branch_id,
+                customer_id=context.customer_id,
+                customer_name=context.customer_name,
+                customer_phone=context.customer_phone,
+                channel=context.channel,
             )
-            logger.info(
-                "Authoritative WhatsApp transaction flow completed",
-                extra={
-                    "event": "whatsapp_transaction_flow_completed",
-                    "http_request_id": http_request_id,
-                    "request_id": record["request_id"],
-                    "actor_id": context.user_id,
-                    "agent_session_id": context.agent_session_id,
-                    "channel": context.channel,
-                },
-            )
-        else:
-            invoke_started = time.perf_counter()
-            invocation = get_agent_runtime_client().invoke(
-                AgentInvocationRequest(
-                    message=payload.message,
-                    user_id=context.user_id,
-                    agent_session_id=context.agent_session_id,
-                    request_id=record["request_id"],
-                    branch_id=payload.branch_id,
-                    customer_id=context.customer_id,
-                    customer_name=context.customer_name,
-                    customer_phone=context.customer_phone,
-                    channel=context.channel,
-                )
-            )
-            logger.info(
-                "Agent runtime invocation completed",
-                extra={
-                    "event": "agentcore_invocation_completed",
-                    "http_request_id": http_request_id,
-                    "actor_id": context.user_id,
-                    "channel": context.channel,
-                    "agentcore_invocation_status": "completed",
-                    "response_time_ms": round((time.perf_counter() - invoke_started) * 1000, 2),
-                },
-            )
+        )
+        logger.info(
+            "Agent runtime invocation completed",
+            extra={
+                "event": "agentcore_invocation_completed",
+                "http_request_id": http_request_id,
+                "actor_id": context.user_id,
+                "channel": context.channel,
+                "agentcore_invocation_status": "completed",
+                "response_time_ms": round((time.perf_counter() - invoke_started) * 1000, 2),
+            },
+        )
         response_payload = _chat_response_from_invocation(
             context, identity_state, invocation
         ).model_dump(exclude_none=True)

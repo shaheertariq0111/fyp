@@ -21,7 +21,6 @@ from src.services.customer_service import CustomerService
 from src.services.menu_service import MenuService
 from src.services.order_service import OrderService
 from src.services.ticket_service import AdminTicketError
-from src.services.whatsapp_order_flow_service import WhatsAppOrderFlowService
 from fakes import MemoryCartRepository, MemoryMenuRepository, MemoryOrderRepository
 from test_config import make_test_settings
 
@@ -1866,7 +1865,7 @@ def test_chat_dictionary_runtime_result_preserves_tool_calls(monkeypatch):
         ),
     ],
 )
-def test_chat_support_ticket_tool_message_is_authoritative_and_persisted(
+def test_chat_support_ticket_tool_message_is_metadata_not_response_override(
     monkeypatch,
     tool_name,
     success,
@@ -1902,15 +1901,15 @@ def test_chat_support_ticket_tool_message_is_authoritative_and_persisted(
     stored = services.agent_requests.requests[request_id]["response"]
     completed = completed_chat_response(test_client, request_id)
 
-    assert stored["text"] == authoritative_message
-    assert completed["response"] == authoritative_message
-    assert completed["text"] == authoritative_message
+    assert stored["text"] == model_text
+    assert completed["response"] == model_text
+    assert completed["text"] == model_text
     assert completed["tool_calls"][0]["result"]["user_message"] == (
         authoritative_message
     )
 
 
-def test_chat_last_valid_support_ticket_tool_message_wins(monkeypatch):
+def test_chat_preserves_agent_text_when_support_tools_return_messages(monkeypatch):
     first = "The first ticket message."
     last = "The final authoritative ticket message."
     stub_agent_client(
@@ -1933,7 +1932,7 @@ def test_chat_last_valid_support_ticket_tool_message_wins(monkeypatch):
                 },
             ]
         ),
-        text="Model text that must not be returned.",
+        text="Model text from the agent.",
     )
 
     test_client = client()
@@ -1946,7 +1945,7 @@ def test_chat_last_valid_support_ticket_tool_message_wins(monkeypatch):
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == last
+    assert completed["text"] == "Model text from the agent."
 
 
 @pytest.mark.parametrize(
@@ -1991,7 +1990,7 @@ def test_chat_invalid_support_ticket_message_falls_back_to_invocation_text(
     assert completed["text"] == model_text
 
 
-def test_chat_non_ticket_tool_message_does_not_replace_invocation_text(monkeypatch):
+def test_chat_menu_tool_without_menu_data_does_not_replace_invocation_text(monkeypatch):
     model_text = "Here are the matching menu items."
     stub_agent_client(
         monkeypatch,
@@ -2023,7 +2022,7 @@ def test_chat_non_ticket_tool_message_does_not_replace_invocation_text(monkeypat
     assert completed["text"] == model_text
 
 
-def test_chat_replaces_waiting_menu_response_with_actionable_options(monkeypatch):
+def test_chat_menu_response_is_grounded_in_search_tool_results(monkeypatch):
     stub_agent_client(
         monkeypatch,
         SimpleNamespace(
@@ -2075,32 +2074,65 @@ def test_chat_replaces_waiting_menu_response_with_actionable_options(monkeypatch
         test_client,
         submitted.json()["request_id"],
     )
-    final_text = completed["text"]
-    lowered = final_text.lower()
+    assert completed["text"] == (
+        "Here are the current menu options I found:\n"
+        "1. Classic Pepperoni Pizza - small PKR 899, large PKR 1599\n"
+        "2. Pepperoni Feast - from PKR 1299\n"
+        "Which item would you like?"
+    )
+    assert completed["tool_calls"][0]["tool_name"] == "search_menu"
 
-    for forbidden in (
-        "please hold",
-        "hold on",
-        "please wait",
-        "i'll check",
-        "i will check",
-        "retrieve that information",
-    ):
-        assert forbidden not in lowered
 
-    assert "Classic Pepperoni Pizza" in final_text
-    assert "Pepperoni Feast" in final_text
-    assert "PKR 899" in final_text
-    assert "Which item and size would you like?" in final_text
+def test_chat_menu_guard_removes_hallucinated_agent_item(monkeypatch):
+    stub_agent_client(
+        monkeypatch,
+        SimpleNamespace(
+            tool_calls=[{
+                "tool_name": "search_menu",
+                "success": True,
+                "is_write": False,
+                "result": {
+                    "success": True,
+                    "data": {
+                        "items": [{
+                            "product_id": "pepperoni-classic",
+                            "name": "Classic Pepperoni Pizza",
+                            "currency": "PKR",
+                            "starting_price": 899,
+                        }]
+                    },
+                    "user_message": "I found current menu options.",
+                },
+                "error_code": None,
+            }]
+        ),
+        text=(
+            "You can order Classic Pepperoni Pizza or BBQ Volcano Pizza. "
+            "The BBQ Volcano is PKR 999."
+        ),
+    )
+
+    test_client = client()
+    submitted = test_client.post(
+        "/api/chat",
+        json={
+            "message": "show me pepperoni pizza",
+            "session_id": "session",
+            "user_id": "user",
+        },
+    )
+    completed = completed_chat_response(
+        test_client,
+        submitted.json()["request_id"],
+    )
+
+    assert "Classic Pepperoni Pizza" in completed["text"]
+    assert "BBQ Volcano" not in completed["text"]
+    assert "999" not in completed["text"]
 
 
 def test_web_pepperoni_request_still_uses_existing_agent_flow(monkeypatch):
     services = IdentityServices()
-    services.whatsapp_order_flow = SimpleNamespace(
-        handle=lambda **kwargs: pytest.fail(
-            "The WhatsApp coordinator must not intercept web chat"
-        )
-    )
     monkeypatch.setattr(main, "get_services", lambda: services)
     captured = {}
     stub_agent_client(
@@ -2142,11 +2174,15 @@ def test_web_pepperoni_request_still_uses_existing_agent_flow(monkeypatch):
     )
 
     assert captured["channel"] == "web"
-    assert completed["text"] == "Pepperoni Passion is available."
+    assert completed["text"] == (
+        "Here are the current menu options I found:\n"
+        "1. Pepperoni Passion - from PKR 850\n"
+        "Which item would you like?"
+    )
     assert completed["tool_calls"][0]["tool_name"] == "search_menu"
 
 
-def test_chat_deterministically_searches_menu_when_whatsapp_pizza_intent_waits(monkeypatch):
+def test_chat_does_not_search_menu_outside_agent_tool_calls(monkeypatch):
     services = IdentityServices()
     captured_menu_calls = []
 
@@ -2217,33 +2253,15 @@ def test_chat_deterministically_searches_menu_when_whatsapp_pizza_intent_waits(m
         test_client,
         submitted.json()["request_id"],
     )
-    final_text = completed["text"]
-    lowered = final_text.lower()
-
-    assert captured_menu_calls == [{
-        "query": "pepperoni pizza",
-        "available_only": True,
-        "limit": 5,
-    }]
-    for forbidden in (
-        "please hold",
-        "hold on",
-        "please wait",
-        "give me a moment",
-        "let me check",
-        "i'll check",
-        "i will check",
-        "retrieve that information",
-    ):
-        assert forbidden not in lowered
-    assert "Mushroom & Pepperoni" in final_text
-    assert "Pepperoni Hot" in final_text
-    assert "Pepperoni Passion" in final_text
-    assert "small PKR 850, medium PKR 1700, large PKR 2400" in final_text
-    assert "Which item and size would you like?" in final_text
+    assert captured_menu_calls == []
+    assert completed["text"] == (
+        "Hello again! I see you're interested in ordering a pepperoni pizza. "
+        "Let me check if there's an existing order or cart for you. Please give me "
+        "a moment while I retrieve that information."
+    )
 
 
-def test_chat_does_not_deterministically_override_non_menu_waiting_text(monkeypatch):
+def test_chat_preserves_non_menu_waiting_text(monkeypatch):
     services = IdentityServices()
     captured_menu_calls = []
     services.menu = SimpleNamespace(
@@ -2276,223 +2294,57 @@ def test_chat_does_not_deterministically_override_non_menu_waiting_text(monkeypa
     assert captured_menu_calls == []
 
 
-def test_whatsapp_pepperoni_order_flow_uses_authoritative_backend_order(monkeypatch):
-    menu_repository = MemoryMenuRepository(
-        items=[
-            {
-                "product_id": "mushroom-pepperoni",
-                "name": "Mushroom & Pepperoni",
-                "category": "pizza",
-                "currency": "PKR",
-                "available": True,
-                "starting_price": 850,
-                "base_prices": {"small": 850, "medium": 1700, "large": 2400},
-                "customization_group_ids": [],
-                "upsell_group_ids": [],
-            },
-            {
-                "product_id": "pepperoni-hot",
-                "name": "Pepperoni Hot",
-                "category": "pizza",
-                "currency": "PKR",
-                "available": True,
-                "starting_price": 850,
-                "base_prices": {"small": 850, "medium": 1700, "large": 2400},
-                "customization_group_ids": [],
-                "upsell_group_ids": [],
-            },
-            {
-                "product_id": "pepperoni-passion",
-                "name": "Pepperoni Passion",
-                "category": "pizza",
-                "currency": "PKR",
-                "available": True,
-                "starting_price": 850,
-                "base_prices": {"small": 850, "medium": 1700, "large": 2400},
-                "customization_group_ids": [
-                    "pizza-size",
-                    "pizza-crust",
-                    "pizza-topping",
-                ],
-                "upsell_group_ids": ["drink-upsell"],
-            },
-            {
-                "product_id": "cola",
-                "name": "Cola",
-                "category": "drink",
-                "currency": "PKR",
-                "available": True,
-                "starting_price": 250,
-                "customization_group_ids": [],
-                "upsell_group_ids": [],
-            },
-        ],
-        groups=[
-            {
-                "option_group_id": "pizza-size",
-                "name": "Pizza Size",
-                "type": "single_select",
-                "required": True,
-                "question": "Which pizza size would you like?",
-                "options": [
-                    {"option_id": "small", "name": "Small", "price_key": "small"},
-                    {"option_id": "medium", "name": "Medium", "price_key": "medium"},
-                    {"option_id": "large", "name": "Large", "price_key": "large"},
-                ],
-            },
-            {
-                "option_group_id": "pizza-crust",
-                "name": "Pizza Crust",
-                "type": "single_select",
-                "required": True,
-                "question": "Choose a crust.",
-                "options": [
-                    {"option_id": "regular", "name": "Regular Crust", "price_delta": 0},
-                    {"option_id": "thin", "name": "Crunchy Thin Crust", "price_delta": 0},
-                ],
-            },
-            {
-                "option_group_id": "pizza-topping",
-                "name": "Pizza Topping",
-                "type": "single_select",
-                "required": True,
-                "question": "Choose a topping option.",
-                "options": [
-                    {"option_id": "extra-cheese", "name": "Extra Cheese", "price_delta": 200},
-                    {"option_id": "no-extra", "name": "No Extra Topping", "price_delta": 0},
-                ],
-            },
-        ],
-        upsells=[
-            {
-                "upsell_group_id": "drink-upsell",
-                "question": "Would you like to add a drink?",
-                "items": ["cola"],
-                "max_suggestions": 1,
-            }
-        ],
-    )
-    order_repository = MemoryOrderRepository()
-    order_service = OrderService(order_repository, menu_repository)
+def test_agentflo_whatsapp_cancel_phrase_uses_main_agent_not_order_coordinator(monkeypatch):
     services = WhatsAppIdentityServices()
-    order_service.customers = services.customers
-    services.menu = MenuService(menu_repository)
-    services.orders = order_service
-    services.carts = CartService(
-        MemoryCartRepository(),
-        menu_repository,
-        order_service,
-        make_test_settings(),
-    )
-    whatsapp_state = {}
-    services.agent_sessions.get_whatsapp_order_state = (
-        lambda customer_id, session_id: deepcopy(whatsapp_state)
-    )
-
-    def save_whatsapp_order_state(
-        customer_id, session_id, *, offered_menu_items, **menu_state
-    ):
-        whatsapp_state.clear()
-        whatsapp_state["offered_menu_items"] = deepcopy(offered_menu_items)
-        whatsapp_state.update(deepcopy(menu_state))
-        return deepcopy(whatsapp_state)
-
-    services.agent_sessions.save_whatsapp_order_state = save_whatsapp_order_state
-    services.agent_sessions.clear_whatsapp_order_state = (
-        lambda customer_id, session_id: whatsapp_state.clear()
-    )
-    services.whatsapp_order_flow = WhatsAppOrderFlowService(
-        services.menu,
-        services.carts,
-        services.orders,
-        services.agent_sessions,
-    )
     monkeypatch.setattr(main, "get_services", lambda: services)
-    monkeypatch.setattr(
-        main,
-        "get_agent_runtime_client",
-        lambda: pytest.fail("AgentCore must not control an authoritative WhatsApp order"),
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        {
+            "tool_calls": [{
+                "tool_name": "update_order_flow",
+                "success": True,
+                "is_write": True,
+                "result": {
+                    "success": True,
+                    "user_message": "I've cancelled the pending order.",
+                    "data": {
+                        "order": {
+                            "order_id": "ORD-CANCELLED",
+                            "status": "cancelled",
+                        }
+                    },
+                },
+                "error_code": None,
+            }]
+        },
+        text="I've cancelled the pending order.",
+        captured=captured,
     )
-    test_client = client()
-    messages = [
-        "hello I would like to order a pepperoni pizza",
-        "3",
-        "1",
-        "crust 1",
-        "2",
-        "no",
-        "confirm",
-        "1",
-        "Customer delivery address",
-        "Synthetic Customer",
-        "confirm",
-    ]
 
-    final_payload = None
-    for index, message in enumerate(messages, start=1):
-        response = test_client.post(
-            "/api/channels/agentflo/whatsapp",
-            json={
-                "message": message,
-                "from": "+10000000000",
-                "sender_id": "sender-authoritative-order",
-                "message_id": f"wamid.authoritative-order-{index}",
-            },
-        )
-        assert response.status_code == 200
-        assert response.json()["success"] is True
-        final_payload = response.json()
-
-    assert len(order_repository.data) == 1
-    order = next(iter(order_repository.data.values()))
-    assert order["status"] == "submitted_to_restaurant"
-    assert order["customer_name"] == "Synthetic Customer"
-    assert order["total"] == 850
-    assert services.orders.admin_list_orders()["orders"][0]["order_id"] == order["order_id"]
-    assert final_payload is not None
-    final_text = final_payload["text"]
-    lowered = final_text.lower()
-    assert f"Order ID: {order['order_id']}" in final_text
-    assert "Total: Rs 850.00" in final_text
-    assert "Pepperoni Passion x 1" in final_text
-    assert "Fulfilment: Delivery" in final_text
-    assert "Delivery address: Customer delivery address" in final_text
-    assert "Status: Submitted to restaurant" in final_text
-    for forbidden in (
-        "please hold",
-        "hold on",
-        "please wait",
-        "give me a moment",
-        "let me check",
-        "i'll check",
-        "i will check",
-        "retrieve that information",
-        "fetch the information",
-    ):
-        assert forbidden not in lowered
-
-    status_response = test_client.post(
+    response = client().post(
         "/api/channels/agentflo/whatsapp",
         json={
-            "message": "whats the status of my order",
+            "message": "I don't want to checkout",
             "from": "+10000000000",
-            "sender_id": "sender-authoritative-order",
-            "message_id": "wamid.authoritative-order-status",
+            "sender_id": "sender-agent-led-cancel",
+            "message_id": "wamid.agent-led-cancel",
         },
     )
-    assert status_response.status_code == 200
-    assert status_response.json()["text"] == (
-        f"Order ID: {order['order_id']}\n"
-        "Status: Submitted to restaurant\n"
-        "Total: Rs 850.00"
-    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert response.json()["text"] == "I've cancelled the pending order."
+    assert captured["message"] == "I don't want to checkout"
+    assert captured["channel"] == "whatsapp"
 
 
-def test_chat_blocks_fake_order_confirmation_without_backend_order_result(monkeypatch):
+def test_chat_preserves_order_confirmation_text_without_backend_order_result(monkeypatch):
+    model_text = "Your order is confirmed and will be delivered."
     stub_agent_client(
         monkeypatch,
         SimpleNamespace(tool_calls=[]),
-        text="Your order is confirmed and will be delivered.",
+        text=model_text,
     )
 
     test_client = client()
@@ -2510,20 +2362,18 @@ def test_chat_blocks_fake_order_confirmation_without_backend_order_result(monkey
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == (
-        "I couldn't confirm the order yet. Please confirm the missing details first."
+    assert completed["text"] == model_text
+
+
+def test_chat_preserves_llm_generated_whatsapp_cart_summary_without_backend_result(monkeypatch):
+    model_text = (
+        "Order summary: one large pepperoni pizza with extra cheese. "
+        "Total: PKR 2,900. Reply confirm to place it."
     )
-    assert "confirmed and will be delivered" not in completed["text"].lower()
-
-
-def test_chat_blocks_llm_generated_whatsapp_cart_summary_without_backend_result(monkeypatch):
     stub_agent_client(
         monkeypatch,
         SimpleNamespace(tool_calls=[]),
-        text=(
-            "Order summary: one large pepperoni pizza with extra cheese. "
-            "Total: PKR 2,900. Reply confirm to place it."
-        ),
+        text=model_text,
     )
 
     test_client = client()
@@ -2541,45 +2391,31 @@ def test_chat_blocks_llm_generated_whatsapp_cart_summary_without_backend_result(
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == (
-        "I couldn't confirm the order yet. Please confirm the missing details first."
-    )
-    assert "2,900" not in completed["text"]
+    assert completed["text"] == model_text
 
 
-def test_whatsapp_support_coordinator_runs_before_agentcore(monkeypatch):
+def test_whatsapp_support_intent_uses_main_agent_not_support_coordinator(monkeypatch):
     services = IdentityServices()
-    support_calls = []
-    services.whatsapp_support_flow = SimpleNamespace(
-        handle=lambda **kwargs: (
-            support_calls.append(kwargs)
-            or SimpleNamespace(
-                text="Please provide the Order ID for your complaint.",
-                tool_calls=[{
-                    "tool_name": "handle_order_complaint",
-                    "success": True,
-                    "is_write": True,
-                    "result": {
-                        "success": True,
-                        "user_message": (
-                            "Please provide the Order ID for your complaint."
-                        ),
-                    },
-                    "error_code": None,
-                }],
-            )
-        )
-    )
-    services.whatsapp_order_flow = SimpleNamespace(
-        handle=lambda **kwargs: pytest.fail(
-            "support intent must be handled before the order coordinator"
-        )
-    )
     monkeypatch.setattr(main, "get_services", lambda: services)
-    monkeypatch.setattr(
-        main,
-        "get_agent_runtime_client",
-        lambda: pytest.fail("AgentCore must not handle transactional support"),
+    captured = {}
+    stub_agent_client(
+        monkeypatch,
+        {
+            "tool_calls": [{
+                "tool_name": "handle_order_complaint",
+                "success": True,
+                "is_write": True,
+                "result": {
+                    "success": True,
+                    "user_message": (
+                        "Please provide the Order ID for your complaint."
+                    ),
+                },
+                "error_code": None,
+            }]
+        },
+        text="Please provide the Order ID for your complaint.",
+        captured=captured,
     )
 
     test_client = client()
@@ -2600,15 +2436,17 @@ def test_whatsapp_support_coordinator_runs_before_agentcore(monkeypatch):
     assert completed["text"] == (
         "Please provide the Order ID for your complaint."
     )
-    assert support_calls[0]["message"] == "I want to complain about my order"
+    assert captured["message"] == "I want to complain about my order"
+    assert captured["channel"] == "whatsapp"
     assert completed["tool_calls"][0]["tool_name"] == "handle_order_complaint"
 
 
-def test_chat_blocks_fake_whatsapp_ticket_creation_without_backend_result(monkeypatch):
+def test_chat_preserves_whatsapp_ticket_text_without_backend_result(monkeypatch):
+    model_text = "I've logged your complaint and opened a support ticket."
     stub_agent_client(
         monkeypatch,
         SimpleNamespace(tool_calls=[]),
-        text="I've logged your complaint and opened a support ticket.",
+        text=model_text,
     )
 
     test_client = client()
@@ -2626,15 +2464,15 @@ def test_chat_blocks_fake_whatsapp_ticket_creation_without_backend_result(monkey
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == main.SAFE_UNCONFIRMED_TICKET_RESPONSE
-    assert "logged your complaint" not in completed["text"].lower()
+    assert completed["text"] == model_text
 
 
-def test_chat_blocks_fake_whatsapp_transaction_write_without_backend_result(monkeypatch):
+def test_chat_preserves_whatsapp_transaction_text_without_backend_result(monkeypatch):
+    model_text = "I've added the invented pizza to your cart."
     stub_agent_client(
         monkeypatch,
         SimpleNamespace(tool_calls=[]),
-        text="I've added the invented pizza to your cart.",
+        text=model_text,
     )
 
     test_client = client()
@@ -2652,8 +2490,7 @@ def test_chat_blocks_fake_whatsapp_transaction_write_without_backend_result(monk
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == main.SAFE_UNCOMPLETED_TRANSACTION_RESPONSE
-    assert "added" not in completed["text"].lower()
+    assert completed["text"] == model_text
 
 
 def test_chat_preserves_authoritative_submitted_order_cancel_protection():
@@ -2702,7 +2539,7 @@ def test_chat_preserves_authoritative_submitted_order_cancel_protection():
     assert response.text == text
 
 
-def test_whatsapp_order_status_uses_actual_confirmed_order(monkeypatch):
+def test_whatsapp_order_status_uses_agent_response(monkeypatch):
     menu_repository = MemoryMenuRepository(
         [{"product_id": "item", "name": "Item", "available": True,
           "starting_price": 10, "customization_group_ids": []}],
@@ -2754,14 +2591,11 @@ def test_whatsapp_order_status_uses_actual_confirmed_order(monkeypatch):
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == (
-        f"Order ID: {order_id}\n"
-        "Status: Submitted to restaurant\n"
-        "Total: Rs 10.00"
-    )
+    assert order_id
+    assert completed["text"] == "Let me check and fetch the information."
 
 
-def test_whatsapp_order_status_without_confirmed_order_asks_for_order_id(monkeypatch):
+def test_whatsapp_order_status_without_confirmed_order_uses_agent_response(monkeypatch):
     menu_repository = MemoryMenuRepository(
         [{"product_id": "item", "name": "Item", "available": True,
           "starting_price": 10, "customization_group_ids": []}],
@@ -2810,11 +2644,7 @@ def test_whatsapp_order_status_without_confirmed_order_asks_for_order_id(monkeyp
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == (
-        "I couldn't find a confirmed order for this conversation. Please provide your order ID."
-    )
-    assert "please wait" not in completed["text"].lower()
-    assert "retrieve" not in completed["text"].lower()
+    assert completed["text"] == "Please wait while I retrieve that information."
 
 
 def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
@@ -3028,7 +2858,7 @@ def test_chat_failed_write_tool_reports_structured_error(monkeypatch):
     assert payload["tool_calls"][0]["result"]["user_message"] == "Please choose one of the available options."
 
 
-def test_chat_informational_response_without_write_is_not_replaced(monkeypatch):
+def test_chat_empty_menu_result_uses_backend_menu_message(monkeypatch):
     stub_agent_client(
         monkeypatch,
         SimpleNamespace(
@@ -3052,7 +2882,7 @@ def test_chat_informational_response_without_write_is_not_replaced(monkeypatch):
 
     payload = completed_chat_response(test_client, response.json()["request_id"])
     assert payload["write_succeeded"] is False
-    assert payload["text"] == "Here are some spicy options."
+    assert payload["text"] == "ok"
 
 
 def test_chat_order_start_help_text_is_not_false_success(monkeypatch):

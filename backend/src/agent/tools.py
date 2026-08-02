@@ -1,6 +1,5 @@
 from collections.abc import Callable
 import logging
-import re
 from typing import Literal
 
 from strands import tool
@@ -11,53 +10,6 @@ from src.models.tool_responses import ToolResponse
 
 
 logger = logging.getLogger(__name__)
-MAX_AGENT_MENU_RESULTS = 5
-SUPPORT_INTENT_CLARIFICATION = (
-    "Is this about a problem with an order, or would you like to speak "
-    "to a person?"
-)
-
-_ORDER_COMPLAINT_PATTERNS = (
-    re.compile(r"\bcomplain(?:t|ing)?\b.*\border\b", re.IGNORECASE),
-    re.compile(r"\border\b.*\bcomplain(?:t|ing)?\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:order|food|delivery|item)\b.*"
-        r"\b(?:missing|wrong|cold|late|damaged|spilled|refund|replace|replacement)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:missing|wrong|cold|late|damaged|spilled|refund|replace|replacement)\b"
-        r".*\b(?:order|food|delivery|item|sauce|dip)\b",
-        re.IGNORECASE,
-    ),
-)
-_GENERIC_HUMAN_PATTERNS = (
-    re.compile(
-        r"\b(?:speak|talk|connect|transfer)\b.*"
-        r"\b(?:person|human|agent|staff|representative|manager)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\b(?:human|live)\s+(?:support\s+)?agent\b", re.IGNORECASE),
-    re.compile(r"\bcall\s+me\b", re.IGNORECASE),
-    re.compile(r"\b(?:i\s+)?need\s+(?:a|the)\s+manager\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:can|could|would)\s+(?:a|the)\s+manager\s+call\s+me\b",
-        re.IGNORECASE,
-    ),
-)
-_COMPLAINT_CONTROL_PREFIXES = (
-    re.compile(
-        r"^\s*i\s+have\s+a\s+complaint\s+about\s+"
-        r"(?:my|the|an?)\s+order\s*[.!?:;-]+\s*",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^\s*(?:i\s+(?:want|would\s+like)\s+to|please\s+let\s+me)\s+"
-        r"(?:speak|talk)\s+to\s+(?:a\s+|the\s+)?"
-        r"(?:person|human|agent|staff|representative|manager)\s+because\s+",
-        re.IGNORECASE,
-    ),
-)
 
 WRITE_TOOLS = {
     "start_cart_item_customization",
@@ -66,10 +18,19 @@ WRITE_TOOLS = {
     "handle_cart_upsell",
     "create_pending_order_from_cart",
     "update_order_flow",
+    "begin_checkout",
+    "choose_delivery",
+    "choose_takeaway",
+    "save_order_address",
+    "confirm_order",
+    "cancel_order",
     "update_customer_profile",
     "save_customer_address",
     "create_human_assistance_ticket",
     "handle_order_complaint",
+    "request_human_support",
+    "create_order_complaint",
+    "cancel_support_request",
 }
 
 
@@ -151,15 +112,14 @@ def _result(tool_name: str, call: Callable[[], ToolResponse], *, is_write: bool 
 @tool
 def search_menu(query: str | None = None, category: str | None = None,
                 tags: list[str] | None = None, max_price: int | None = None,
-                available_only: bool = True, max_results: int = MAX_AGENT_MENU_RESULTS) -> dict:
+                available_only: bool = True, max_results: int | None = None) -> dict:
     """Search current menu data for browsing and recommendations.
 
     Use query for descriptive user terms such as "pizza", "chicken", "spicy",
     "deal", or an item name. Use category only when you know the exact menu
-    category id returned by menu data, such as "classic-flavors". Returns at
-    most five items for chat readability.
+    category id returned by menu data, such as "classic-flavors".
     """
-    limit = max(1, min(max_results, MAX_AGENT_MENU_RESULTS))
+    limit = max(1, max_results) if max_results is not None else None
     return _result("search_menu", lambda: get_services().menu.search_menu(
         query=query, category=category, tags=tags, max_price=max_price,
         available_only=available_only, limit=limit,
@@ -273,6 +233,109 @@ def update_order_flow(order_id: str, action: str, value: str | None = None,
 
 
 @tool
+def begin_checkout(cart_id: str) -> dict:
+    """Begin checkout by converting a ready cart into a backend pending order."""
+    context = get_request_context()
+    return _result(
+        "begin_checkout",
+        lambda: get_services().carts.create_pending_order(context.user_id, cart_id),
+        is_write=True,
+    )
+
+
+@tool
+def choose_delivery(order_id: str) -> dict:
+    """Choose delivery for an order that is awaiting fulfillment method."""
+    context = get_request_context()
+    return _result(
+        "choose_delivery",
+        lambda: get_services().orders.update_order_flow(
+            context.user_id,
+            order_id,
+            "set_delivery",
+        ),
+        is_write=True,
+    )
+
+
+@tool
+def choose_takeaway(order_id: str) -> dict:
+    """Choose takeaway or pickup for an order that is awaiting fulfillment method."""
+    context = get_request_context()
+    return _result(
+        "choose_takeaway",
+        lambda: get_services().orders.update_order_flow(
+            context.user_id,
+            order_id,
+            "set_takeaway",
+        ),
+        is_write=True,
+    )
+
+
+@tool
+def save_order_address(
+    order_id: str,
+    address_text: str,
+    label: str | None = None,
+    make_default: bool = True,
+) -> dict:
+    """Save a delivery address to the customer profile, then apply it to the order."""
+
+    def save_and_apply_address() -> ToolResponse:
+        context = get_request_context()
+        services = get_services()
+        saved = services.customers.save_address(
+            context.customer_id or context.user_id,
+            address_text=address_text,
+            label=label,
+            make_default=make_default,
+            channel=context.channel,
+        )
+        if not saved.success:
+            return saved
+        return services.orders.update_order_flow(
+            context.user_id,
+            order_id,
+            "save_address",
+            address_text,
+        )
+
+    return _result("save_order_address", save_and_apply_address, is_write=True)
+
+
+@tool
+def confirm_order(order_id: str) -> dict:
+    """Submit a pending-confirmation order after the customer explicitly confirms."""
+    context = get_request_context()
+    return _result(
+        "confirm_order",
+        lambda: get_services().orders.update_order_flow(
+            context.user_id,
+            order_id,
+            "confirm",
+            idempotency_key=context.request_id,
+        ),
+        is_write=True,
+    )
+
+
+@tool
+def cancel_order(order_id: str) -> dict:
+    """Cancel a backend order only when its current state allows cancellation."""
+    context = get_request_context()
+    return _result(
+        "cancel_order",
+        lambda: get_services().orders.update_order_flow(
+            context.user_id,
+            order_id,
+            "cancel",
+        ),
+        is_write=True,
+    )
+
+
+@tool
 def get_active_cart() -> dict:
     """Read the current active chat cart for the trusted user/session."""
     context = get_request_context()
@@ -344,61 +407,6 @@ def _selected_verified_order(response: ToolResponse) -> dict | None:
     }
 
 
-def _support_write_intent(
-    current_message: str | None,
-    description: str | None,
-) -> str:
-    if current_message is None:
-        return "order_complaint" if (
-            isinstance(description, str)
-            and any(pattern.search(description) for pattern in _ORDER_COMPLAINT_PATTERNS)
-        ) else "human_assistance"
-    if any(pattern.search(current_message) for pattern in _ORDER_COMPLAINT_PATTERNS):
-        return "order_complaint"
-    if any(pattern.search(current_message) for pattern in _GENERIC_HUMAN_PATTERNS):
-        return "human_assistance"
-    return "ambiguous"
-
-
-def _complaint_description(
-    description: str | None,
-    current_message: str | None,
-) -> str | None:
-    if isinstance(description, str) and description.strip():
-        return description
-    if not isinstance(current_message, str) or not current_message.strip():
-        return current_message
-    original = current_message.strip()
-    for pattern in _COMPLAINT_CONTROL_PREFIXES:
-        cleaned = pattern.sub("", original, count=1).strip()
-        if cleaned != original and cleaned:
-            if cleaned[0].islower():
-                cleaned = cleaned[0].upper() + cleaned[1:]
-            return cleaned
-    return original
-
-
-def _log_support_write_guard(
-    context,
-    *,
-    effective_intent: str,
-    redirected: bool,
-    ticket_write_occurred: bool,
-) -> None:
-    logger.info(
-        "Support ticket write guard completed",
-        extra={
-            "event": "support_ticket_write_guard",
-            "tool_name": "create_human_assistance_ticket",
-            "effective_intent": effective_intent,
-            "redirected": redirected,
-            "ticket_write_occurred": ticket_write_occurred,
-            "actor_id": context.user_id,
-            "agent_session_id": context.agent_session_id,
-        },
-    )
-
-
 def _human_assistance_context_error() -> ToolResponse | None:
     context = get_request_context()
     if not context.user_id or not context.user_id.strip():
@@ -437,55 +445,7 @@ def create_human_assistance_ticket(
         error = _human_assistance_context_error()
         if error:
             return error
-        services = get_services()
-        effective_intent = _support_write_intent(
-            context.current_message,
-            description,
-        )
-        if effective_intent == "order_complaint":
-            effective_description = _complaint_description(
-                description,
-                context.current_message,
-            )
-            response = services.support_flow.handle_order_complaint(
-                user_id=context.user_id,
-                agent_session_id=context.agent_session_id,
-                request_id=context.request_id,
-                description=effective_description,
-                customer_id=context.customer_id,
-                customer_name=context.customer_name,
-                customer_phone=context.customer_phone,
-                source=context.channel,
-            )
-            _log_support_write_guard(
-                context,
-                effective_intent=effective_intent,
-                redirected=True,
-                ticket_write_occurred=(
-                    response.success
-                    and response.next_action not in {
-                        "request_order_id",
-                        "request_complaint_description",
-                    }
-                ),
-            )
-            return response
-        if effective_intent == "ambiguous":
-            _log_support_write_guard(
-                context,
-                effective_intent=effective_intent,
-                redirected=False,
-                ticket_write_occurred=False,
-            )
-            return ToolResponse.ok(
-                user_message=SUPPORT_INTENT_CLARIFICATION,
-                next_action="clarify_support_intent",
-                agent={
-                    "entity": "pending_support",
-                    "required_input": "support_intent",
-                },
-            )
-        response = services.tickets.create_human_assistance(
+        return get_services().tickets.create_human_assistance(
             user_id=context.user_id,
             session_id=context.agent_session_id,
             description=description,
@@ -495,19 +455,35 @@ def create_human_assistance_ticket(
             source=context.channel,
             idempotency_key=context.request_id,
         )
-        _log_support_write_guard(
-            context,
-            effective_intent=effective_intent,
-            redirected=False,
-            ticket_write_occurred=response.success,
-        )
-        return response
 
     return _result(
         "create_human_assistance_ticket",
         create_ticket,
         is_write=True,
     )
+
+
+@tool
+def request_human_support(description: str | None = None) -> dict:
+    """Create a generic human-support ticket for non-order-problem assistance."""
+    context = get_request_context()
+
+    def create_ticket() -> ToolResponse:
+        error = _human_assistance_context_error()
+        if error:
+            return error
+        return get_services().tickets.create_human_assistance(
+            user_id=context.user_id,
+            session_id=context.agent_session_id,
+            description=description,
+            customer_id=context.customer_id,
+            customer_name=context.customer_name,
+            customer_phone=context.customer_phone,
+            source=context.channel,
+            idempotency_key=context.request_id,
+        )
+
+    return _result("request_human_support", create_ticket, is_write=True)
 
 
 @tool
@@ -546,6 +522,51 @@ def handle_order_complaint(
 
 
 @tool
+def create_order_complaint(
+    order_id: str | None = None,
+    description: str | None = None,
+) -> dict:
+    """Create or continue an order complaint; backend validates ownership and missing inputs."""
+    context = get_request_context()
+    return _result(
+        "create_order_complaint",
+        lambda: get_services().support_flow.handle_order_complaint(
+            user_id=context.user_id,
+            agent_session_id=context.agent_session_id,
+            request_id=context.request_id,
+            order_id=order_id,
+            description=description,
+            action="continue",
+            customer_id=context.customer_id,
+            customer_name=context.customer_name,
+            customer_phone=context.customer_phone,
+            source=context.channel,
+        ),
+        is_write=True,
+    )
+
+
+@tool
+def cancel_support_request() -> dict:
+    """Cancel the current pending order-complaint support flow, if one exists."""
+    context = get_request_context()
+    return _result(
+        "cancel_support_request",
+        lambda: get_services().support_flow.handle_order_complaint(
+            user_id=context.user_id,
+            agent_session_id=context.agent_session_id,
+            request_id=context.request_id,
+            action="cancel",
+            customer_id=context.customer_id,
+            customer_name=context.customer_name,
+            customer_phone=context.customer_phone,
+            source=context.channel,
+        ),
+        is_write=True,
+    )
+
+
+@tool
 def get_support_ticket_status(
     ticket_id: str | None = None,
 ) -> dict:
@@ -553,6 +574,19 @@ def get_support_ticket_status(
     context = get_request_context()
     return _result(
         "get_support_ticket_status",
+        lambda: get_services().tickets.get_ticket_status(
+            context.user_id,
+            ticket_id,
+        ),
+    )
+
+
+@tool
+def get_support_ticket(ticket_id: str | None = None) -> dict:
+    """Read support-ticket status for the trusted customer."""
+    context = get_request_context()
+    return _result(
+        "get_support_ticket",
         lambda: get_services().tickets.get_ticket_status(
             context.user_id,
             ticket_id,
@@ -618,11 +652,21 @@ MVP_TOOLS = [
     handle_cart_upsell,
     create_pending_order_from_cart,
     update_order_flow,
+    begin_checkout,
+    choose_delivery,
+    choose_takeaway,
+    save_order_address,
+    confirm_order,
+    cancel_order,
     get_active_cart,
     get_order_status,
     create_human_assistance_ticket,
     handle_order_complaint,
     get_support_ticket_status,
+    request_human_support,
+    create_order_complaint,
+    cancel_support_request,
+    get_support_ticket,
     get_customer_profile,
     update_customer_profile,
     save_customer_address,
