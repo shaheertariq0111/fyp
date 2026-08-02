@@ -820,7 +820,7 @@ def test_agentflo_whatsapp_meta_payload_invokes_existing_agent_flow(
             "reason": "gateway_not_configured",
         },
     }
-    assert body["session_id"].startswith("whatsapp-")
+    assert body["session_id"].startswith("whatsapp-agent-led-v2-")
     assert "10000000000" not in body["session_id"]
     assert captured["message"] == "Hello from WhatsApp"
     assert captured["channel"] == "whatsapp"
@@ -846,6 +846,67 @@ def test_agentflo_whatsapp_meta_payload_invokes_existing_agent_flow(
     assert outbound_record["request_id"] == "req-1"
     assert outbound_record["message_text"] == "Welcome!"
     assert outbound_record["inbound_message_id"] == "wamid.synthetic-1"
+
+
+def test_whatsapp_tool_disclaimer_is_replaced_when_no_tools_returned():
+    context = AgentRequestContext(
+        user_id="whatsapp-user",
+        agent_session_id="whatsapp-session",
+        request_id="req-1",
+        customer_id="whatsapp-user",
+        channel="whatsapp",
+    )
+    invocation = AgentInvocationResult(
+        text=(
+            "In a real-world scenario, I would use the search_menu tool, "
+            "but I can't execute tools in this simulation."
+        ),
+        raw_result={"tool_calls": []},
+    )
+
+    response = main._chat_response_from_invocation(
+        context,
+        {
+            "customer": {
+                "customer_id": "whatsapp-user",
+                "display_name": None,
+                "phone_e164": None,
+                "phone_verified": False,
+            },
+            "session": {"agent_session_id": "whatsapp-session"},
+        },
+        invocation,
+    )
+
+    assert response.text == main.WHATSAPP_TOOL_FAILURE_REPLY
+
+
+def test_web_tool_disclaimer_guard_does_not_rewrite_chat_response():
+    context = AgentRequestContext(
+        user_id="user",
+        agent_session_id="session",
+        request_id="req-1",
+        customer_id="user",
+        channel="web",
+    )
+    text = "In a real-world scenario, I would use the search_menu tool."
+    invocation = AgentInvocationResult(text=text, raw_result={"tool_calls": []})
+
+    response = main._chat_response_from_invocation(
+        context,
+        {
+            "customer": {
+                "customer_id": "user",
+                "display_name": None,
+                "phone_e164": None,
+                "phone_verified": False,
+            },
+            "session": {"agent_session_id": "session"},
+        },
+        invocation,
+    )
+
+    assert response.text == text
 
 
 def test_agentflo_whatsapp_duplicate_is_ignored_before_side_effects(

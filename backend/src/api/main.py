@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Any, Callable
@@ -74,6 +75,29 @@ ADMIN_TICKET_CURSOR_DOMAIN = b"admin-ticket-http-cursor-v1."
 ADMIN_TICKET_CURSOR_TTL_SECONDS = 3600
 ADMIN_TICKET_CURSOR_FUTURE_SKEW_SECONDS = 60
 MAX_ADMIN_TICKET_CURSOR_LENGTH = 16 * 1024
+WHATSAPP_TOOL_FAILURE_REPLY = (
+    "I had trouble reaching the live ordering tools for that message. "
+    "Please send the item or menu category again and I'll try from the current menu."
+)
+TOOL_DISCLAIMER_PATTERNS = (
+    re.compile(
+        r"\b(?:can(?:not|'t)|unable to)\s+(?:actually\s+)?"
+        r"(?:execute|call|use)\s+(?:the\s+)?tools?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bin\s+(?:this|the)\s+simulation\b", re.IGNORECASE),
+    re.compile(r"\bin\s+a\s+real[- ]world\s+scenario\b", re.IGNORECASE),
+    re.compile(r"\bI\s+would\s+use\s+the\s+[a-z_]+\s+tool\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:search_menu|start_cart_item_customization|get_menu_item|"
+        r"create_pending_order_from_cart)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\binteract\s+with\s+external\s+systems\s+in\s+real[- ]time\b",
+        re.IGNORECASE,
+    ),
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_frontend_cors_origins(
@@ -661,6 +685,28 @@ def _menu_grounded_response_from_tool_calls(tool_calls: list[ToolCallResult]) ->
     return None
 
 
+def _tool_disclaimer_guard_response(
+    context: AgentRequestContext,
+    text: str,
+    tool_calls: list[ToolCallResult],
+) -> str | None:
+    if context.channel != "whatsapp" or tool_calls:
+        return None
+    if not any(pattern.search(text or "") for pattern in TOOL_DISCLAIMER_PATTERNS):
+        return None
+    logger.warning(
+        "Blocked WhatsApp tool-disclaimer response",
+        extra={
+            "event": "whatsapp_tool_disclaimer_guard_triggered",
+            "actor_id": context.user_id,
+            "agent_session_id": context.agent_session_id,
+            "request_id": context.request_id,
+            "channel": context.channel,
+        },
+    )
+    return WHATSAPP_TOOL_FAILURE_REPLY
+
+
 def _chat_response_from_invocation(
     context: AgentRequestContext,
     identity_state: dict[str, Any],
@@ -674,7 +720,11 @@ def _chat_response_from_invocation(
     if write_succeeded:
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
-    response_text = _menu_grounded_response_from_tool_calls(tool_calls) or invocation.text
+    response_text = (
+        _menu_grounded_response_from_tool_calls(tool_calls)
+        or _tool_disclaimer_guard_response(context, invocation.text, tool_calls)
+        or invocation.text
+    )
     return ChatResponse(
         text=response_text,
         session_id=context.agent_session_id,
@@ -1394,8 +1444,13 @@ def _whatsapp_identity(
     )
     identity_seed = "|".join(identity_parts) or str(uuid.uuid4())
     identity_hash = hashlib.sha256(identity_seed.encode()).hexdigest()[:32]
+    session_namespace = get_settings().whatsapp_session_namespace.strip()
     customer_id = f"whatsapp-{identity_hash}"
-    session_id = f"whatsapp-{identity_hash}"
+    session_id = (
+        f"whatsapp-{session_namespace}-{identity_hash}"
+        if session_namespace
+        else customer_id
+    )
 
     if normalized_phone is not None or inbound.customer_name is not None:
         profile_result = get_services().customers.update_profile(

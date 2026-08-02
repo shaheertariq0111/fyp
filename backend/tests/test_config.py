@@ -127,6 +127,16 @@ def test_agentflo_gateway_settings_are_optional_and_configurable(monkeypatch):
     assert configured.agentflo_gateway_actor_id == "actor-synthetic"
 
 
+def test_whatsapp_session_namespace_is_configurable(monkeypatch):
+    assert make_test_settings().whatsapp_session_namespace == "agent-led-v2"
+
+    monkeypatch.setenv("WHATSAPP_SESSION_NAMESPACE", "fresh-agent-memory")
+    assert (
+        Settings(_env_file=None, **BASE).whatsapp_session_namespace
+        == "fresh-agent-memory"
+    )
+
+
 def test_support_phone_has_no_invented_default():
     values = dict(BASE)
     values.pop("support_phone_number")
