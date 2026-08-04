@@ -9,6 +9,7 @@ import os
 import time
 import uuid
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from fastapi import (
     Body,
@@ -1757,6 +1758,26 @@ def agentflo_whatsapp(
     inbound = extract_whatsapp_message(payload)
     if inbound is None:
         audio = extract_whatsapp_audio_message(payload)
+
+        if audio is not None and audio.media_url:
+            try:
+                audio_media_hostname = (
+                    urlparse(audio.media_url).hostname or ""
+                ).lower()
+            except ValueError:
+                audio_media_hostname = ""
+
+            if audio_media_hostname:
+                logger.info(
+                    "Agentflo audio media hostname observed",
+                    extra={
+                        "event": "agentflo_whatsapp_audio_media_hostname",
+                        "http_request_id": http_request_id,
+                        "channel": "whatsapp",
+                        "audio_media_hostname": audio_media_hostname,
+                    },
+                )
+
         settings = get_settings()
         if audio is not None and settings.whatsapp_voice_enabled:
             if not all((audio.message_id, audio.media_url, audio.customer_number, audio.sender_id)):
