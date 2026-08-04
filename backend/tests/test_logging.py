@@ -2,7 +2,7 @@ import json
 import logging
 import sys
 
-from src.infrastructure.logging import JsonFormatter
+from src.infrastructure.logging import JsonFormatter, configure_logging
 
 
 def test_json_formatter_includes_safe_fields_and_omits_unapproved_fields():
@@ -65,3 +65,29 @@ def test_json_formatter_omits_exception_traceback_and_exception_message():
     assert payload["exception_type"] == "RuntimeError"
     assert "exception" not in payload
     assert "secret nested request body" not in json.dumps(payload)
+
+
+def test_configure_logging_suppresses_url_bearing_access_loggers():
+    root = logging.getLogger()
+    logger_names = ("httpx", "httpcore", "uvicorn.access")
+
+    original_handlers = list(root.handlers)
+    original_root_level = root.level
+    original_logger_levels = {
+        name: logging.getLogger(name).level
+        for name in logger_names
+    }
+
+    try:
+        configure_logging("INFO")
+
+        for name in logger_names:
+            assert logging.getLogger(name).level >= logging.WARNING
+    finally:
+        root.handlers.clear()
+        for handler in original_handlers:
+            root.addHandler(handler)
+        root.setLevel(original_root_level)
+
+        for name, level in original_logger_levels.items():
+            logging.getLogger(name).setLevel(level)
