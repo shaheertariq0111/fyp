@@ -40,6 +40,9 @@ VOICE_JOB_QUEUE_URL=<voice-processing-queue-url>
 VOICE_MAX_MEDIA_BYTES=10485760
 VOICE_DOWNLOAD_TIMEOUT_SECONDS=10
 VOICE_TRANSCRIPTION_TIMEOUT_SECONDS=180
+VOICE_MEDIA_ALLOWED_HOSTS=
+VOICE_TRANSCRIPTION_LANGUAGE_CODE=
+VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE=false
 MENU_TABLE_NAME=<menu-table>
 CARTS_TABLE_NAME=<carts-table>
 ORDERS_TABLE_NAME=<orders-table>
@@ -75,12 +78,21 @@ for deployed ECS tasks by passing its Secrets Manager ARN through
 gateway agent ID.
 
 The voice-media bucket stores disposable customer audio only under
-`voice-input/`. Later application code must delete temporary audio promptly after
-processing. The one-day S3 lifecycle rule is an asynchronous fallback. The
-encrypted queue and bucket provide infrastructure readiness only. They do not parse, download,
-transcribe, or process voice messages, and `WHATSAPP_VOICE_ENABLED` must remain
-`false` until the later backend and worker PRs are complete. Apply the Phase 7
-CloudFormation update before attempting any later backend activation.
+`voice-input/`. Application cleanup is required after every processing attempt;
+the one-day S3 lifecycle rule remains only an asynchronous fallback.
+
+`VOICE_MEDIA_ALLOWED_HOSTS` must contain comma-separated, exact
+provider-controlled hostnames. No provider media hostname is configured yet;
+schemes, ports, paths, wildcards, localhost, and IP literals are rejected. The
+transcription language decision is also unresolved, so both language settings
+remain unset. Future activation must configure exactly one of an explicit
+`VOICE_TRANSCRIPTION_LANGUAGE_CODE` or
+`VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE=true`.
+
+PR 2 provides backend-only download, temporary storage, Transcribe, and cleanup
+primitives. They are intentionally not wired to the WhatsApp webhook or an SQS
+worker. `WHATSAPP_VOICE_ENABLED` must remain `false` until the later durable
+worker and activation work is complete.
 
 ## AgentCore Runtime
 
