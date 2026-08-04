@@ -47,6 +47,70 @@ Parameters:
     Type: String
     Default: fyp-dev-backend
     Description: ECS service name.
+  WhatsAppVoiceMonitoringEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Creates worker-specific monitoring only after Pass B1 resources are deployed.
+  VoiceWorkerEcsServiceName:
+    Type: String
+    Default: fyp-dev-whatsapp-voice-worker
+  VoiceWorkerLogGroupName:
+    Type: String
+    Default: /ecs/fyp-dev/whatsapp-voice-worker
+  VoiceProcessingQueueName:
+    Type: String
+    Default: fyp-dev-whatsapp-voice-processing
+  VoiceProcessingDeadLetterQueueName:
+    Type: String
+    Default: fyp-dev-whatsapp-voice-processing-dlq
+  WhatsAppVoiceJobsTableName:
+    Type: String
+    Default: fyp-dev-WhatsAppVoiceJobs
+  MinimumVoiceWorkerRunningTaskCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+  VoiceWorkerCpuUtilizationThreshold:
+    Type: Number
+    Default: 80
+    MinValue: 1
+    MaxValue: 100
+  VoiceWorkerMemoryUtilizationThreshold:
+    Type: Number
+    Default: 80
+    MinValue: 1
+    MaxValue: 100
+  VoiceQueueOldestMessageThresholdSeconds:
+    Type: Number
+    Default: 300
+    MinValue: 1
+  VoiceQueueVisibleMessagesThreshold:
+    Type: Number
+    Default: 10
+    MinValue: 0
+  VoiceDeadLetterQueueVisibleMessagesThreshold:
+    Type: Number
+    Default: 0
+    MinValue: 0
+  VoiceManualReviewThreshold:
+    Type: Number
+    Default: 0
+    MinValue: 0
+  VoicePermanentFailureThreshold:
+    Type: Number
+    Default: 0
+    MinValue: 0
+  VoiceRetryableFailureThreshold:
+    Type: Number
+    Default: 0
+    MinValue: 0
+  VoiceUnexpectedTaskStopThreshold:
+    Type: Number
+    Default: 0
+    MinValue: 0
   MinimumRunningTaskCount:
     Type: Number
     Default: 1
@@ -117,6 +181,10 @@ Conditions:
   HasAgentCoreLogGroup: !Not [!Equals [!Ref AgentCoreLogGroupName, ""]]
   HasAlarmActions: !Not [!Equals [!Join ["", !Ref AlarmActions], ""]]
   HasEcsRunningTaskAlarm: !Not [!Equals [!Ref MinimumRunningTaskCount, 0]]
+  VoiceMonitoringEnabled: !Equals [!Ref WhatsAppVoiceMonitoringEnabled, "true"]
+  HasVoiceWorkerRunningTaskAlarm: !And
+    - !Condition VoiceMonitoringEnabled
+    - !Not [!Equals [!Ref MinimumVoiceWorkerRunningTaskCount, 0]]
 
 Resources:
   UnexpectedEcsTaskStopsLogGroup:
@@ -278,6 +346,115 @@ Resources:
           MetricValue: "1"
           DefaultValue: 0
 
+  VoiceManualReviewMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      LogGroupName: !Ref VoiceWorkerLogGroupName
+      FilterName: !Sub ${ProjectName}-voice-manual-review
+      FilterPattern: '{ $.event = "voice_manual_review" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/WhatsAppVoiceWorker
+          MetricName: ManualReview
+          MetricValue: "1"
+          DefaultValue: 0
+
+  VoicePermanentFailureMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      LogGroupName: !Ref VoiceWorkerLogGroupName
+      FilterName: !Sub ${ProjectName}-voice-permanent-failure
+      FilterPattern: '{ $.event = "voice_permanent_failure" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/WhatsAppVoiceWorker
+          MetricName: PermanentFailure
+          MetricValue: "1"
+          DefaultValue: 0
+
+  VoiceRetryableFailureMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      LogGroupName: !Ref VoiceWorkerLogGroupName
+      FilterName: !Sub ${ProjectName}-voice-retryable-failure
+      FilterPattern: '{ $.event = "voice_retryable_failure" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/WhatsAppVoiceWorker
+          MetricName: RetryableFailure
+          MetricValue: "1"
+          DefaultValue: 0
+
+  VoiceUnexpectedTaskStopsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      LogGroupName: !Sub /aws/events/${ProjectName}/whatsapp-voice-worker-task-stopped
+      RetentionInDays: 30
+
+  VoiceEventBridgeToLogsResourcePolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      PolicyName: !Sub ${ProjectName}-eventbridge-to-voice-worker-stops
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowEventBridgeToWriteVoiceWorkerStops",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": ["events.amazonaws.com", "delivery.logs.amazonaws.com"]
+              },
+              "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+              "Resource": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/events/${ProjectName}/whatsapp-voice-worker-task-stopped:*"
+            }
+          ]
+        }
+
+  VoiceUnexpectedTaskStoppedRule:
+    Type: AWS::Events::Rule
+    Condition: VoiceMonitoringEnabled
+    DependsOn: VoiceEventBridgeToLogsResourcePolicy
+    Properties:
+      Name: !Sub ${ProjectName}-voice-worker-unexpected-task-stopped
+      Description: Captures unexpected stopped WhatsApp voice-worker tasks while excluding normal service and user initiated stops.
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.ecs
+        detail-type:
+          - ECS Task State Change
+        detail:
+          clusterArn:
+            - !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}
+          group:
+            - !Sub service:${VoiceWorkerEcsServiceName}
+          lastStatus:
+            - STOPPED
+          stopCode:
+            - anything-but:
+                - ServiceSchedulerInitiated
+                - UserInitiated
+      Targets:
+        - Arn: !GetAtt VoiceUnexpectedTaskStopsLogGroup.Arn
+          Id: VoiceUnexpectedTaskStopsLogGroup
+
+  VoiceUnexpectedTaskStoppedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: VoiceMonitoringEnabled
+    DependsOn: VoiceUnexpectedTaskStoppedRule
+    Properties:
+      LogGroupName: !Ref VoiceUnexpectedTaskStopsLogGroup
+      FilterName: !Sub ${ProjectName}-voice-worker-unexpected-task-stopped
+      FilterPattern: '{ $.detail.lastStatus = "STOPPED" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub ${ProjectName}/WhatsAppVoiceWorker
+          MetricName: UnexpectedTaskStopped
+          MetricValue: "1"
+          DefaultValue: 0
+
   ApiGateway5xxAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -377,6 +554,183 @@ Resources:
       EvaluationPeriods: 3
       DatapointsToAlarm: 3
       Threshold: !Ref EcsMemoryUtilizationThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceWorkerRunningTaskCountAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasVoiceWorkerRunningTaskAlarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-worker-running-task-count-low
+      AlarmDescription: WhatsApp voice-worker running task count is below the configured nonzero minimum.
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref VoiceWorkerEcsServiceName
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: !Ref MinimumVoiceWorkerRunningTaskCount
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceWorkerCpuUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-worker-cpu-utilization-high
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref VoiceWorkerEcsServiceName
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: !Ref VoiceWorkerCpuUtilizationThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceWorkerMemoryUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-worker-memory-utilization-high
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref VoiceWorkerEcsServiceName
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: !Ref VoiceWorkerMemoryUtilizationThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceQueueOldestMessageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-queue-oldest-message-high
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref VoiceProcessingQueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: !Ref VoiceQueueOldestMessageThresholdSeconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceQueueVisibleMessagesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-queue-visible-messages-high
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref VoiceProcessingQueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: !Ref VoiceQueueVisibleMessagesThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceDeadLetterQueueVisibleMessagesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-dlq-visible-messages
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref VoiceProcessingDeadLetterQueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref VoiceDeadLetterQueueVisibleMessagesThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceManualReviewAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-manual-review
+      Namespace: !Sub ${ProjectName}/WhatsAppVoiceWorker
+      MetricName: ManualReview
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref VoiceManualReviewThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoicePermanentFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-permanent-failure
+      Namespace: !Sub ${ProjectName}/WhatsAppVoiceWorker
+      MetricName: PermanentFailure
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref VoicePermanentFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceRetryableFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-retryable-failure
+      Namespace: !Sub ${ProjectName}/WhatsAppVoiceWorker
+      MetricName: RetryableFailure
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref VoiceRetryableFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceUnexpectedTaskStoppedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-worker-unexpected-task-stopped
+      Namespace: !Sub ${ProjectName}/WhatsAppVoiceWorker
+      MetricName: UnexpectedTaskStopped
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref VoiceUnexpectedTaskStopThreshold
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
@@ -619,6 +973,42 @@ Resources:
           Expression: SUM(METRICS())
           Label: TotalDynamoDbWriteThrottleEvents
           ReturnData: true
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceJobsReadThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-jobs-read-throttles
+      Namespace: AWS/DynamoDB
+      MetricName: ReadThrottleEvents
+      Dimensions:
+        - Name: TableName
+          Value: !Ref WhatsAppVoiceJobsTableName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref DynamoDbThrottleThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
+
+  VoiceJobsWriteThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: VoiceMonitoringEnabled
+    Properties:
+      AlarmName: !Sub ${ProjectName}-voice-jobs-write-throttles
+      Namespace: AWS/DynamoDB
+      MetricName: WriteThrottleEvents
+      Dimensions:
+        - Name: TableName
+          Value: !Ref WhatsAppVoiceJobsTableName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref DynamoDbThrottleThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmActions, !Ref AlarmActions, !Ref AWS::NoValue]
 
   AgentRequestFailureAlarm:

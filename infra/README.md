@@ -56,9 +56,16 @@ leases, retry timing, and opaque request references; it does not store transcrip
 
 The media hostname and transcription language mode are intentionally unresolved.
 Do not increase `WorkerDesiredCount` or change `WhatsAppVoiceEnabled` until a later
-controlled activation has supplied and verified those provider values. Pass B2
-will address deployment workflow, OIDC, and monitoring integration; it is not
-part of this change.
+controlled activation has supplied and verified those provider values.
+
+After Pass B1 infrastructure is manually deployed and verified, Phase 13 OIDC must
+be manually updated before worker task-definition deployment is enabled. The
+non-secret GitHub `staging` Environment variable `VOICE_WORKER_DEPLOY_ENABLED`
+should remain absent or not equal to `true` until then. Setting it to the exact
+string `true` only lets the backend workflow deploy the shared image to the worker
+task definition; it does not change `WorkerDesiredCount`, enable
+`WHATSAPP_VOICE_ENABLED`, or activate voice processing. Phase 11 worker monitoring
+is separately gated by `WhatsAppVoiceMonitoringEnabled`, which defaults to `false`.
 
 ## IAM roles
 

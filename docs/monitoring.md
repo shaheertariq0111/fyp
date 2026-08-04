@@ -23,6 +23,7 @@ BackendLogGroupName: /ecs/fyp-dev/backend
 Api Gateway access log group: /aws/apigateway/fyp-dev/backend-http-api
 AgentCoreLogGroupName: /aws/bedrock-agentcore/runtimes/fyp_dev_restaurant_agent-dwLwVnClBF-DEFAULT
 MinimumRunningTaskCount: 1
+WhatsAppVoiceMonitoringEnabled: false
 ```
 
 The monitored DynamoDB tables are:
@@ -37,6 +38,9 @@ shaheer-fyp-menu-sessions
 shaheer-fyp-orders
 shaheer-fyp-restaurant-menu
 ```
+
+When voice monitoring is explicitly enabled, the dedicated jobs table is also
+monitored as `fyp-dev-WhatsAppVoiceJobs`.
 
 ## Structured Logs
 
@@ -83,6 +87,11 @@ Dashboard widgets cover:
 
 The dashboard uses aggregate metrics only. It does not use request IDs, actor IDs, session IDs, tool names, error messages, or other high-cardinality dimensions.
 
+The dashboard is intentionally unchanged for Pass B2. Its JSON body is a single
+CloudFormation string and cannot safely conditionally include a worker section
+without fragile substitutions. Conditional worker alarms provide the coverage while
+the default dashboard remains valid whether or not Pass B1 exists.
+
 ## Alarms
 
 The template creates these alarms:
@@ -102,6 +111,39 @@ The template creates these alarms:
 - Unexpected ECS task stops captured by EventBridge, default threshold `0`.
 
 No SNS topic or notification action is created by default. `AlarmActions` is optional; when empty, alarms can enter `ALARM` state but do not send notifications.
+
+### Disabled WhatsApp voice-worker monitoring
+
+`WhatsAppVoiceMonitoringEnabled` is a String parameter with allowed values `true`
+and `false`, and defaults to `false`. With the default, no resource that depends on
+the worker service or log group is created, so existing monitoring behavior is
+preserved and no Pass B1 resource is required.
+
+When enabled, the template adds:
+
+- Log-derived `ManualReview`, `PermanentFailure`, and `RetryableFailure` metrics and
+  alarms in `${ProjectName}/WhatsAppVoiceWorker`, using only the existing
+  `voice_manual_review`, `voice_permanent_failure`, and `voice_retryable_failure`
+  event names. No customer or payload field becomes a metric dimension.
+- Processing-queue alarms for oldest visible message age and visible backlog.
+- A DLQ visible-message alarm whose default threshold `0` detects any visible
+  message. The template does not purge, redrive, or modify either queue.
+- Worker CPU and memory alarms, plus a separate unexpected task-stop EventBridge
+  capture and alarm scoped to `service:fyp-dev-whatsapp-voice-worker`. Normal
+  `ServiceSchedulerInitiated` and `UserInitiated` stops are excluded.
+- Separate read/write throttle alarms for `fyp-dev-WhatsAppVoiceJobs`; the eight
+  existing DynamoDB tables and their aggregate alarms are unchanged.
+
+All of these alarms use `TreatMissingData: notBreaching`, except the optional worker
+running-task alarm. That alarm exists only when monitoring is enabled and
+`MinimumVoiceWorkerRunningTaskCount` is greater than `0`; it is therefore absent
+while the worker is intentionally at desired count `0`.
+
+Queue age signals stalled processing, processing-queue depth signals backlog, and
+any DLQ message signals work requiring investigation. A manual-review alarm means an
+operator should inspect the privacy-safe job status and structured failure metadata,
+resolve provider/configuration or processing causes, and use an approved recovery
+procedure; it does not automatically retry, redrive, or expose customer content.
 
 ## Metric Filters
 
@@ -162,6 +204,14 @@ The template uses these `TreatMissingData` values:
 - Unexpected ECS task stops: `notBreaching`.
 
 For bootstrap with the ECS service intentionally at `DesiredCount=0`, deploy or update the monitoring stack with `MinimumRunningTaskCount=0`. After the ECS service starts, update with `MinimumRunningTaskCount=1`; that update creates the running-task alarm.
+
+Voice monitoring activation follows infrastructure activation: first deploy and
+verify Pass B1 with `WorkerDesiredCount=0` and voice disabled; then update Phase 13
+OIDC and optionally enable workflow integration; then update Phase 11 with
+`WhatsAppVoiceMonitoringEnabled=true` and
+`MinimumVoiceWorkerRunningTaskCount=0`. A nonzero worker minimum belongs only to the
+later controlled worker activation. Monitoring does not enable the worker or inbound
+voice processing.
 
 ## Log Retention
 
