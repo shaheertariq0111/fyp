@@ -1798,6 +1798,12 @@ def test_agentflo_whatsapp_audio_payload_logs_only_safe_shape(
     assert hostname_log.audio_media_hostname == "private.example"
     assert not hasattr(hostname_log, "audio_media_url")
 
+    formatted_hostname_log = JsonFormatter().format(hostname_log)
+    hostname_cloudwatch_log = json.loads(formatted_hostname_log)
+    assert hostname_cloudwatch_log["audio_media_hostname"] == "private.example"
+    assert private_media_url not in formatted_hostname_log
+    assert private_media_id not in formatted_hostname_log
+
     serialized_log_records = repr([vars(record) for record in caplog.records])
     assert private_body not in formatted_shape_log
     assert private_phone not in formatted_shape_log
