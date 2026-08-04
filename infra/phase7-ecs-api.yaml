@@ -5,8 +5,8 @@ Parameters:
   ProjectName:
     Type: String
     Default: fyp-dev
-    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9-]{1,31}$"
-    Description: Short prefix used for development resources.
+    AllowedPattern: "^[a-z][a-z0-9-]{1,31}$"
+    Description: Lowercase prefix used for project resources.
   EnvironmentName:
     Type: String
     Default: production
@@ -30,6 +30,13 @@ Parameters:
     MinValue: 0
     MaxValue: 10
     Description: Start at 0 until the backend image and runtime config are ready.
+  WhatsAppVoiceEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Keep disabled until the inbound voice backend and durable worker are deployed.
   BackendCpu:
     Type: String
     Default: "512"
@@ -252,6 +259,81 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/apigateway/${ProjectName}/backend-http-api
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  VoiceMediaBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub ${ProjectName}-voice-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteTemporaryVoiceInput
+            Status: Enabled
+            Prefix: voice-input/
+            ExpirationInDays: 1
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: DataClassification
+          Value: temporary-customer-audio
+
+  VoiceMediaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref VoiceMediaBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt VoiceMediaBucket.Arn
+              - !Sub ${VoiceMediaBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  VoiceProcessingDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${ProjectName}-whatsapp-voice-processing-dlq
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  VoiceProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${ProjectName}-whatsapp-voice-processing
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 86400
+      VisibilityTimeout: 300
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt VoiceProcessingDeadLetterQueue.Arn
+        maxReceiveCount: 3
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -551,6 +633,48 @@ Resources:
             Resource:
               - !Ref AgentCoreRuntimeArn
               - !Sub ${AgentCoreRuntimeArn}/runtime-endpoint/*
+
+  EcsTaskVoicePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-app-whatsapp-voice
+      Roles:
+        - !Ref EcsTaskRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: GetVoiceMediaBucketLocation
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+            Resource: !GetAtt VoiceMediaBucket.Arn
+          - Sid: ManageTemporaryVoiceInput
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub ${VoiceMediaBucket.Arn}/voice-input/*
+          - Sid: UseVoiceProcessingQueue
+            Effect: Allow
+            Action:
+              - sqs:SendMessage
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:ChangeMessageVisibility
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt VoiceProcessingQueue.Arn
+          - Sid: StartVoiceTranscriptionJob
+            Effect: Allow
+            Action:
+              - transcribe:StartTranscriptionJob
+            Resource: "*"
+          - Sid: ManageVoiceTranscriptionJobs
+            Effect: Allow
+            Action:
+              - transcribe:GetTranscriptionJob
+              - transcribe:DeleteTranscriptionJob
+            Resource: !Sub arn:${AWS::Partition}:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/${ProjectName}-whatsapp-voice-*
 
   AgentCoreExecutionRole:
     Type: AWS::IAM::Role
@@ -954,6 +1078,20 @@ Resources:
               Value: !Ref EnvironmentName
             - Name: AWS_REGION
               Value: !Ref AWS::Region
+            - Name: WHATSAPP_VOICE_ENABLED
+              Value: !Ref WhatsAppVoiceEnabled
+            - Name: VOICE_MEDIA_BUCKET_NAME
+              Value: !Ref VoiceMediaBucket
+            - Name: VOICE_MEDIA_INPUT_PREFIX
+              Value: voice-input/
+            - Name: VOICE_JOB_QUEUE_URL
+              Value: !Ref VoiceProcessingQueue
+            - Name: VOICE_MAX_MEDIA_BYTES
+              Value: "10485760"
+            - Name: VOICE_DOWNLOAD_TIMEOUT_SECONDS
+              Value: "10"
+            - Name: VOICE_TRANSCRIPTION_TIMEOUT_SECONDS
+              Value: "180"
             - Name: BEDROCK_MODEL_ID
               Value: !Ref BedrockModelId
             - Name: BEDROCK_GUARDRAIL_ID
@@ -1177,6 +1315,21 @@ Outputs:
     Value: !GetAtt EcsTaskRole.Arn
   AgentCoreExecutionRoleArn:
     Value: !GetAtt AgentCoreExecutionRole.Arn
+  VoiceMediaBucketName:
+    Description: Dedicated temporary customer voice-input bucket name.
+    Value: !Ref VoiceMediaBucket
+  VoiceMediaBucketArn:
+    Description: Dedicated temporary customer voice-input bucket ARN.
+    Value: !GetAtt VoiceMediaBucket.Arn
+  VoiceProcessingQueueUrl:
+    Description: Encrypted inbound WhatsApp voice-processing queue URL.
+    Value: !Ref VoiceProcessingQueue
+  VoiceProcessingQueueArn:
+    Description: Encrypted inbound WhatsApp voice-processing queue ARN.
+    Value: !GetAtt VoiceProcessingQueue.Arn
+  VoiceProcessingDeadLetterQueueArn:
+    Description: Dead-letter queue ARN for failed inbound WhatsApp voice jobs.
+    Value: !GetAtt VoiceProcessingDeadLetterQueue.Arn
   AgentRequestsTableName:
     Value: !Ref AgentRequestsTableName
   ConversationMessagesTableName:

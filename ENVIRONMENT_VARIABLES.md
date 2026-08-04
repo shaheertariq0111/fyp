@@ -33,6 +33,13 @@ AGENTFLO_GATEWAY_BASE_URL=https://communicationgateway.agentflo.com
 AGENTFLO_GATEWAY_TENANT_ID=fyp-dev
 AGENTFLO_GATEWAY_AGENT_ID=restaurant-agent
 AGENTFLO_GATEWAY_ACTOR_ID=restaurant-agent
+WHATSAPP_VOICE_ENABLED=false
+VOICE_MEDIA_BUCKET_NAME=<temporary-voice-media-bucket>
+VOICE_MEDIA_INPUT_PREFIX=voice-input/
+VOICE_JOB_QUEUE_URL=<voice-processing-queue-url>
+VOICE_MAX_MEDIA_BYTES=10485760
+VOICE_DOWNLOAD_TIMEOUT_SECONDS=10
+VOICE_TRANSCRIPTION_TIMEOUT_SECONDS=180
 MENU_TABLE_NAME=<menu-table>
 CARTS_TABLE_NAME=<carts-table>
 ORDERS_TABLE_NAME=<orders-table>
@@ -66,6 +73,14 @@ for deployed ECS tasks by passing its Secrets Manager ARN through
 `AGENTFLO_GATEWAY_API_KEY` is injected only through ECS Secrets Manager using
 `AgentfloGatewayApiKeySecretArn`. A blank actor ID falls back to the configured
 gateway agent ID.
+
+The voice-media bucket stores disposable customer audio only under
+`voice-input/`. Later application code must delete temporary audio promptly after
+processing. The one-day S3 lifecycle rule is an asynchronous fallback. The
+encrypted queue and bucket provide infrastructure readiness only. They do not parse, download,
+transcribe, or process voice messages, and `WHATSAPP_VOICE_ENABLED` must remain
+`false` until the later backend and worker PRs are complete. Apply the Phase 7
+CloudFormation update before attempting any later backend activation.
 
 ## AgentCore Runtime
 

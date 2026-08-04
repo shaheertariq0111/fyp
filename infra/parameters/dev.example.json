@@ -20,6 +20,10 @@
     "ParameterValue": "0"
   },
   {
+    "ParameterKey": "WhatsAppVoiceEnabled",
+    "ParameterValue": "false"
+  },
+  {
     "ParameterKey": "AgentCoreRuntimeArn",
     "ParameterValue": ""
   },

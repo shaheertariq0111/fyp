@@ -124,6 +124,13 @@ AGENTFLO_GATEWAY_BASE_URL=https://communicationgateway.agentflo.com
 AGENTFLO_GATEWAY_TENANT_ID=fyp-dev
 AGENTFLO_GATEWAY_AGENT_ID=restaurant-agent
 AGENTFLO_GATEWAY_ACTOR_ID=restaurant-agent
+WHATSAPP_VOICE_ENABLED=false
+VOICE_MEDIA_BUCKET_NAME=<temporary-voice-media-bucket>
+VOICE_MEDIA_INPUT_PREFIX=voice-input/
+VOICE_JOB_QUEUE_URL=<voice-processing-queue-url>
+VOICE_MAX_MEDIA_BYTES=10485760
+VOICE_DOWNLOAD_TIMEOUT_SECONDS=10
+VOICE_TRANSCRIPTION_TIMEOUT_SECONDS=180
 MENU_TABLE_NAME=<menu-table>
 CARTS_TABLE_NAME=<carts-table>
 ORDERS_TABLE_NAME=<orders-table>
@@ -141,6 +148,15 @@ STRANDS_SESSION_STORAGE_DIR=
 ```
 
 `FRONTEND_CORS_ORIGINS` must be the exact Amplify HTTPS origin. For this deployment, pass one origin only. Do not use `*`, `localhost`, or `127.0.0.1` in production.
+
+The voice settings are non-secret infrastructure references and safety limits.
+`VOICE_MEDIA_BUCKET_NAME` points to the dedicated temporary customer-audio
+bucket. Later application code must delete `voice-input/` objects promptly after
+processing. The one-day S3 lifecycle rule is an asynchronous fallback. The SQS
+queue and S3 bucket do not activate voice handling by themselves. Keep
+`WHATSAPP_VOICE_ENABLED=false` until the media-validation backend and durable ECS
+worker are implemented, and deploy the Phase 7 CloudFormation changes before
+enabling any later voice code.
 
 ## CORS and admin cookie boundary
 
