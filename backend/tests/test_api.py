@@ -1627,6 +1627,127 @@ def test_agentflo_whatsapp_non_text_events_are_ignored(monkeypatch, payload):
     assert services.conversation_history.records == []
 
 
+def test_agentflo_whatsapp_text_message_does_not_emit_ignored_shape_log(
+    monkeypatch,
+    caplog,
+):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Text reply.")
+
+    with caplog.at_level(logging.INFO, logger="src.api.main"):
+        response = client().post(
+            "/api/channels/agentflo/whatsapp",
+            json={
+                "message": "Synthetic text message",
+                "from": "+10000000000",
+                "id": "text-message-1",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Text reply."
+    assert not any(
+        getattr(record, "event", None)
+        == "agentflo_whatsapp_ignored_payload_shape"
+        for record in caplog.records
+    )
+
+
+def test_agentflo_whatsapp_audio_payload_logs_only_safe_shape(
+    monkeypatch,
+    caplog,
+):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    private_body = "Private voice-note caption"
+    private_phone = "+10000000001"
+    private_media_url = "https://private.example/media/audio-1"
+    private_media_id = "private-media-id-123456789"
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "changes": [{
+                "value": {
+                    "contacts": [{"wa_id": private_phone}],
+                    "messages": [{
+                        "from": private_phone,
+                        "id": "private-message-id-123456789",
+                        "type": "audio",
+                        "body": private_body,
+                        "audio": {
+                            "id": private_media_id,
+                            "url": private_media_url,
+                        },
+                        "media": {
+                            "id": private_media_id,
+                            "link": private_media_url,
+                        },
+                        "voice": {},
+                        "document": {},
+                        "image": {},
+                        "video": {},
+                        "sticker": {},
+                    }],
+                }
+            }]
+        }],
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.api.main"):
+        response = client().post(
+            "/api/channels/agentflo/whatsapp",
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "ignored": True,
+        "reason": "no_text_message",
+    }
+    shape_log = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "agentflo_whatsapp_ignored_payload_shape"
+    )
+    assert shape_log.top_level_payload_keys == ["entry", "object"]
+    assert shape_log.detected_message_type == "audio"
+    assert shape_log.messages_array_exists is True
+    assert shape_log.message_count == 1
+    assert shape_log.first_message_keys == [
+        "audio",
+        "body",
+        "document",
+        "from",
+        "id",
+        "image",
+        "media",
+        "sticker",
+        "type",
+        "video",
+        "voice",
+    ]
+    assert shape_log.first_message_type == "audio"
+    assert shape_log.first_message_has_audio is True
+    assert shape_log.first_message_has_voice is True
+    assert shape_log.first_message_has_media is True
+    assert shape_log.first_message_has_document is True
+    assert shape_log.first_message_has_image is True
+    assert shape_log.first_message_has_video is True
+    assert shape_log.first_message_has_sticker is True
+    assert shape_log.first_message_audio_has_id is True
+    assert shape_log.first_message_audio_has_url_or_link is True
+    assert shape_log.first_message_media_has_id is True
+    assert shape_log.first_message_media_has_url_or_link is True
+    serialized_log_records = repr([vars(record) for record in caplog.records])
+    assert private_body not in serialized_log_records
+    assert private_phone not in serialized_log_records
+    assert private_media_url not in serialized_log_records
+    assert private_media_id not in serialized_log_records
+
+
 def test_agentflo_whatsapp_rejects_non_object_payload():
     response = client().post(
         "/api/channels/agentflo/whatsapp",
