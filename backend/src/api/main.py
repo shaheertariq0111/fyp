@@ -1528,6 +1528,72 @@ def _agentflo_duplicate_response() -> dict[str, Any]:
     }
 
 
+def _safe_agentflo_type_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or len(candidate) > 64:
+        return None
+    if not all(character.isascii() and (character.isalnum() or character in "._-") for character in candidate):
+        return None
+    return candidate
+
+
+def _agentflo_messages_array(payload: dict[str, Any]) -> list[Any] | None:
+    pending: list[tuple[Any, int]] = [(payload, 0)]
+    visited = 0
+    while pending and visited < 200:
+        value, depth = pending.pop(0)
+        visited += 1
+        if isinstance(value, dict):
+            messages = value.get("messages")
+            if isinstance(messages, list):
+                return messages
+            if depth < 6:
+                pending.extend((nested, depth + 1) for nested in value.values())
+        elif isinstance(value, list) and depth < 6:
+            pending.extend((nested, depth + 1) for nested in value)
+    return None
+
+
+def _agentflo_ignored_payload_shape(payload: dict[str, Any]) -> dict[str, Any]:
+    messages = _agentflo_messages_array(payload)
+    first_message = (
+        messages[0]
+        if messages and isinstance(messages[0], dict)
+        else None
+    )
+    first_message_type = _safe_agentflo_type_name(
+        first_message.get("type") if first_message is not None else None
+    )
+    detected_message_type = first_message_type or _safe_agentflo_type_name(
+        payload.get("type")
+    )
+    audio = first_message.get("audio") if first_message is not None else None
+    media = first_message.get("media") if first_message is not None else None
+    return {
+        "top_level_payload_keys": sorted(payload),
+        "detected_message_type": detected_message_type,
+        "messages_array_exists": messages is not None,
+        "message_count": len(messages) if messages is not None else 0,
+        "first_message_keys": sorted(first_message) if first_message is not None else [],
+        "first_message_type": first_message_type,
+        "first_message_has_audio": first_message is not None and "audio" in first_message,
+        "first_message_has_voice": first_message is not None and "voice" in first_message,
+        "first_message_has_media": first_message is not None and "media" in first_message,
+        "first_message_has_document": first_message is not None and "document" in first_message,
+        "first_message_has_image": first_message is not None and "image" in first_message,
+        "first_message_has_video": first_message is not None and "video" in first_message,
+        "first_message_has_sticker": first_message is not None and "sticker" in first_message,
+        "first_message_audio_has_id": isinstance(audio, dict) and "id" in audio,
+        "first_message_audio_has_url_or_link": isinstance(audio, dict)
+        and ("url" in audio or "link" in audio),
+        "first_message_media_has_id": isinstance(media, dict) and "id" in media,
+        "first_message_media_has_url_or_link": isinstance(media, dict)
+        and ("url" in media or "link" in media),
+    }
+
+
 def _log_agentflo_delivery_transition(
     *,
     previous_state: str,
@@ -1756,10 +1822,11 @@ def agentflo_whatsapp(
         logger.info(
             "Agentflo WhatsApp event ignored",
             extra={
-                "event": "agentflo_whatsapp_ignored",
+                "event": "agentflo_whatsapp_ignored_payload_shape",
                 "http_request_id": http_request_id,
                 "channel": "whatsapp",
                 "reason": "no_text_message",
+                **_agentflo_ignored_payload_shape(payload),
             },
         )
         return {
