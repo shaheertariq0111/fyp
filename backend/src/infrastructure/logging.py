@@ -40,6 +40,7 @@ SAFE_LOG_FIELDS = (
     "duplicate",
     "receive_count",
     "cleanup_after_valid_transcript",
+    "audio_media_hostname",
 )
 
 
