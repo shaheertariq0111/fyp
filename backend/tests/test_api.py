@@ -15,6 +15,7 @@ from src.agent.context import AgentRequestContext, request_context
 from src.agent_client import AgentInvocationResult
 from src.api import main
 from src.api.schemas import ToolCallResult
+from src.infrastructure.logging import JsonFormatter
 from src.models.tool_responses import ToolResponse
 from src.services.cart_service import CartService
 from src.services.customer_service import CustomerService
@@ -1712,11 +1713,14 @@ def test_agentflo_whatsapp_audio_payload_logs_only_safe_shape(
         if getattr(record, "event", None)
         == "agentflo_whatsapp_ignored_payload_shape"
     )
-    assert shape_log.top_level_payload_keys == ["entry", "object"]
-    assert shape_log.detected_message_type == "audio"
-    assert shape_log.messages_array_exists is True
-    assert shape_log.message_count == 1
-    assert shape_log.first_message_keys == [
+    formatted_shape_log = JsonFormatter().format(shape_log)
+    cloudwatch_log = json.loads(formatted_shape_log)
+    payload_shape = cloudwatch_log["payload_shape"]
+    assert payload_shape["top_level_payload_keys"] == ["entry", "object"]
+    assert payload_shape["detected_message_type"] == "audio"
+    assert payload_shape["messages_array_exists"] is True
+    assert payload_shape["message_count"] == 1
+    assert payload_shape["first_message_keys"] == [
         "audio",
         "body",
         "document",
@@ -1729,19 +1733,23 @@ def test_agentflo_whatsapp_audio_payload_logs_only_safe_shape(
         "video",
         "voice",
     ]
-    assert shape_log.first_message_type == "audio"
-    assert shape_log.first_message_has_audio is True
-    assert shape_log.first_message_has_voice is True
-    assert shape_log.first_message_has_media is True
-    assert shape_log.first_message_has_document is True
-    assert shape_log.first_message_has_image is True
-    assert shape_log.first_message_has_video is True
-    assert shape_log.first_message_has_sticker is True
-    assert shape_log.first_message_audio_has_id is True
-    assert shape_log.first_message_audio_has_url_or_link is True
-    assert shape_log.first_message_media_has_id is True
-    assert shape_log.first_message_media_has_url_or_link is True
+    assert payload_shape["first_message_type"] == "audio"
+    assert payload_shape["first_message_has_audio"] is True
+    assert payload_shape["first_message_has_voice"] is True
+    assert payload_shape["first_message_has_media"] is True
+    assert payload_shape["first_message_has_document"] is True
+    assert payload_shape["first_message_has_image"] is True
+    assert payload_shape["first_message_has_video"] is True
+    assert payload_shape["first_message_has_sticker"] is True
+    assert payload_shape["first_message_audio_has_id"] is True
+    assert payload_shape["first_message_audio_has_url_or_link"] is True
+    assert payload_shape["first_message_media_has_id"] is True
+    assert payload_shape["first_message_media_has_url_or_link"] is True
     serialized_log_records = repr([vars(record) for record in caplog.records])
+    assert private_body not in formatted_shape_log
+    assert private_phone not in formatted_shape_log
+    assert private_media_url not in formatted_shape_log
+    assert private_media_id not in formatted_shape_log
     assert private_body not in serialized_log_records
     assert private_phone not in serialized_log_records
     assert private_media_url not in serialized_log_records

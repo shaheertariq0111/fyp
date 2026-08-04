@@ -1826,7 +1826,7 @@ def agentflo_whatsapp(
                 "http_request_id": http_request_id,
                 "channel": "whatsapp",
                 "reason": "no_text_message",
-                **_agentflo_ignored_payload_shape(payload),
+                "payload_shape": _agentflo_ignored_payload_shape(payload),
             },
         )
         return {
