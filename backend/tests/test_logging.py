@@ -21,6 +21,10 @@ def test_json_formatter_includes_safe_fields_and_omits_unapproved_fields():
     record.agent_session_id = "session-1"
     record.route = "/api/chat"
     record.status_code = 200
+    record.payload_shape = {
+        "detected_message_type": "audio",
+        "messages_array_exists": True,
+    }
     record.password = "do-not-log"
     record.session_token = "do-not-log"
     record.conversation_text = "do-not-log"
@@ -33,6 +37,10 @@ def test_json_formatter_includes_safe_fields_and_omits_unapproved_fields():
     assert payload["agent_session_id"] == "session-1"
     assert payload["route"] == "/api/chat"
     assert payload["status_code"] == 200
+    assert payload["payload_shape"] == {
+        "detected_message_type": "audio",
+        "messages_array_exists": True,
+    }
     assert "password" not in payload
     assert "session_token" not in payload
     assert "conversation_text" not in payload
