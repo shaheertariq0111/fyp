@@ -13,6 +13,16 @@ class WhatsAppInboundMessage:
     message_id: str | None = None
 
 
+@dataclass(frozen=True)
+class WhatsAppInboundAudioMessage:
+    customer_number: str | None
+    customer_name: str | None
+    sender_id: str | None
+    message_id: str | None
+    media_id: str | None
+    media_url: str
+
+
 def extract_whatsapp_message(
     payload: dict[str, Any],
 ) -> WhatsAppInboundMessage | None:
@@ -29,6 +39,80 @@ def extract_whatsapp_message(
         simple_message = _extract_simple_message(candidate)
         if simple_message is not None:
             return simple_message
+    return None
+
+
+def extract_whatsapp_audio_message(
+    payload: dict[str, Any],
+) -> WhatsAppInboundAudioMessage | None:
+    if not isinstance(payload, dict):
+        return None
+    candidates = [payload]
+    for key in ("data", "payload", "event"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for candidate in candidates:
+        audio_message = _extract_meta_audio_message(candidate)
+        if audio_message is not None:
+            return audio_message
+    return None
+
+
+def _extract_meta_audio_message(
+    payload: dict[str, Any],
+) -> WhatsAppInboundAudioMessage | None:
+    entries = payload.get("entry")
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        changes = entry.get("changes")
+        if not isinstance(changes, list):
+            continue
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            value = change.get("value")
+            if not isinstance(value, dict):
+                continue
+            metadata = value.get("metadata")
+            sender_id = (
+                _clean_string(metadata.get("phone_number_id"))
+                if isinstance(metadata, dict)
+                else None
+            )
+            contacts = value.get("contacts")
+            contact_items = (
+                [item for item in contacts if isinstance(item, dict)]
+                if isinstance(contacts, list)
+                else []
+            )
+            messages = value.get("messages")
+            if not isinstance(messages, list):
+                continue
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                audio = message.get("audio")
+                if not isinstance(audio, dict):
+                    continue
+                media_url = _first_string(audio, ("url", "link"))
+                if media_url is None:
+                    continue
+                customer_number = _first_string(message, ("from", "wa_id"))
+                contact = _matching_contact(contact_items, customer_number)
+                if customer_number is None and contact is not None:
+                    customer_number = _clean_string(contact.get("wa_id"))
+                return WhatsAppInboundAudioMessage(
+                    customer_number=customer_number,
+                    customer_name=_contact_name(contact),
+                    sender_id=sender_id,
+                    message_id=_first_string(message, ("id", "message_id")),
+                    media_id=_first_string(audio, ("id",)),
+                    media_url=media_url,
+                )
     return None
 
 

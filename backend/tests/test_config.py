@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from src.infrastructure.config import BedrockModelSettings, Settings
+from src.infrastructure.config import (
+    BedrockModelSettings,
+    Settings,
+    parse_voice_media_allowed_hosts,
+)
 
 
 BASE = {
@@ -226,3 +230,139 @@ def test_admin_cookie_is_cross_site_in_staging_and_production():
         frontend_cors_origins="https://app.amplifyapp.com",
     ).cross_site_admin_cookie()
     assert not make_test_settings().cross_site_admin_cookie()
+
+
+def test_voice_configuration_has_disabled_safe_defaults():
+    settings = make_test_settings()
+
+    assert settings.whatsapp_voice_enabled is False
+    assert settings.voice_media_bucket_name == ""
+    assert settings.voice_media_input_prefix == "voice-input/"
+    assert settings.voice_job_queue_url == ""
+    assert settings.voice_max_media_bytes == 10_485_760
+    assert settings.voice_download_timeout_seconds == 10
+    assert settings.voice_transcription_timeout_seconds == 180
+    assert settings.parsed_voice_media_allowed_hosts() == []
+    assert settings.voice_transcription_language_code == ""
+    assert settings.voice_transcription_identify_language is False
+
+
+def test_voice_environment_variables_are_parsed(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_VOICE_ENABLED", "true")
+    monkeypatch.setenv("VOICE_MEDIA_BUCKET_NAME", "voice-bucket")
+    monkeypatch.setenv("VOICE_JOB_QUEUE_URL", "https://sqs.example.test/queue")
+    monkeypatch.setenv(
+        "VOICE_MEDIA_ALLOWED_HOSTS",
+        "Media.Example.Test, media.example.test,cdn.example.test",
+    )
+    monkeypatch.setenv("VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE", "true")
+
+    settings = Settings(_env_file=None, **BASE)
+
+    assert settings.whatsapp_voice_enabled is True
+    assert settings.parsed_voice_media_allowed_hosts() == [
+        "media.example.test",
+        "cdn.example.test",
+    ]
+    assert settings.voice_transcription_identify_language is True
+
+
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        "*.example.test",
+        "https://media.example.test",
+        "media.example.test:443",
+        "media.example.test/path",
+        "media.example.test?query=true",
+        "media.example.test#fragment",
+        "localhost",
+        "127.0.0.1",
+        "media.example.test,",
+    ],
+)
+def test_voice_allowed_hosts_reject_unsafe_or_non_exact_values(hosts):
+    with pytest.raises(ValueError):
+        parse_voice_media_allowed_hosts(hosts)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"voice_media_bucket_name": "voice-bucket"},
+        {
+            "voice_media_bucket_name": "voice-bucket",
+            "voice_job_queue_url": "https://sqs.example.test/queue",
+        },
+        {
+            "voice_media_bucket_name": "voice-bucket",
+            "voice_job_queue_url": "https://sqs.example.test/queue",
+            "voice_media_allowed_hosts": "media.example.test",
+        },
+    ],
+)
+def test_enabled_voice_requires_bucket_queue_hosts_and_language(overrides):
+    with pytest.raises(ValidationError):
+        make_test_settings(whatsapp_voice_enabled=True, **overrides)
+
+
+def test_enabled_voice_accepts_exactly_one_language_mode():
+    common = {
+        "whatsapp_voice_enabled": True,
+        "voice_media_bucket_name": "voice-bucket",
+        "voice_job_queue_url": "https://sqs.example.test/queue",
+        "voice_media_allowed_hosts": "media.example.test",
+    }
+
+    assert make_test_settings(
+        **common,
+        voice_transcription_language_code="ur-PK",
+    ).voice_transcription_language_code == "ur-PK"
+    assert make_test_settings(
+        **common,
+        voice_transcription_identify_language=True,
+    ).voice_transcription_identify_language is True
+    with pytest.raises(ValidationError):
+        make_test_settings(
+            **common,
+            voice_transcription_language_code="en-US",
+            voice_transcription_identify_language=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"voice_media_input_prefix": "other/"},
+        {"voice_max_media_bytes": 0},
+        {"voice_max_media_bytes": 10_485_761},
+        {"voice_download_timeout_seconds": 0},
+        {"voice_download_timeout_seconds": 10.1},
+        {"voice_transcription_timeout_seconds": 0},
+        {"voice_transcription_timeout_seconds": 181},
+    ],
+)
+def test_voice_configuration_enforces_deployed_bounds(overrides):
+    with pytest.raises(ValidationError):
+        make_test_settings(**overrides)
+
+
+def test_backend_env_example_documents_voice_configuration():
+    example = (
+        Path(__file__).resolve().parents[1] / ".env.example"
+    ).read_text(encoding="utf-8")
+    expected = {
+        "WHATSAPP_VOICE_ENABLED=false",
+        "VOICE_MEDIA_BUCKET_NAME=",
+        "VOICE_MEDIA_INPUT_PREFIX=voice-input/",
+        "VOICE_JOB_QUEUE_URL=",
+        "VOICE_MAX_MEDIA_BYTES=10485760",
+        "VOICE_DOWNLOAD_TIMEOUT_SECONDS=10",
+        "VOICE_TRANSCRIPTION_TIMEOUT_SECONDS=180",
+        "VOICE_MEDIA_ALLOWED_HOSTS=",
+        "VOICE_TRANSCRIPTION_LANGUAGE_CODE=",
+        "VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE=false",
+    }
+
+    assert expected.issubset(set(example.splitlines()))

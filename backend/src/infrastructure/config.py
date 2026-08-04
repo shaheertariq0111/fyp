@@ -1,4 +1,6 @@
 from functools import lru_cache
+from ipaddress import ip_address
+import re
 from typing import Literal
 
 from pydantic import Field, HttpUrl, model_validator
@@ -9,6 +11,11 @@ LOCAL_FRONTEND_CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "OPTIONS"]
 CORS_ALLOW_HEADERS = ["Content-Type"]
 CORS_EXPOSE_HEADERS = ["X-Request-ID", "X-Agent-Request-ID"]
+VOICE_MEDIA_INPUT_PREFIX = "voice-input/"
+VOICE_MAX_MEDIA_BYTES = 10_485_760
+VOICE_DOWNLOAD_TIMEOUT_SECONDS = 10
+VOICE_TRANSCRIPTION_TIMEOUT_SECONDS = 180
+HOSTNAME_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class BedrockModelSettings(BaseSettings):
@@ -37,6 +44,44 @@ def parse_frontend_cors_origins(raw_value: str | None, environment: str = "local
     if environment not in {"local", "test"} and any("localhost" in origin or "127.0.0.1" in origin for origin in origins):
         raise ValueError("FRONTEND_CORS_ORIGINS must use exact deployed frontend origins outside local/test")
     return origins
+
+
+def parse_voice_media_allowed_hosts(raw_value: str | None) -> list[str]:
+    raw = (raw_value or "").strip()
+    if not raw:
+        return []
+    entries = raw_value.split(",") if raw_value is not None else []
+    if any(not entry.strip() for entry in entries):
+        raise ValueError("VOICE_MEDIA_ALLOWED_HOSTS contains a blank hostname")
+    hosts: list[str] = []
+    for entry in entries:
+        host = entry.strip().lower()
+        if (
+            "://" in host
+            or any(character in host for character in "/?#@:*[]")
+            or host.endswith(".")
+        ):
+            raise ValueError(
+                "VOICE_MEDIA_ALLOWED_HOSTS must contain exact hostnames only"
+            )
+        try:
+            ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("VOICE_MEDIA_ALLOWED_HOSTS must not contain IP literals")
+        if host == "localhost" or host.endswith(".localhost"):
+            raise ValueError("VOICE_MEDIA_ALLOWED_HOSTS must not contain localhost")
+        labels = host.split(".")
+        if len(host) > 253 or len(labels) < 2 or not all(
+            HOSTNAME_LABEL.fullmatch(label) for label in labels
+        ):
+            raise ValueError(
+                "VOICE_MEDIA_ALLOWED_HOSTS contains an invalid hostname"
+            )
+        if host not in hosts:
+            hosts.append(host)
+    return hosts
 
 
 class Settings(BaseSettings):
@@ -72,6 +117,16 @@ class Settings(BaseSettings):
     agentflo_gateway_tenant_id: str = "fyp-dev"
     agentflo_gateway_agent_id: str = "restaurant-agent"
     agentflo_gateway_actor_id: str = ""
+    whatsapp_voice_enabled: bool = False
+    voice_media_bucket_name: str = ""
+    voice_media_input_prefix: str = VOICE_MEDIA_INPUT_PREFIX
+    voice_job_queue_url: str = ""
+    voice_max_media_bytes: int = VOICE_MAX_MEDIA_BYTES
+    voice_download_timeout_seconds: float = VOICE_DOWNLOAD_TIMEOUT_SECONDS
+    voice_transcription_timeout_seconds: int = VOICE_TRANSCRIPTION_TIMEOUT_SECONDS
+    voice_media_allowed_hosts: str = ""
+    voice_transcription_language_code: str = ""
+    voice_transcription_identify_language: bool = False
 
     menu_site_base_url: HttpUrl
     session_token_secret: str = Field(min_length=16)
@@ -94,10 +149,36 @@ class Settings(BaseSettings):
         if self.environment != "test" and not self.bedrock_model_id:
             raise ValueError("BEDROCK_MODEL_ID is required outside tests")
         parse_frontend_cors_origins(self.frontend_cors_origins, self.environment)
+        if self.voice_media_input_prefix != VOICE_MEDIA_INPUT_PREFIX:
+            raise ValueError("VOICE_MEDIA_INPUT_PREFIX must be exactly voice-input/")
+        if not 0 < self.voice_max_media_bytes <= VOICE_MAX_MEDIA_BYTES:
+            raise ValueError("VOICE_MAX_MEDIA_BYTES exceeds the deployed limit")
+        if not 0 < self.voice_download_timeout_seconds <= VOICE_DOWNLOAD_TIMEOUT_SECONDS:
+            raise ValueError("VOICE_DOWNLOAD_TIMEOUT_SECONDS exceeds the deployed limit")
+        if not 0 < self.voice_transcription_timeout_seconds <= VOICE_TRANSCRIPTION_TIMEOUT_SECONDS:
+            raise ValueError("VOICE_TRANSCRIPTION_TIMEOUT_SECONDS exceeds the deployed limit")
+        allowed_hosts = self.parsed_voice_media_allowed_hosts()
+        language_code_configured = bool(
+            self.voice_transcription_language_code.strip()
+        )
+        if self.whatsapp_voice_enabled:
+            if not self.voice_media_bucket_name.strip():
+                raise ValueError("VOICE_MEDIA_BUCKET_NAME is required when voice is enabled")
+            if not self.voice_job_queue_url.strip():
+                raise ValueError("VOICE_JOB_QUEUE_URL is required when voice is enabled")
+            if not allowed_hosts:
+                raise ValueError("VOICE_MEDIA_ALLOWED_HOSTS is required when voice is enabled")
+            if language_code_configured == self.voice_transcription_identify_language:
+                raise ValueError(
+                    "Exactly one voice transcription language mode is required"
+                )
         return self
 
     def parsed_frontend_cors_origins(self) -> list[str]:
         return parse_frontend_cors_origins(self.frontend_cors_origins, self.environment)
+
+    def parsed_voice_media_allowed_hosts(self) -> list[str]:
+        return parse_voice_media_allowed_hosts(self.voice_media_allowed_hosts)
 
     def cross_site_admin_cookie(self) -> bool:
         return self.environment in {"staging", "production"}
