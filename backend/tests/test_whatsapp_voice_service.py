@@ -117,10 +117,10 @@ def test_voice_orchestration_cleans_s3_after_transcription_failure():
     processing_error = RuntimeError("primary processing failure")
     transcription.error = processing_error
 
-    with pytest.raises(RuntimeError) as error:
+    with pytest.raises(WhatsAppVoiceProcessingError) as error:
         service.transcribe(make_inbound())
 
-    assert error.value is processing_error
+    assert error.value.retryable is True
     assert len(storage.deletes) == 1
     assert media.file.closed
 
@@ -131,10 +131,10 @@ def test_voice_orchestration_preserves_primary_error_when_cleanup_also_fails():
     transcription.error = processing_error
     storage.delete_error = RuntimeError("cleanup failure")
 
-    with pytest.raises(RuntimeError) as error:
+    with pytest.raises(WhatsAppVoiceProcessingError) as error:
         service.transcribe(make_inbound())
 
-    assert error.value is processing_error
+    assert error.value.retryable is True
     assert media.file.closed
 
 
@@ -150,8 +150,5 @@ def test_voice_orchestration_reports_cleanup_failure_after_success():
     service, media, _, storage, _ = make_service()
     storage.delete_error = RuntimeError("sensitive cleanup detail")
 
-    with pytest.raises(WhatsAppVoiceProcessingError) as error:
-        service.transcribe(make_inbound())
-
-    assert "sensitive cleanup detail" not in str(error.value)
+    assert service.transcribe(make_inbound()) == "one pizza please"
     assert media.file.closed

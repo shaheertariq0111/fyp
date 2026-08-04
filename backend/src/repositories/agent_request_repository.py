@@ -25,6 +25,26 @@ class AgentRequestRepository:
     def save(self, request: dict) -> None:
         self.table.put_item(Item=to_dynamodb(request))
 
+    def transition_invocation_state(
+        self, request_id: str, *, expected_state: str, next_state: str, updated_at: str
+    ) -> bool:
+        try:
+            self.table.update_item(
+                Key={"PK": f"REQUEST#{request_id}", "SK": "METADATA"},
+                UpdateExpression="SET invocation_state = :next, updated_at = :updated",
+                ConditionExpression="invocation_state = :expected AND #status = :processing",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":next": next_state, ":updated": updated_at,
+                    ":expected": expected_state, ":processing": "processing",
+                },
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
     def claim_idempotency_key(
         self,
         marker: dict,

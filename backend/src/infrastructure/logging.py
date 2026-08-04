@@ -33,6 +33,13 @@ SAFE_LOG_FIELDS = (
     "exception_type",
     "exception_message",
     "payload_shape",
+    "voice_job_id",
+    "voice_job_state",
+    "failure_stage",
+    "retryable",
+    "duplicate",
+    "receive_count",
+    "cleanup_after_valid_transcript",
 )
 
 

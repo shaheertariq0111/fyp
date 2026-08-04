@@ -26,10 +26,7 @@ from pydantic import ValidationError
 from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
 from src.agent.dependencies import get_services
-from src.agent_client import (
-    AgentInvocationRequest,
-    get_agent_runtime_client,
-)
+from src.agent_client import get_agent_runtime_client
 from src.api.schemas import (
     ActionRequest,
     AdminAvailabilityRequest,
@@ -53,11 +50,19 @@ from src.api.schemas import (
     ToolCallResult,
 )
 from src.api.whatsapp import WhatsAppInboundMessage, extract_whatsapp_message
+from src.api.whatsapp import extract_whatsapp_audio_message
 from src.infrastructure.config import get_settings, parse_frontend_cors_origins
 from src.infrastructure.config import CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS
 from src.infrastructure.logging import configure_logging
+from src.infrastructure.dynamodb import get_dynamodb_resource
+from src.infrastructure.sqs import create_sqs_client
 from src.models.ticket import MAX_ACTOR_LENGTH
 from src.services.agentflo_gateway_service import AgentfloGatewayService
+from src.services.agent_request_processor import AgentRequestProcessor
+from src.repositories.whatsapp_voice_job_repository import WhatsAppVoiceJobRepository
+from src.services.voice_queue_service import VoiceQueueService
+from src.services.whatsapp_voice_job_service import WhatsAppVoiceJobService
+from src.services.whatsapp_conversation_service import WhatsAppConversationService
 from src.services.customer_service import CustomerService
 from src.services.ticket_service import (
     AdminTicketError,
@@ -1276,103 +1281,18 @@ def _process_chat_request(
     *,
     allow_requested_session_creation: bool = False,
 ) -> tuple[dict[str, Any], AgentRequestContext, dict[str, Any]]:
-    context, identity_state = _resolve_identity(
+    result = AgentRequestProcessor(
+        services_provider=lambda: get_services(),
+        agent_client_provider=lambda: get_agent_runtime_client(),
+        identity_resolver=_resolve_identity,
+        response_builder=_chat_response_from_invocation,
+        logger=logger,
+    ).process(
         payload,
+        http_request_id,
         allow_requested_session_creation=allow_requested_session_creation,
     )
-    context.current_message = payload.message
-    agent_requests = get_services().agent_requests
-    record = agent_requests.start_processing(
-        actor_id=context.user_id,
-        session_id=context.agent_session_id,
-        message=payload.message,
-        channel=context.channel,
-        request_payload=payload.model_dump(),
-    )
-    context.request_id = record["request_id"]
-    logger.info(
-        "Agent request processing started",
-        extra={
-            "event": "agent_request_started",
-            "http_request_id": http_request_id,
-            "actor_id": context.user_id,
-            "channel": context.channel,
-            "agent_request_status": record["status"],
-        },
-    )
-    try:
-        invoke_started = time.perf_counter()
-        invocation = get_agent_runtime_client().invoke(
-            AgentInvocationRequest(
-                message=payload.message,
-                user_id=context.user_id,
-                agent_session_id=context.agent_session_id,
-                request_id=record["request_id"],
-                branch_id=payload.branch_id,
-                customer_id=context.customer_id,
-                customer_name=context.customer_name,
-                customer_phone=context.customer_phone,
-                channel=context.channel,
-            )
-        )
-        logger.info(
-            "Agent runtime invocation completed",
-            extra={
-                "event": "agentcore_invocation_completed",
-                "http_request_id": http_request_id,
-                "actor_id": context.user_id,
-                "channel": context.channel,
-                "agentcore_invocation_status": "completed",
-                "response_time_ms": round((time.perf_counter() - invoke_started) * 1000, 2),
-            },
-        )
-        response_payload = _chat_response_from_invocation(
-            context, identity_state, invocation
-        ).model_dump(exclude_none=True)
-        record = agent_requests.complete(record["request_id"], response_payload)
-        logger.info(
-            "Agent request processing completed",
-            extra={
-                "event": "agent_request_completed",
-                "http_request_id": http_request_id,
-                "actor_id": context.user_id,
-                "channel": context.channel,
-                "agent_request_status": record["status"],
-            },
-        )
-    except Exception:
-        logger.exception(
-            "Agent request failed",
-            extra={
-                "event": "agentcore_invocation_failed",
-                "http_request_id": http_request_id,
-                "request_id": record["request_id"],
-                "actor_id": context.user_id,
-                "agent_session_id": context.agent_session_id,
-                "channel": context.channel,
-                "agentcore_invocation_status": "failed",
-                "error_code": "AGENT_INVOCATION_FAILED",
-            },
-        )
-        record = agent_requests.fail(
-            record["request_id"],
-            error_code="AGENT_INVOCATION_FAILED",
-            message="The request could not be completed.",
-        )
-        logger.info(
-            "Agent request status updated",
-            extra={
-                "event": "agent_request_failed",
-                "http_request_id": http_request_id,
-                "request_id": record["request_id"],
-                "actor_id": context.user_id,
-                "agent_session_id": context.agent_session_id,
-                "channel": context.channel,
-                "agent_request_status": record["status"],
-                "error_code": record.get("error_code"),
-            },
-        )
-    return record, context, identity_state
+    return result.record, result.context, result.identity_state
 
 
 def _whatsapp_identity(
@@ -1496,6 +1416,23 @@ def _agentflo_gateway_service() -> AgentfloGatewayService:
         tenant_id=settings.agentflo_gateway_tenant_id,
         agent_id=settings.agentflo_gateway_agent_id,
         actor_id=settings.agentflo_gateway_actor_id,
+    )
+
+
+def _whatsapp_conversation_service() -> WhatsAppConversationService:
+    processor = AgentRequestProcessor(
+        services_provider=lambda: get_services(),
+        agent_client_provider=lambda: get_agent_runtime_client(),
+        identity_resolver=_resolve_identity,
+        response_builder=_chat_response_from_invocation,
+        logger=logger,
+    )
+    return WhatsAppConversationService(
+        services_provider=lambda: get_services(),
+        processor=processor,
+        identity_builder=_whatsapp_identity,
+        gateway_provider=_agentflo_gateway_service,
+        logger=logger,
     )
 
 
@@ -1819,6 +1756,39 @@ def agentflo_whatsapp(
         )
     inbound = extract_whatsapp_message(payload)
     if inbound is None:
+        audio = extract_whatsapp_audio_message(payload)
+        settings = get_settings()
+        if audio is not None and settings.whatsapp_voice_enabled:
+            if not all((audio.message_id, audio.media_url, audio.customer_number, audio.sender_id)):
+                logger.warning(
+                    "Agentflo audio missing required metadata",
+                    extra={"event": "voice_permanent_failure", "http_request_id": http_request_id, "channel": "whatsapp", "failure_stage": "webhook_validation"},
+                )
+                return {"success": True, "ignored": True, "reason": "incomplete_audio_message"}
+            queue = VoiceQueueService(
+                create_sqs_client(region_name=settings.aws_region),
+                settings.voice_job_queue_url,
+                wait_time_seconds=settings.voice_sqs_wait_time_seconds,
+                visibility_timeout_seconds=settings.voice_sqs_visibility_timeout_seconds,
+            )
+            jobs = WhatsAppVoiceJobService(
+                WhatsAppVoiceJobRepository(
+                    get_dynamodb_resource(settings),
+                    settings.whatsapp_voice_jobs_table_name,
+                ),
+                queue,
+                settings,
+                logger=logger,
+            )
+            submission = jobs.submit_audio(audio)
+            if submission.duplicate:
+                logger.info("Duplicate audio webhook", extra={"event": "agentflo_whatsapp_audio_duplicate", "http_request_id": http_request_id, "channel": "whatsapp", "voice_job_id": submission.job_id, "duplicate": True})
+            return {
+                "success": True,
+                "accepted": True,
+                "queued": submission.queued,
+                "message_type": "audio",
+            }
         logger.info(
             "Agentflo WhatsApp event ignored",
             extra={
@@ -1897,24 +1867,9 @@ def agentflo_whatsapp(
             return _agentflo_duplicate_response()
 
     try:
-        customer_id, session_id = _whatsapp_identity(inbound)
-        _store_whatsapp_inbound_history(
-            inbound=inbound,
-            customer_id=customer_id,
-            session_id=session_id,
+        conversation_reply = _whatsapp_conversation_service().process_text(
+            inbound,
             http_request_id=http_request_id,
-        )
-        chat_payload = ChatRequest(
-            message=inbound.text,
-            session_id=session_id,
-            user_id=customer_id,
-            customer_id=customer_id,
-            channel="whatsapp",
-        )
-        record, context, _ = _process_chat_request(
-            chat_payload,
-            http_request_id,
-            allow_requested_session_creation=True,
         )
     except Exception as exc:
         if inbound.message_id is not None:
@@ -1933,118 +1888,55 @@ def agentflo_whatsapp(
         )
         return _agentflo_failure_response()
 
-    response.headers["X-Agent-Request-ID"] = record["request_id"]
-    if record.get("status") != "completed":
+    if conversation_reply is None:
         if inbound.message_id is not None:
             get_services().agent_requests.release_agentflo_whatsapp_message(
                 inbound.message_id
             )
         return _agentflo_failure_response()
-    completed = _status_response_from_record(record)
-    if not isinstance(completed.text, str) or not completed.text.strip():
-        if inbound.message_id is not None:
-            get_services().agent_requests.release_agentflo_whatsapp_message(
-                inbound.message_id
-            )
-        return _agentflo_failure_response()
+    request_id = conversation_reply.request_id
+    session_id = conversation_reply.session_id
+    customer_id = conversation_reply.customer_id
+    reply_text = conversation_reply.reply
+    response.headers["X-Agent-Request-ID"] = request_id
     if inbound.message_id is not None:
         get_services().agent_requests.cache_agentflo_whatsapp_response(
             inbound.message_id,
-            request_id=record["request_id"],
-            session_id=context.agent_session_id,
-            customer_id=context.customer_id,
-            reply=completed.text,
+            request_id=request_id,
+            session_id=session_id,
+            customer_id=customer_id,
+            reply=reply_text,
         )
         _log_agentflo_delivery_transition(
             previous_state="processing",
             next_state="response_ready",
             applied=True,
             http_request_id=http_request_id,
-            request_id=record["request_id"],
+            request_id=request_id,
         )
         if not _claim_agentflo_outbound_send(
             inbound.message_id,
             http_request_id=http_request_id,
-            request_id=record["request_id"],
+            request_id=request_id,
         ):
             return _agentflo_duplicate_response()
-    gateway = _agentflo_gateway_service()
-    if not gateway.configured:
-        outbound = {
-            "sent": False,
-            "skipped": True,
-            "reason": "gateway_not_configured",
-        }
-    elif inbound.sender_id is None or inbound.customer_number is None:
-        outbound = {
-            "sent": False,
-            "error_code": "AGENTFLO_OUTBOUND_FAILED",
-        }
-        logger.warning(
-            "Agentflo outbound gateway request rejected",
-            extra={
-                "event": "agentflo_outbound_failed",
-                "http_request_id": http_request_id,
-                "request_id": record["request_id"],
-                "actor_id": context.user_id,
-                "agent_session_id": context.agent_session_id,
-                "channel": "whatsapp",
-                "gateway_stage": "validation",
-                "error_code": "AGENTFLO_OUTBOUND_FAILED",
-            },
-        )
-    else:
-        try:
-            outbound = gateway.send_text(
-                customer_number=inbound.customer_number,
-                conversation_id=context.agent_session_id,
-                sender_id=inbound.sender_id,
-                text=completed.text,
-                request_id=record["request_id"],
-            )
-        except Exception as exc:
-            outbound = {
-                "sent": False,
-                "error_code": "AGENTFLO_OUTBOUND_FAILED",
-            }
-            logger.error(
-                "Agentflo outbound gateway delivery failed",
-                extra={
-                    "event": "agentflo_outbound_failed",
-                    "http_request_id": http_request_id,
-                    "request_id": record["request_id"],
-                    "actor_id": context.user_id,
-                    "agent_session_id": context.agent_session_id,
-                    "channel": "whatsapp",
-                    "gateway_stage": "unexpected",
-                    "exception_type": type(exc).__name__,
-                    "error_code": "AGENTFLO_OUTBOUND_FAILED",
-                },
-            )
+    delivery = _whatsapp_conversation_service().deliver(inbound, conversation_reply)
+    outbound = delivery.outbound
     logger.info(
         "Agentflo WhatsApp message completed",
         extra={
             "event": "agentflo_whatsapp_completed",
             "http_request_id": http_request_id,
-            "request_id": record["request_id"],
-            "actor_id": context.user_id,
-            "agent_session_id": context.agent_session_id,
+            "request_id": request_id,
+            "actor_id": customer_id,
+            "agent_session_id": session_id,
             "channel": "whatsapp",
         },
     )
-    _store_whatsapp_outbound_history(
-        inbound=inbound,
-        customer_id=context.customer_id,
-        session_id=context.agent_session_id,
-        request_id=record["request_id"],
-        reply=completed.text,
-        outbound=outbound,
-        http_request_id=http_request_id,
-    )
     outbound_response = _agentflo_outbound_response(
-        reply=completed.text,
-        request_id=record["request_id"],
-        session_id=context.agent_session_id,
+        reply=reply_text,
+        request_id=request_id,
+        session_id=session_id,
         outbound=outbound,
     )
     if inbound.message_id is not None:
@@ -2052,7 +1944,7 @@ def agentflo_whatsapp(
             inbound.message_id,
             success=outbound_response["success"],
             http_request_id=http_request_id,
-            request_id=record["request_id"],
+            request_id=request_id,
         )
     return outbound_response
 

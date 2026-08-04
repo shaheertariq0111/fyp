@@ -24,6 +24,7 @@ from src.services.order_service import OrderService
 from src.services.ticket_service import AdminTicketError
 from fakes import MemoryCartRepository, MemoryMenuRepository, MemoryOrderRepository
 from test_config import make_test_settings
+from src.services.whatsapp_voice_job_service import VoiceJobSubmission
 
 
 CUSTOMER_TICKET_KEYS = {
@@ -1583,6 +1584,49 @@ def test_agentflo_whatsapp_without_configured_secret_warns_and_remains_open(
         == "agentflo_whatsapp_unauthenticated"
     )
     assert warning.channel == "whatsapp"
+
+
+def test_agentflo_whatsapp_enabled_audio_acknowledges_durable_submission(monkeypatch):
+    captured = {}
+    configured = make_test_settings(
+        whatsapp_voice_enabled=True,
+        voice_media_bucket_name="voice-bucket",
+        voice_job_queue_url="queue-url",
+        whatsapp_voice_jobs_table_name="voice-jobs-test",
+        voice_media_allowed_hosts="media.example.test",
+        voice_transcription_language_code="en-US",
+    )
+
+    class FakeJobs:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def submit_audio(self, audio):
+            captured["audio"] = audio
+            return VoiceJobSubmission("wv1_" + "a" * 64, True, False, False)
+
+    monkeypatch.setattr(main, "get_settings", lambda: configured)
+    monkeypatch.setattr(main, "get_dynamodb_resource", lambda _settings: object())
+    monkeypatch.setattr(main, "create_sqs_client", lambda **_kwargs: object())
+    monkeypatch.setattr(main, "WhatsAppVoiceJobRepository", lambda *_args: object())
+    monkeypatch.setattr(main, "VoiceQueueService", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(main, "WhatsAppVoiceJobService", FakeJobs)
+
+    response = client().post("/api/channels/agentflo/whatsapp", json={
+        "entry": [{"changes": [{"value": {
+            "metadata": {"phone_number_id": "sender-private"},
+            "messages": [{
+                "from": "+15550100000", "id": "provider-private",
+                "type": "audio", "audio": {"url": "https://media.example.test/private", "id": "media-private"},
+            }],
+        }}]}],
+    })
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True, "accepted": True, "queued": False, "message_type": "audio",
+    }
+    assert captured["audio"].message_id == "provider-private"
 
 
 @pytest.mark.parametrize(

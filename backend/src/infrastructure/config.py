@@ -16,6 +16,9 @@ VOICE_MAX_MEDIA_BYTES = 10_485_760
 VOICE_DOWNLOAD_TIMEOUT_SECONDS = 10
 VOICE_TRANSCRIPTION_TIMEOUT_SECONDS = 180
 HOSTNAME_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+VOICE_TRANSCRIPTION_JOB_PREFIX = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,62})-whatsapp-voice-$"
+)
 
 
 class BedrockModelSettings(BaseSettings):
@@ -121,6 +124,13 @@ class Settings(BaseSettings):
     voice_media_bucket_name: str = ""
     voice_media_input_prefix: str = VOICE_MEDIA_INPUT_PREFIX
     voice_job_queue_url: str = ""
+    whatsapp_voice_jobs_table_name: str = ""
+    voice_sqs_wait_time_seconds: int = 20
+    voice_sqs_visibility_timeout_seconds: int = 300
+    voice_sqs_heartbeat_seconds: int = 60
+    voice_job_lease_seconds: int = 180
+    voice_job_ttl_hours: int = 24
+    voice_transcription_job_prefix: str = ""
     voice_max_media_bytes: int = VOICE_MAX_MEDIA_BYTES
     voice_download_timeout_seconds: float = VOICE_DOWNLOAD_TIMEOUT_SECONDS
     voice_transcription_timeout_seconds: int = VOICE_TRANSCRIPTION_TIMEOUT_SECONDS
@@ -157,6 +167,20 @@ class Settings(BaseSettings):
             raise ValueError("VOICE_DOWNLOAD_TIMEOUT_SECONDS exceeds the deployed limit")
         if not 0 < self.voice_transcription_timeout_seconds <= VOICE_TRANSCRIPTION_TIMEOUT_SECONDS:
             raise ValueError("VOICE_TRANSCRIPTION_TIMEOUT_SECONDS exceeds the deployed limit")
+        if not 0 < self.voice_sqs_wait_time_seconds <= 20:
+            raise ValueError("VOICE_SQS_WAIT_TIME_SECONDS must be between 1 and 20")
+        if self.voice_sqs_visibility_timeout_seconds <= 0:
+            raise ValueError("VOICE_SQS_VISIBILITY_TIMEOUT_SECONDS must be positive")
+        if self.voice_sqs_heartbeat_seconds <= 0:
+            raise ValueError("VOICE_SQS_HEARTBEAT_SECONDS must be positive")
+        if self.voice_job_lease_seconds < self.voice_sqs_heartbeat_seconds * 2:
+            raise ValueError("VOICE_JOB_LEASE_SECONDS must tolerate a delayed heartbeat")
+        if self.voice_sqs_heartbeat_seconds >= min(
+            self.voice_job_lease_seconds, self.voice_sqs_visibility_timeout_seconds
+        ):
+            raise ValueError("VOICE_SQS_HEARTBEAT_SECONDS must be shorter than lease and visibility")
+        if not 0 < self.voice_job_ttl_hours <= 168:
+            raise ValueError("VOICE_JOB_TTL_HOURS must be between 1 and 168")
         allowed_hosts = self.parsed_voice_media_allowed_hosts()
         language_code_configured = bool(
             self.voice_transcription_language_code.strip()
@@ -166,6 +190,8 @@ class Settings(BaseSettings):
                 raise ValueError("VOICE_MEDIA_BUCKET_NAME is required when voice is enabled")
             if not self.voice_job_queue_url.strip():
                 raise ValueError("VOICE_JOB_QUEUE_URL is required when voice is enabled")
+            if not self.whatsapp_voice_jobs_table_name.strip():
+                raise ValueError("WHATSAPP_VOICE_JOBS_TABLE_NAME is required when voice is enabled")
             if not allowed_hosts:
                 raise ValueError("VOICE_MEDIA_ALLOWED_HOSTS is required when voice is enabled")
             if language_code_configured == self.voice_transcription_identify_language:
@@ -173,6 +199,28 @@ class Settings(BaseSettings):
                     "Exactly one voice transcription language mode is required"
                 )
         return self
+
+    def validate_voice_worker_settings(self) -> None:
+        """Fail closed only in the standalone worker, never during disabled API startup."""
+        required = {
+            "WHATSAPP_VOICE_JOBS_TABLE_NAME": self.whatsapp_voice_jobs_table_name,
+            "VOICE_JOB_QUEUE_URL": self.voice_job_queue_url,
+            "VOICE_MEDIA_BUCKET_NAME": self.voice_media_bucket_name,
+            "AGENTFLO_GATEWAY_BASE_URL": self.agentflo_gateway_base_url,
+            "AGENTFLO_GATEWAY_API_KEY": self.agentflo_gateway_api_key,
+            "AGENTCORE_RUNTIME_ARN": self.agentcore_runtime_arn,
+            "VOICE_TRANSCRIPTION_JOB_PREFIX": self.voice_transcription_job_prefix,
+        }
+        missing = [name for name, value in required.items() if not value.strip()]
+        if missing:
+            raise ValueError("VOICE_WORKER_CONFIGURATION_INCOMPLETE")
+        if not self.parsed_voice_media_allowed_hosts():
+            raise ValueError("VOICE_MEDIA_ALLOWED_HOSTS is required for the worker")
+        language_code = bool(self.voice_transcription_language_code.strip())
+        if language_code == self.voice_transcription_identify_language:
+            raise ValueError("Exactly one voice transcription language mode is required")
+        if not VOICE_TRANSCRIPTION_JOB_PREFIX.fullmatch(self.voice_transcription_job_prefix):
+            raise ValueError("VOICE_TRANSCRIPTION_JOB_PREFIX does not match the deployed IAM scope")
 
     def parsed_frontend_cors_origins(self) -> list[str]:
         return parse_frontend_cors_origins(self.frontend_cors_origins, self.environment)

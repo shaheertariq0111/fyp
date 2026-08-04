@@ -48,12 +48,24 @@ Parameters:
   EcsServiceName:
     Type: String
     Default: fyp-dev-backend
+  VoiceWorkerEcsServiceName:
+    Type: String
+    Default: fyp-dev-whatsapp-voice-worker
+    Description: Existing Pass B1 WhatsApp voice-worker ECS service name.
   EcsExecutionRoleArn:
     Type: String
     Default: arn:aws:iam::352306494518:role/fyp-dev-ecs-execution
   EcsTaskRoleArn:
     Type: String
     Default: arn:aws:iam::352306494518:role/fyp-dev-ecs-app
+  VoiceWorkerExecutionRoleArn:
+    Type: String
+    Default: arn:aws:iam::352306494518:role/fyp-dev-voice-worker-execution
+    Description: Existing Pass B1 worker task execution-role ARN.
+  VoiceWorkerTaskRoleArn:
+    Type: String
+    Default: arn:aws:iam::352306494518:role/fyp-dev-voice-worker-app
+    Description: Existing Pass B1 worker application task-role ARN.
   AgentCoreRuntimeArn:
     Type: String
     Default: arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_restaurant_agent-dwLwVnClBF
@@ -129,12 +141,14 @@ Resources:
                 Action:
                   - ecs:RegisterTaskDefinition
                 Resource: "*"
-              - Sid: UpdateAndReadBackendService
+              - Sid: UpdateAndReadBackendAndWorkerServices
                 Effect: Allow
                 Action:
                   - ecs:DescribeServices
                   - ecs:UpdateService
-                Resource: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${EcsClusterName}/${EcsServiceName}
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${EcsClusterName}/${EcsServiceName}
+                  - !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${EcsClusterName}/${VoiceWorkerEcsServiceName}
                 Condition:
                   ArnEquals:
                     ecs:cluster: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}
@@ -154,13 +168,15 @@ Resources:
                 Condition:
                   ArnEquals:
                     ecs:cluster: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}
-              - Sid: PassOnlyBackendTaskRoles
+              - Sid: PassOnlyBackendAndWorkerTaskRoles
                 Effect: Allow
                 Action:
                   - iam:PassRole
                 Resource:
                   - !Ref EcsExecutionRoleArn
                   - !Ref EcsTaskRoleArn
+                  - !Ref VoiceWorkerExecutionRoleArn
+                  - !Ref VoiceWorkerTaskRoleArn
                 Condition:
                   StringEquals:
                     iam:PassedToService: ecs-tasks.amazonaws.com

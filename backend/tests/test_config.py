@@ -239,6 +239,13 @@ def test_voice_configuration_has_disabled_safe_defaults():
     assert settings.voice_media_bucket_name == ""
     assert settings.voice_media_input_prefix == "voice-input/"
     assert settings.voice_job_queue_url == ""
+    assert settings.whatsapp_voice_jobs_table_name == ""
+    assert settings.voice_sqs_wait_time_seconds == 20
+    assert settings.voice_sqs_visibility_timeout_seconds == 300
+    assert settings.voice_sqs_heartbeat_seconds == 60
+    assert settings.voice_job_lease_seconds == 180
+    assert settings.voice_job_ttl_hours == 24
+    assert settings.voice_transcription_job_prefix == ""
     assert settings.voice_max_media_bytes == 10_485_760
     assert settings.voice_download_timeout_seconds == 10
     assert settings.voice_transcription_timeout_seconds == 180
@@ -251,6 +258,7 @@ def test_voice_environment_variables_are_parsed(monkeypatch):
     monkeypatch.setenv("WHATSAPP_VOICE_ENABLED", "true")
     monkeypatch.setenv("VOICE_MEDIA_BUCKET_NAME", "voice-bucket")
     monkeypatch.setenv("VOICE_JOB_QUEUE_URL", "https://sqs.example.test/queue")
+    monkeypatch.setenv("WHATSAPP_VOICE_JOBS_TABLE_NAME", "voice-jobs-test")
     monkeypatch.setenv(
         "VOICE_MEDIA_ALLOWED_HOSTS",
         "Media.Example.Test, media.example.test,cdn.example.test",
@@ -312,6 +320,7 @@ def test_enabled_voice_accepts_exactly_one_language_mode():
         "whatsapp_voice_enabled": True,
         "voice_media_bucket_name": "voice-bucket",
         "voice_job_queue_url": "https://sqs.example.test/queue",
+        "whatsapp_voice_jobs_table_name": "voice-jobs-test",
         "voice_media_allowed_hosts": "media.example.test",
     }
 
@@ -348,6 +357,36 @@ def test_voice_configuration_enforces_deployed_bounds(overrides):
         make_test_settings(**overrides)
 
 
+def test_worker_configuration_fails_closed_and_accepts_iam_scoped_prefix():
+    with pytest.raises(ValueError, match="VOICE_WORKER_CONFIGURATION_INCOMPLETE"):
+        make_test_settings().validate_voice_worker_settings()
+
+    settings = make_test_settings(
+        agentcore_runtime_arn="arn:aws:bedrock-agentcore:region:account:runtime/test",
+        agentflo_gateway_base_url="https://gateway.example.test",
+        agentflo_gateway_api_key="synthetic-key",
+        voice_media_bucket_name="voice-bucket",
+        voice_job_queue_url="https://sqs.example.test/queue",
+        whatsapp_voice_jobs_table_name="voice-jobs-test",
+        voice_media_allowed_hosts="media.example.test",
+        voice_transcription_language_code="en-US",
+        voice_transcription_job_prefix="fyp-dev-whatsapp-voice-",
+    )
+    settings.validate_voice_worker_settings()
+
+
+@pytest.mark.parametrize("overrides", [
+    {"voice_sqs_wait_time_seconds": 21},
+    {"voice_sqs_wait_time_seconds": 0},
+    {"voice_sqs_heartbeat_seconds": 180},
+    {"voice_job_lease_seconds": 119},
+    {"voice_job_ttl_hours": 0},
+])
+def test_voice_worker_timing_bounds(overrides):
+    with pytest.raises(ValidationError):
+        make_test_settings(**overrides)
+
+
 def test_backend_env_example_documents_voice_configuration():
     example = (
         Path(__file__).resolve().parents[1] / ".env.example"
@@ -357,6 +396,13 @@ def test_backend_env_example_documents_voice_configuration():
         "VOICE_MEDIA_BUCKET_NAME=",
         "VOICE_MEDIA_INPUT_PREFIX=voice-input/",
         "VOICE_JOB_QUEUE_URL=",
+        "WHATSAPP_VOICE_JOBS_TABLE_NAME=",
+        "VOICE_SQS_WAIT_TIME_SECONDS=20",
+        "VOICE_SQS_VISIBILITY_TIMEOUT_SECONDS=300",
+        "VOICE_SQS_HEARTBEAT_SECONDS=60",
+        "VOICE_JOB_LEASE_SECONDS=180",
+        "VOICE_JOB_TTL_HOURS=24",
+        "VOICE_TRANSCRIPTION_JOB_PREFIX=",
         "VOICE_MAX_MEDIA_BYTES=10485760",
         "VOICE_DOWNLOAD_TIMEOUT_SECONDS=10",
         "VOICE_TRANSCRIPTION_TIMEOUT_SECONDS=180",

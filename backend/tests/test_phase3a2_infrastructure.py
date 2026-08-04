@@ -460,13 +460,60 @@ def test_voice_queues_are_encrypted_bounded_and_have_exact_redrive_target():
     )
 
 
-def test_voice_iam_is_least_privilege_and_attached_only_to_application_role():
+def test_voice_iam_is_split_between_web_and_worker_roles():
     template = load_template()
-    policy = template["Resources"]["EcsTaskVoicePolicy"]
+    web_policy = template["Resources"]["EcsTaskVoicePolicy"]
+    worker_policy = template["Resources"]["WhatsAppVoiceWorkerVoicePolicy"]
 
-    assert policy["Properties"]["Roles"] == [{"Ref": "EcsTaskRole"}]
+    assert web_policy["Properties"]["Roles"] == [{"Ref": "EcsTaskRole"}]
+    assert worker_policy["Properties"]["Roles"] == [
+        {"Ref": "WhatsAppVoiceWorkerTaskRole"}
+    ]
+
     assert statement_by_sid(
-        template, "EcsTaskVoicePolicy", "GetVoiceMediaBucketLocation"
+        template, "EcsTaskVoicePolicy", "PersistVoiceJobState"
+    ) == {
+        "Sid": "PersistVoiceJobState",
+        "Effect": "Allow",
+        "Action": [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+        ],
+        "Resource": [
+            {"Fn::GetAtt": "WhatsAppVoiceJobsTable.Arn"},
+            {"Fn::Sub": "${WhatsAppVoiceJobsTable.Arn}/index/*"},
+        ],
+    }
+    assert statement_by_sid(
+        template, "EcsTaskVoicePolicy", "SubmitVoiceProcessingJob"
+    ) == {
+        "Sid": "SubmitVoiceProcessingJob",
+        "Effect": "Allow",
+        "Action": ["sqs:SendMessage"],
+        "Resource": VOICE_QUEUE_ARN,
+    }
+
+    serialized_web_policy = json.dumps(web_policy)
+    for forbidden_action in (
+        "s3:GetBucketLocation",
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueAttributes",
+        "transcribe:StartTranscriptionJob",
+        "transcribe:GetTranscriptionJob",
+        "transcribe:DeleteTranscriptionJob",
+    ):
+        assert forbidden_action not in serialized_web_policy
+
+    assert statement_by_sid(
+        template,
+        "WhatsAppVoiceWorkerVoicePolicy",
+        "GetVoiceMediaBucketLocation",
     ) == {
         "Sid": "GetVoiceMediaBucketLocation",
         "Effect": "Allow",
@@ -474,7 +521,9 @@ def test_voice_iam_is_least_privilege_and_attached_only_to_application_role():
         "Resource": VOICE_BUCKET_ARN,
     }
     assert statement_by_sid(
-        template, "EcsTaskVoicePolicy", "ManageTemporaryVoiceInput"
+        template,
+        "WhatsAppVoiceWorkerVoicePolicy",
+        "ManageTemporaryVoiceInput",
     ) == {
         "Sid": "ManageTemporaryVoiceInput",
         "Effect": "Allow",
@@ -482,9 +531,11 @@ def test_voice_iam_is_least_privilege_and_attached_only_to_application_role():
         "Resource": VOICE_INPUT_ARN,
     }
     assert statement_by_sid(
-        template, "EcsTaskVoicePolicy", "UseVoiceProcessingQueue"
+        template,
+        "WhatsAppVoiceWorkerVoicePolicy",
+        "ConsumeAndRecoverVoiceQueue",
     ) == {
-        "Sid": "UseVoiceProcessingQueue",
+        "Sid": "ConsumeAndRecoverVoiceQueue",
         "Effect": "Allow",
         "Action": [
             "sqs:SendMessage",
@@ -496,21 +547,29 @@ def test_voice_iam_is_least_privilege_and_attached_only_to_application_role():
         "Resource": VOICE_QUEUE_ARN,
     }
 
-    serialized_policy = json.dumps(policy)
-    assert "s3:*" not in serialized_policy
-    assert "sqs:*" not in serialized_policy
-    assert "transcribe:*" not in serialized_policy
-    assert "iam:PassRole" not in serialized_policy
-    assert '${VoiceMediaBucket.Arn}/*' not in serialized_policy
-    assert '${VoiceMediaBucket.Arn}/voice-input/*' in serialized_policy
+    serialized_worker_policy = json.dumps(worker_policy)
+    assert "s3:*" not in serialized_worker_policy
+    assert "sqs:*" not in serialized_worker_policy
+    assert "transcribe:*" not in serialized_worker_policy
+    assert "iam:PassRole" not in serialized_worker_policy
+    assert '${VoiceMediaBucket.Arn}/*' not in serialized_worker_policy
+    assert '${VoiceMediaBucket.Arn}/voice-input/*' in serialized_worker_policy
 
+    execution_role_refs = (
+        {"Ref": "EcsTaskExecutionRole"},
+        {"Ref": "WhatsAppVoiceWorkerExecutionRole"},
+    )
     execution_policies = [
         resource
         for resource in template["Resources"].values()
         if resource.get("Type") == "AWS::IAM::Policy"
-        and {"Ref": "EcsTaskExecutionRole"}
-        in resource.get("Properties", {}).get("Roles", [])
+        and any(
+            role_ref in resource.get("Properties", {}).get("Roles", [])
+            for role_ref in execution_role_refs
+        )
     ]
+    assert execution_policies
+
     serialized_execution_policies = json.dumps(execution_policies)
     for service_prefix in ("s3:", "sqs:", "transcribe:"):
         assert service_prefix not in serialized_execution_policies
@@ -518,11 +577,17 @@ def test_voice_iam_is_least_privilege_and_attached_only_to_application_role():
 
 def test_voice_transcribe_wildcard_is_isolated_and_job_access_is_scoped():
     template = load_template()
+    policy_name = "WhatsAppVoiceWorkerVoicePolicy"
+
     start = statement_by_sid(
-        template, "EcsTaskVoicePolicy", "StartVoiceTranscriptionJob"
+        template,
+        policy_name,
+        "StartVoiceTranscriptionJob",
     )
     manage = statement_by_sid(
-        template, "EcsTaskVoicePolicy", "ManageVoiceTranscriptionJobs"
+        template,
+        policy_name,
+        "ManageScopedVoiceTranscriptionJobs",
     )
 
     assert start == {
@@ -532,7 +597,7 @@ def test_voice_transcribe_wildcard_is_isolated_and_job_access_is_scoped():
         "Resource": "*",
     }
     assert manage == {
-        "Sid": "ManageVoiceTranscriptionJobs",
+        "Sid": "ManageScopedVoiceTranscriptionJobs",
         "Effect": "Allow",
         "Action": [
             "transcribe:GetTranscriptionJob",
@@ -542,9 +607,15 @@ def test_voice_transcribe_wildcard_is_isolated_and_job_access_is_scoped():
     }
     assert all(
         statement["Sid"] == "StartVoiceTranscriptionJob"
-        for statement in policy_statements(template, "EcsTaskVoicePolicy")
+        for statement in policy_statements(template, policy_name)
         if statement.get("Resource") == "*"
     )
+
+    serialized_web_policy = json.dumps(
+        template["Resources"]["EcsTaskVoicePolicy"]
+    )
+    assert "transcribe:" not in serialized_web_policy
+
     serialized_template = json.dumps(template)
     assert "iam:PassRole" not in serialized_template
     assert "transcribe.amazonaws.com" not in serialized_template

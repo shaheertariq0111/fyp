@@ -285,13 +285,9 @@ def test_transcription_cleanup_failure_does_not_expose_sensitive_values():
     client = FakeTranscribeClient([completed_job()])
     client.delete_error = RuntimeError("sensitive provider details")
 
-    with pytest.raises(VoiceTranscriptionError) as error:
-        transcribe(make_service(client))
+    transcript = transcribe(make_service(client))
 
-    assert error.value.error_code == "VOICE_TRANSCRIPTION_CLEANUP_FAILED"
-    assert "sensitive provider details" not in str(error.value)
-    assert "spoken order" not in str(error.value)
-    assert MEDIA_URI not in str(error.value)
+    assert transcript == "spoken order"
 
 
 def test_transcription_cleanup_warning_contains_metadata_only(caplog):

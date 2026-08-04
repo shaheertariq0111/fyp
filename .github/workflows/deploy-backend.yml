@@ -58,6 +58,9 @@ jobs:
       ECS_CLUSTER: fyp-dev-backend
       ECS_SERVICE: fyp-dev-backend
       ECS_CONTAINER_NAME: backend
+      VOICE_WORKER_SERVICE: fyp-dev-whatsapp-voice-worker
+      VOICE_WORKER_CONTAINER_NAME: whatsapp-voice-worker
+      VOICE_WORKER_DEPLOY_ENABLED: ${{ vars.VOICE_WORKER_DEPLOY_ENABLED }}
       HEALTH_URL: https://vogwq90ly8.execute-api.us-east-1.amazonaws.com/health
     steps:
       - name: Check out repository
@@ -85,7 +88,7 @@ jobs:
           docker push "$IMAGE_URI"
           echo "image-uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
 
-      - name: Capture current ECS task definition
+      - name: Capture current web ECS task definition
         id: current-task
         run: |
           set -euo pipefail
@@ -103,6 +106,82 @@ jobs:
             --query 'taskDefinition' \
             --output json > current-task-definition.json
           echo "previous-task-definition-arn=$current_task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Verify worker service and capture current task definition
+        if: env.VOICE_WORKER_DEPLOY_ENABLED == 'true'
+        id: worker-current
+        run: |
+          set -euo pipefail
+          service_json="$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$VOICE_WORKER_SERVICE" \
+            --output json)"
+          if [ "$(echo "$service_json" | jq '.failures | length')" != "0" ] || \
+             [ "$(echo "$service_json" | jq '.services | length')" != "1" ] || \
+             [ "$(echo "$service_json" | jq -r '.services[0].status // "MISSING"')" != "ACTIVE" ]; then
+            echo "VOICE_WORKER_DEPLOY_ENABLED is true, but the worker ECS service is not available and ACTIVE." >&2
+            echo "$service_json" | jq '{failures, services: [.services[]? | {serviceName,status,taskDefinition,desiredCount,runningCount,pendingCount}]}' >&2
+            exit 1
+          fi
+          current_task_definition_arn="$(echo "$service_json" | jq -r '.services[0].taskDefinition')"
+          if [ -z "$current_task_definition_arn" ] || [ "$current_task_definition_arn" = "null" ]; then
+            echo "Could not read the worker task definition ARN." >&2
+            exit 1
+          fi
+          aws ecs describe-task-definition \
+            --task-definition "$current_task_definition_arn" \
+            --query 'taskDefinition' \
+            --output json > current-worker-task-definition.json
+          echo "previous-task-definition-arn=$current_task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Render worker task definition
+        if: env.VOICE_WORKER_DEPLOY_ENABLED == 'true'
+        id: worker-render-task
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: current-worker-task-definition.json
+          container-name: ${{ env.VOICE_WORKER_CONTAINER_NAME }}
+          image: ${{ steps.image.outputs.image-uri }}
+
+      - name: Deploy worker task definition
+        if: env.VOICE_WORKER_DEPLOY_ENABLED == 'true'
+        id: worker-deploy-task
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.worker-render-task.outputs.task-definition }}
+          service: ${{ env.VOICE_WORKER_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-max-delay-seconds: 15
+
+      - name: Verify worker ECS service revision and counts
+        if: env.VOICE_WORKER_DEPLOY_ENABLED == 'true'
+        id: worker-verify
+        run: |
+          set -euo pipefail
+          service_json="$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$VOICE_WORKER_SERVICE" \
+            --output json)"
+          current_task_definition_arn="$(echo "$service_json" | jq -r '.services[0].taskDefinition')"
+          desired_count="$(echo "$service_json" | jq -r '.services[0].desiredCount')"
+          running_count="$(echo "$service_json" | jq -r '.services[0].runningCount')"
+          new_task_definition_arn="${{ steps.worker-deploy-task.outputs.task-definition-arn }}"
+          if [ "$current_task_definition_arn" != "$new_task_definition_arn" ]; then
+            echo "Worker service task definition mismatch." >&2
+            echo "Expected: $new_task_definition_arn" >&2
+            echo "Actual:   $current_task_definition_arn" >&2
+            exit 1
+          fi
+          if [ "$desired_count" != "$running_count" ]; then
+            echo "Worker desired count does not equal running count." >&2
+            echo "Desired: $desired_count" >&2
+            echo "Running: $running_count" >&2
+            exit 1
+          fi
+          echo "new-task-definition-arn=$new_task_definition_arn" >> "$GITHUB_OUTPUT"
+          echo "desired-count=$desired_count" >> "$GITHUB_OUTPUT"
+          echo "running-count=$running_count" >> "$GITHUB_OUTPUT"
 
       - name: Render backend task definition
         id: render-task
@@ -171,6 +250,98 @@ jobs:
           echo "health-result=failed" >> "$GITHUB_OUTPUT"
           exit 1
 
+      - name: Roll back web ECS task definition
+        if: ${{ failure() && (steps.deploy-task.outcome == 'success' || steps.deploy-task.outcome == 'failure') }}
+        id: rollback-web
+        run: |
+          set +e
+          previous="${{ steps.current-task.outputs.previous-task-definition-arn }}"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$previous" \
+            --query 'service.{serviceName:serviceName,taskDefinition:taskDefinition,desiredCount:desiredCount}' \
+            --output json
+          update_status=$?
+          wait_status=1
+          if [ "$update_status" -eq 0 ]; then
+            timeout 600 aws ecs wait services-stable \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE"
+            wait_status=$?
+          fi
+          actual_task_definition="$(
+            aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --query 'services[0].taskDefinition' \
+              --output text 2>/dev/null
+          )"
+          describe_status=$?
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].{taskDefinition:taskDefinition,desiredCount:desiredCount,runningCount:runningCount,pendingCount:pendingCount,events:events[0:5].[createdAt,message]}' \
+            --output json || true
+          if [ "$update_status" -eq 0 ] && \
+             [ "$wait_status" -eq 0 ] && \
+             [ "$describe_status" -eq 0 ] && \
+             [ "$actual_task_definition" = "$previous" ]; then
+            echo "rollback-status=rolled-back" >> "$GITHUB_OUTPUT"
+          else
+            echo "Web rollback verification failed." >&2
+            echo "Expected task definition: $previous" >&2
+            echo "Actual task definition:   ${actual_task_definition:-unavailable}" >&2
+            echo "rollback-status=rollback-failed" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Roll back worker ECS task definition
+        if: ${{ failure() && env.VOICE_WORKER_DEPLOY_ENABLED == 'true' && (steps.worker-deploy-task.outcome == 'success' || steps.worker-deploy-task.outcome == 'failure') }}
+        id: rollback-worker
+        run: |
+          set +e
+          previous="${{ steps.worker-current.outputs.previous-task-definition-arn }}"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$VOICE_WORKER_SERVICE" \
+            --task-definition "$previous" \
+            --query 'service.{serviceName:serviceName,taskDefinition:taskDefinition,desiredCount:desiredCount}' \
+            --output json
+          update_status=$?
+          wait_status=1
+          if [ "$update_status" -eq 0 ]; then
+            timeout 600 aws ecs wait services-stable \
+              --cluster "$ECS_CLUSTER" \
+              --services "$VOICE_WORKER_SERVICE"
+            wait_status=$?
+          fi
+          actual_task_definition="$(
+            aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$VOICE_WORKER_SERVICE" \
+              --query 'services[0].taskDefinition' \
+              --output text 2>/dev/null
+          )"
+          describe_status=$?
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$VOICE_WORKER_SERVICE" \
+            --query 'services[0].{taskDefinition:taskDefinition,desiredCount:desiredCount,runningCount:runningCount,pendingCount:pendingCount,events:events[0:5].[createdAt,message]}' \
+            --output json || true
+          if [ "$update_status" -eq 0 ] && \
+             [ "$wait_status" -eq 0 ] && \
+             [ "$describe_status" -eq 0 ] && \
+             [ "$actual_task_definition" = "$previous" ]; then
+            echo "rollback-status=rolled-back" >> "$GITHUB_OUTPUT"
+          else
+            echo "Worker rollback verification failed." >&2
+            echo "Expected task definition: $previous" >&2
+            echo "Actual task definition:   ${actual_task_definition:-unavailable}" >&2
+            echo "rollback-status=rollback-failed" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
       - name: Write deployment summary
         if: always()
         run: |
@@ -181,9 +352,18 @@ jobs:
             echo "| --- | --- |"
             echo "| Git commit SHA | \`${{ github.sha }}\` |"
             echo "| Image URI | \`${{ steps.image.outputs.image-uri }}\` |"
-            echo "| Previous task definition | \`${{ steps.current-task.outputs.previous-task-definition-arn }}\` |"
-            echo "| New task definition | \`${{ steps.ecs-verify.outputs.new-task-definition-arn || steps.deploy-task.outputs.task-definition-arn }}\` |"
+            echo "| Previous web task definition | \`${{ steps.current-task.outputs.previous-task-definition-arn }}\` |"
+            echo "| New web task definition | \`${{ steps.ecs-verify.outputs.new-task-definition-arn || steps.deploy-task.outputs.task-definition-arn || 'not-applicable' }}\` |"
             echo "| ECS cluster | \`${{ env.ECS_CLUSTER }}\` |"
-            echo "| ECS service | \`${{ env.ECS_SERVICE }}\` |"
-            echo "| Health check | \`${{ steps.health.outputs.health-result || 'not-completed' }}\` |"
+            echo "| Web ECS service | \`${{ env.ECS_SERVICE }}\` |"
+            echo "| Web health check | \`${{ steps.health.outputs.health-result || 'not-completed' }}\` |"
+            echo "| Web rollback | \`${{ steps.rollback-web.outputs.rollback-status || 'not-required' }}\` |"
+            echo "| Worker deployment gate | \`${{ env.VOICE_WORKER_DEPLOY_ENABLED == 'true' && 'true' || 'unset-or-not-true' }}\` |"
+            echo "| Worker deployment status | \`${{ (steps.rollback-worker.outputs.rollback-status == 'rolled-back' && 'rolled-back') || (steps.rollback-worker.outputs.rollback-status == 'rollback-failed' && 'failed') || (steps.worker-verify.outcome == 'success' && 'deployed') || (env.VOICE_WORKER_DEPLOY_ENABLED != 'true' && 'skipped') || 'failed' }}\` |"
+            echo "| Worker ECS service | \`${{ env.VOICE_WORKER_DEPLOY_ENABLED == 'true' && env.VOICE_WORKER_SERVICE || 'not-applicable' }}\` |"
+            echo "| Previous worker task definition | \`${{ steps.worker-current.outputs.previous-task-definition-arn || 'not-applicable' }}\` |"
+            echo "| New worker task definition | \`${{ steps.worker-verify.outputs.new-task-definition-arn || steps.worker-deploy-task.outputs.task-definition-arn || 'not-applicable' }}\` |"
+            echo "| Worker desired count | \`${{ steps.worker-verify.outputs.desired-count || 'not-applicable' }}\` |"
+            echo "| Worker running count | \`${{ steps.worker-verify.outputs.running-count || 'not-applicable' }}\` |"
+            echo "| Worker rollback | \`${{ steps.rollback-worker.outputs.rollback-status || 'not-required' }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

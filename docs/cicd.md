@@ -73,6 +73,7 @@ The deploy job uses these GitHub environment or repository variables:
 ```text
 AWS_REGION=us-east-1
 BACKEND_DEPLOY_ROLE_ARN=<BackendDeploymentRoleArn output>
+VOICE_WORKER_DEPLOY_ENABLED=<optional GitHub staging Environment variable>
 ```
 
 It builds exactly one immutable image tag per run:
@@ -81,14 +82,47 @@ It builds exactly one immutable image tag per run:
 352306494518.dkr.ecr.us-east-1.amazonaws.com/fyp-dev-backend:${GITHUB_SHA}
 ```
 
-It does not push a `latest` tag. It reads the task definition currently deployed by ECS as the source of truth, renders a new revision by replacing only the `backend` container image, and deploys that revision to:
+It does not push a `latest` tag. The same immutable image is used for both the web
+service and, when explicitly enabled, the voice-worker service. The workflow reads
+each deployed task definition as the source of truth and replaces only the matching
+container image.
+
+The default remains web-only. Worker deployment steps run only when the non-secret
+GitHub `staging` Environment variable `VOICE_WORKER_DEPLOY_ENABLED` is the exact
+string `true`; an absent variable or any other value skips them. Before setting the
+variable, the Pass B1 worker infrastructure and the Phase 13 OIDC update must exist
+and be verified.
+
+These are three independent controls:
+
+1. `VOICE_WORKER_DEPLOY_ENABLED=true` lets the workflow update the worker task
+   definition.
+2. Phase 7 `WorkerDesiredCount` controls whether ECS runs worker tasks; this
+   workflow never changes it.
+3. Phase 7 `WhatsAppVoiceEnabled` / `WHATSAPP_VOICE_ENABLED` controls inbound voice
+   enqueueing; this workflow never enables it.
+
+The web deployment target remains:
 
 ```text
 cluster: fyp-dev-backend
 service: fyp-dev-backend
 ```
 
-The deployment job intentionally does not run for pull requests, does not use static AWS credentials, does not deploy AgentCore, does not execute CloudFormation, and does not perform automatic rollback.
+When worker integration is enabled, the workflow captures both previous task
+definition ARNs before changing either service. It deploys and verifies the
+default-zero worker first, then deploys and verifies the web service and checks the
+public `/health` endpoint. Desired count `0` and running count `0` are valid for the
+worker. The worker has no HTTP, API Gateway, load-balancer, Cloud Map, port, or
+functional voice check.
+
+If a worker or later web deployment/health step fails, bounded rollback steps try to
+restore every service changed during the run to its captured task definition. They
+update only `taskDefinition`, preserving each current desired count, wait at most ten
+minutes per service, print service diagnostics, and leave the original job failed.
+
+The deployment job intentionally does not run for pull requests, does not use static
+AWS credentials, does not deploy AgentCore, and does not execute CloudFormation.
 
 ### `.github/workflows/deploy-agentcore.yml`
 
@@ -293,6 +327,9 @@ The current dev defaults in `infra/phase13-github-oidc.yaml` target:
 - ECS cluster/service: `fyp-dev-backend`
 - ECS execution role: `arn:aws:iam::352306494518:role/fyp-dev-ecs-execution`
 - ECS task role: `arn:aws:iam::352306494518:role/fyp-dev-ecs-app`
+- Voice-worker service: `fyp-dev-whatsapp-voice-worker`
+- Voice-worker execution role: `arn:aws:iam::352306494518:role/fyp-dev-voice-worker-execution`
+- Voice-worker task role: `arn:aws:iam::352306494518:role/fyp-dev-voice-worker-app`
 - AgentCore runtime: `arn:aws:bedrock-agentcore:us-east-1:352306494518:runtime/fyp_dev_restaurant_agent-dwLwVnClBF`
 - AgentCore execution role: `arn:aws:iam::352306494518:role/fyp-dev-agentcore-execution`
 
@@ -337,13 +374,26 @@ Deployment workflows use GitHub environment or repository variables for:
 AWS_REGION=us-east-1
 BACKEND_DEPLOY_ROLE_ARN=<BackendDeploymentRoleArn output>
 AGENTCORE_DEPLOY_ROLE_ARN=<AgentCoreDeploymentRoleArn output>
+VOICE_WORKER_DEPLOY_ENABLED=<optional; exact true enables worker task-definition deployment>
 ```
 
 No GitHub secret should contain AWS access keys.
 
+Before enabling worker deployment integration, manually update the Phase 13 OIDC
+stack from `infra/phase13-github-oidc.yaml`. The existing backend deployer remains
+scoped to the same cluster and ECR repository, the exact web and worker service ARNs,
+and the four exact web/worker execution and task roles. The OIDC trust policy and
+`staging` environment subject are unchanged. CloudFormation is never deployed by
+the workflow. The worker parameters are `VoiceWorkerEcsServiceName` (default
+`fyp-dev-whatsapp-voice-worker`), `VoiceWorkerExecutionRoleArn` (default role
+`fyp-dev-voice-worker-execution`), and `VoiceWorkerTaskRoleArn` (default role
+`fyp-dev-voice-worker-app`).
+
 ## Backend Deployment Rollback
 
-The backend workflow records the previous and new task definition ARNs in the GitHub step summary. If a backend deployment needs manual rollback, run:
+The backend workflow records the previous and new task definition ARNs and automatic
+rollback results in the GitHub step summary. If automatic rollback fails or a prior
+successful deployment later needs manual rollback, run:
 
 ```powershell
 aws ecs update-service `
@@ -407,7 +457,28 @@ aws bedrock-agentcore-control update-agent-runtime `
 
 The DEFAULT endpoint moves to the latest runtime version automatically. If custom endpoints are introduced later, they require explicit version updates. Existing sessions can continue using the code version with which their microVM started.
 
-Do not create an automatic rollback workflow yet.
+## Disabled WhatsApp Voice Rollout
+
+Keep the controls separated and use this order:
+
+1. Stage 1: merge/deploy backend code while voice remains disabled. Existing web
+   deployment must work while worker deployment integration is skipped.
+2. Stage 2: manually update Phase 7 with `WorkerDesiredCount=0` and
+   `WhatsAppVoiceEnabled=false`; verify the jobs table, worker service, roles, and log
+   group exist. The worker remains inactive.
+3. Stage 3: manually update Phase 13 OIDC, then set the non-secret GitHub `staging`
+   Environment variable `VOICE_WORKER_DEPLOY_ENABLED=true`. The workflow deploys the
+   same image to both task definitions; worker desired count remains `0`.
+4. Stage 4: manually update Phase 11 with
+   `WhatsAppVoiceMonitoringEnabled=true`; keep the minimum worker running task count
+   at `0`.
+5. Stage 5 is later work: confirm the exact Agentflo media hostname and
+   authentication, select fixed-language or identify-language transcription mode,
+   deploy verified provider configuration, raise worker desired count under
+   observation, only then enable inbound enqueueing, perform live verification, and
+   remove temporary payload-shape logging in a separate cleanup PR.
+
+Pass B2 performs none of these deployment or activation stages.
 
 ## Operational Checklist
 

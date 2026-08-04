@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import logging
+
 from src.api.whatsapp import WhatsAppInboundAudioMessage
 from src.services.transcription_service import TranscriptionService
+
+
+logger = logging.getLogger(__name__)
 
 
 class WhatsAppVoiceProcessingError(Exception):
     error_code = "WHATSAPP_VOICE_PROCESSING_FAILED"
 
-    def __init__(self) -> None:
+    retryable = False
+
+    def __init__(self, *, error_code: str | None = None, retryable: bool | None = None) -> None:
+        if error_code:
+            self.error_code = error_code
+        if retryable is not None:
+            self.retryable = retryable
         super().__init__("The WhatsApp voice message could not be processed.")
 
 
@@ -39,6 +50,7 @@ class WhatsAppVoiceService:
         downloaded_media = None
         stored_media = None
         primary_error: Exception | None = None
+        transcript: str | None = None
         try:
             downloaded_media = self.media_service.download(inbound.media_url)
             stored_media = self.storage_service.upload(
@@ -49,7 +61,7 @@ class WhatsAppVoiceService:
                 message_id,
                 self.transcription_job_prefix,
             )
-            return self.transcription_service.transcribe(
+            transcript = self.transcription_service.transcribe(
                 media_s3_uri=stored_media.s3_uri,
                 media_format=downloaded_media.media_format,
                 job_name=job_name,
@@ -57,9 +69,15 @@ class WhatsAppVoiceService:
                 identify_language=self.identify_language,
                 timeout_seconds=self.transcription_timeout_seconds,
             )
+            return transcript
         except Exception as exc:
             primary_error = exc
-            raise
+            if hasattr(exc, "error_code"):
+                raise WhatsAppVoiceProcessingError(
+                    error_code=exc.error_code,
+                    retryable=bool(getattr(exc, "retryable", False)),
+                ) from exc
+            raise WhatsAppVoiceProcessingError(retryable=True) from exc
         finally:
             cleanup_error: Exception | None = None
             if stored_media is not None:
@@ -73,5 +91,14 @@ class WhatsAppVoiceService:
                 except Exception as exc:
                     if cleanup_error is None:
                         cleanup_error = exc
-            if primary_error is None and cleanup_error is not None:
-                raise WhatsAppVoiceProcessingError() from None
+            # Cleanup is best effort. A valid transcript must survive a cleanup
+            # failure, which is recorded only as metadata.
+            if cleanup_error is not None:
+                logger.warning(
+                    "Voice media cleanup failed",
+                    extra={
+                        "event": "voice_cleanup_failure",
+                        "error_code": "VOICE_MEDIA_CLEANUP_FAILED",
+                        "cleanup_after_valid_transcript": transcript is not None,
+                    },
+                )
