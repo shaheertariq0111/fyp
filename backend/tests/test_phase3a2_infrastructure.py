@@ -55,6 +55,15 @@ CONVERSATION_INDEX_ARN = {
         "${AWS::AccountId}:table/${ConversationMessagesTableName}/index/*"
     )
 }
+VOICE_BUCKET_ARN = {"Fn::GetAtt": "VoiceMediaBucket.Arn"}
+VOICE_INPUT_ARN = {"Fn::Sub": "${VoiceMediaBucket.Arn}/voice-input/*"}
+VOICE_QUEUE_ARN = {"Fn::GetAtt": "VoiceProcessingQueue.Arn"}
+VOICE_TRANSCRIPTION_JOB_ARN = {
+    "Fn::Sub": (
+        "arn:${AWS::Partition}:transcribe:${AWS::Region}:"
+        "${AWS::AccountId}:transcription-job/${ProjectName}-whatsapp-voice-*"
+    )
+}
 
 
 class CloudFormationLoader(yaml.SafeLoader):
@@ -144,6 +153,20 @@ def conversation_statement(template):
         statement
         for statement in statements
         if statement.get("Sid") == "UseConversationMessagesTable"
+    )
+
+
+def policy_statements(template, policy_name):
+    return template["Resources"][policy_name]["Properties"][
+        "PolicyDocument"
+    ]["Statement"]
+
+
+def statement_by_sid(template, policy_name, sid):
+    return next(
+        statement
+        for statement in policy_statements(template, policy_name)
+        if statement.get("Sid") == sid
     )
 
 
@@ -358,6 +381,224 @@ def test_ecs_environment_uses_effective_ticket_parameters():
         assert existing in environment
 
 
+def test_voice_media_bucket_is_temporary_private_and_encrypted():
+    template = load_template()
+    resource = template["Resources"]["VoiceMediaBucket"]
+    properties = resource["Properties"]
+
+    assert resource["Type"] == "AWS::S3::Bucket"
+    assert resource["DeletionPolicy"] == "Delete"
+    assert resource["UpdateReplacePolicy"] == "Delete"
+    assert properties["BucketName"] == {
+        "Fn::Sub": "${ProjectName}-voice-${AWS::AccountId}-${AWS::Region}"
+    }
+    assert properties["PublicAccessBlockConfiguration"] == {
+        "BlockPublicAcls": True,
+        "BlockPublicPolicy": True,
+        "IgnorePublicAcls": True,
+        "RestrictPublicBuckets": True,
+    }
+    assert properties["OwnershipControls"] == {
+        "Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]
+    }
+    assert properties["BucketEncryption"] == {
+        "ServerSideEncryptionConfiguration": [{
+            "ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}
+        }]
+    }
+    assert properties["LifecycleConfiguration"] == {
+        "Rules": [{
+            "Id": "DeleteTemporaryVoiceInput",
+            "Status": "Enabled",
+            "Prefix": "voice-input/",
+            "ExpirationInDays": 1,
+            "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1},
+        }]
+    }
+    assert "WebsiteConfiguration" not in properties
+    assert "VersioningConfiguration" not in properties
+
+    bucket_policy = template["Resources"]["VoiceMediaBucketPolicy"]
+    assert bucket_policy["Type"] == "AWS::S3::BucketPolicy"
+    assert bucket_policy["Properties"]["Bucket"] == {"Ref": "VoiceMediaBucket"}
+    assert bucket_policy["Properties"]["PolicyDocument"]["Statement"] == [{
+        "Sid": "DenyInsecureTransport",
+        "Effect": "Deny",
+        "Principal": "*",
+        "Action": "s3:*",
+        "Resource": [
+            VOICE_BUCKET_ARN,
+            {"Fn::Sub": "${VoiceMediaBucket.Arn}/*"},
+        ],
+        "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+    }]
+
+
+def test_voice_queues_are_encrypted_bounded_and_have_exact_redrive_target():
+    template = load_template()
+    resources = template["Resources"]
+    queue = resources["VoiceProcessingQueue"]
+    dead_letter_queue = resources["VoiceProcessingDeadLetterQueue"]
+
+    assert queue["Type"] == "AWS::SQS::Queue"
+    assert dead_letter_queue["Type"] == "AWS::SQS::Queue"
+    assert queue["Properties"]["SqsManagedSseEnabled"] is True
+    assert dead_letter_queue["Properties"]["SqsManagedSseEnabled"] is True
+    assert queue["Properties"]["MessageRetentionPeriod"] == 86400
+    assert dead_letter_queue["Properties"]["MessageRetentionPeriod"] == 1209600
+    assert queue["Properties"]["VisibilityTimeout"] >= 180
+    assert queue["Properties"]["ReceiveMessageWaitTimeSeconds"] == 20
+    assert queue["Properties"]["RedrivePolicy"] == {
+        "deadLetterTargetArn": {
+            "Fn::GetAtt": "VoiceProcessingDeadLetterQueue.Arn"
+        },
+        "maxReceiveCount": 3,
+    }
+    assert not any(
+        resource.get("Type") == "AWS::SQS::QueuePolicy"
+        for resource in resources.values()
+    )
+
+
+def test_voice_iam_is_least_privilege_and_attached_only_to_application_role():
+    template = load_template()
+    policy = template["Resources"]["EcsTaskVoicePolicy"]
+
+    assert policy["Properties"]["Roles"] == [{"Ref": "EcsTaskRole"}]
+    assert statement_by_sid(
+        template, "EcsTaskVoicePolicy", "GetVoiceMediaBucketLocation"
+    ) == {
+        "Sid": "GetVoiceMediaBucketLocation",
+        "Effect": "Allow",
+        "Action": ["s3:GetBucketLocation"],
+        "Resource": VOICE_BUCKET_ARN,
+    }
+    assert statement_by_sid(
+        template, "EcsTaskVoicePolicy", "ManageTemporaryVoiceInput"
+    ) == {
+        "Sid": "ManageTemporaryVoiceInput",
+        "Effect": "Allow",
+        "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+        "Resource": VOICE_INPUT_ARN,
+    }
+    assert statement_by_sid(
+        template, "EcsTaskVoicePolicy", "UseVoiceProcessingQueue"
+    ) == {
+        "Sid": "UseVoiceProcessingQueue",
+        "Effect": "Allow",
+        "Action": [
+            "sqs:SendMessage",
+            "sqs:ReceiveMessage",
+            "sqs:DeleteMessage",
+            "sqs:ChangeMessageVisibility",
+            "sqs:GetQueueAttributes",
+        ],
+        "Resource": VOICE_QUEUE_ARN,
+    }
+
+    serialized_policy = json.dumps(policy)
+    assert "s3:*" not in serialized_policy
+    assert "sqs:*" not in serialized_policy
+    assert "transcribe:*" not in serialized_policy
+    assert "iam:PassRole" not in serialized_policy
+    assert '${VoiceMediaBucket.Arn}/*' not in serialized_policy
+    assert '${VoiceMediaBucket.Arn}/voice-input/*' in serialized_policy
+
+    execution_policies = [
+        resource
+        for resource in template["Resources"].values()
+        if resource.get("Type") == "AWS::IAM::Policy"
+        and {"Ref": "EcsTaskExecutionRole"}
+        in resource.get("Properties", {}).get("Roles", [])
+    ]
+    serialized_execution_policies = json.dumps(execution_policies)
+    for service_prefix in ("s3:", "sqs:", "transcribe:"):
+        assert service_prefix not in serialized_execution_policies
+
+
+def test_voice_transcribe_wildcard_is_isolated_and_job_access_is_scoped():
+    template = load_template()
+    start = statement_by_sid(
+        template, "EcsTaskVoicePolicy", "StartVoiceTranscriptionJob"
+    )
+    manage = statement_by_sid(
+        template, "EcsTaskVoicePolicy", "ManageVoiceTranscriptionJobs"
+    )
+
+    assert start == {
+        "Sid": "StartVoiceTranscriptionJob",
+        "Effect": "Allow",
+        "Action": ["transcribe:StartTranscriptionJob"],
+        "Resource": "*",
+    }
+    assert manage == {
+        "Sid": "ManageVoiceTranscriptionJobs",
+        "Effect": "Allow",
+        "Action": [
+            "transcribe:GetTranscriptionJob",
+            "transcribe:DeleteTranscriptionJob",
+        ],
+        "Resource": VOICE_TRANSCRIPTION_JOB_ARN,
+    }
+    assert all(
+        statement["Sid"] == "StartVoiceTranscriptionJob"
+        for statement in policy_statements(template, "EcsTaskVoicePolicy")
+        if statement.get("Resource") == "*"
+    )
+    serialized_template = json.dumps(template)
+    assert "iam:PassRole" not in serialized_template
+    assert "transcribe.amazonaws.com" not in serialized_template
+
+
+def test_voice_environment_defaults_disabled_and_outputs_are_wired():
+    template = load_template()
+    parameter = template["Parameters"]["WhatsAppVoiceEnabled"]
+    environment = environment_map(template)
+
+    assert parameter == {
+        "Type": "String",
+        "Default": "false",
+        "AllowedValues": ["true", "false"],
+        "Description": (
+            "Keep disabled until the inbound voice backend and durable worker "
+            "are deployed."
+        ),
+    }
+    assert environment["WHATSAPP_VOICE_ENABLED"] == {
+        "Ref": "WhatsAppVoiceEnabled"
+    }
+    assert environment["VOICE_MEDIA_BUCKET_NAME"] == {"Ref": "VoiceMediaBucket"}
+    assert environment["VOICE_MEDIA_INPUT_PREFIX"] == "voice-input/"
+    assert environment["VOICE_JOB_QUEUE_URL"] == {"Ref": "VoiceProcessingQueue"}
+    assert environment["VOICE_MAX_MEDIA_BYTES"] == "10485760"
+    assert environment["VOICE_DOWNLOAD_TIMEOUT_SECONDS"] == "10"
+    assert environment["VOICE_TRANSCRIPTION_TIMEOUT_SECONDS"] == "180"
+    assert "VOICE_MEDIA_OUTPUT_PREFIX" not in environment
+    assert environment["AGENTCORE_RUNTIME_ARN"] == {"Ref": "AgentCoreRuntimeArn"}
+    assert environment["AGENTFLO_GATEWAY_BASE_URL"] == {
+        "Ref": "AgentfloGatewayBaseUrl"
+    }
+    assert environment["AGENTFLO_GATEWAY_TENANT_ID"] == {
+        "Ref": "AgentfloGatewayTenantId"
+    }
+    assert environment["MENU_TABLE_NAME"] == {"Ref": "MenuTableName"}
+    assert environment["AGENT_REQUESTS_TABLE_NAME"] == {
+        "Ref": "AgentRequestsTableName"
+    }
+    assert environment["ADMIN_USERNAME"] == {"Ref": "AdminUsername"}
+
+    outputs = template["Outputs"]
+    assert outputs["VoiceMediaBucketName"]["Value"] == {"Ref": "VoiceMediaBucket"}
+    assert outputs["VoiceMediaBucketArn"]["Value"] == VOICE_BUCKET_ARN
+    assert outputs["VoiceProcessingQueueUrl"]["Value"] == {
+        "Ref": "VoiceProcessingQueue"
+    }
+    assert outputs["VoiceProcessingQueueArn"]["Value"] == VOICE_QUEUE_ARN
+    assert outputs["VoiceProcessingDeadLetterQueueArn"]["Value"] == {
+        "Fn::GetAtt": "VoiceProcessingDeadLetterQueue.Arn"
+    }
+
+
 def test_agentflo_whatsapp_webhook_secret_is_conditionally_injected():
     template = load_template()
     parameter = template["Parameters"]["AgentfloWhatsAppWebhookSecretArn"]
@@ -488,6 +729,7 @@ def test_existing_table_mode_has_no_conditional_resource_reference():
 def test_tracked_parameter_example_includes_ticket_configuration_without_phone():
     example = parameter_map(EXAMPLE_PARAMETERS)
 
+    assert example["WhatsAppVoiceEnabled"] == "false"
     assert example["ConversationMessagesTableName"] == (
         "fyp-dev-ConversationMessages"
     )
@@ -643,3 +885,10 @@ def test_backend_settings_and_local_conversation_schema_stay_consistent():
     ):
         assert local[key] == production[key]
     assert production["TimeToLiveSpecification"]["AttributeName"] == "expires_at"
+
+def test_project_name_is_safe_for_explicit_s3_bucket_names():
+    template = load_template()
+
+    assert template["Parameters"]["ProjectName"]["AllowedPattern"] == (
+        "^[a-z][a-z0-9-]{1,31}$"
+    )

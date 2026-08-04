@@ -29,6 +29,7 @@ npm run build
 cd ..
 aws cloudformation validate-template --region us-east-1 --template-body file://infra/phase7-ecs-api.yaml
 aws cloudformation validate-template --region us-east-1 --template-body file://infra/phase11-monitoring.yaml
+cfn-lint infra/phase7-ecs-api.yaml
 ```
 
 ## 2. Pre-Deployment DynamoDB Verification
@@ -125,6 +126,13 @@ Expected output includes each secret `ARN`, `Name`, and `VersionId`. Store the A
 
 Create the backend stack first with `BackendImageUri=` and `DesiredCount=0`. The CloudFormation template conditionally skips the ECS task definition and ECS service while `BackendImageUri` is empty, so the bootstrap stack cannot create a task definition with an empty or fake image.
 
+This stack also creates an encrypted temporary customer-audio bucket, encrypted
+voice-processing queue, and dead-letter queue. These resources do not activate
+voice processing. Keep `WhatsAppVoiceEnabled=false`. Later application code must
+delete temporary audio promptly after processing. The one-day S3 lifecycle rule is
+an asynchronous fallback. CloudFormation must be applied before any later backend
+or worker activation.
+
 `[CREATES OR UPDATES AWS RESOURCES]`
 
 ```powershell
@@ -139,6 +147,7 @@ aws cloudformation deploy `
     PublicSubnetIds=<public-subnet-a>,<public-subnet-b> `
     BackendImageUri= `
     DesiredCount=0 `
+    WhatsAppVoiceEnabled=false `
     FrontendCorsOrigins=https://bootstrap.invalid `
     MenuSiteBaseUrl=https://bootstrap.invalid/menu `
     BedrockModelId=us.amazon.nova-pro-v1:0 `
@@ -200,6 +209,11 @@ $CustomersTableName = Get-StackOutput "CustomersTableName"
 $AgentSessionsTableName = Get-StackOutput "AgentSessionsTableName"
 $MenuSessionsTableName = Get-StackOutput "MenuSessionsTableName"
 $AuditTableName = Get-StackOutput "AuditTableName"
+$VoiceMediaBucketName = Get-StackOutput "VoiceMediaBucketName"
+$VoiceMediaBucketArn = Get-StackOutput "VoiceMediaBucketArn"
+$VoiceProcessingQueueUrl = Get-StackOutput "VoiceProcessingQueueUrl"
+$VoiceProcessingQueueArn = Get-StackOutput "VoiceProcessingQueueArn"
+$VoiceProcessingDeadLetterQueueArn = Get-StackOutput "VoiceProcessingDeadLetterQueueArn"
 ```
 
 `BackendServiceName` is not output during the empty-image bootstrap. It appears after the stack is updated with a real `BackendImageUri`.
@@ -266,6 +280,7 @@ aws cloudformation deploy `
     PublicSubnetIds=<public-subnet-a>,<public-subnet-b> `
     BackendImageUri=${BackendRepositoryUri}:phase12 `
     DesiredCount=0 `
+    WhatsAppVoiceEnabled=false `
     FrontendCorsOrigins=https://main.<app-id>.amplifyapp.com `
     MenuSiteBaseUrl=https://main.<app-id>.amplifyapp.com/menu `
     BedrockModelId=us.amazon.nova-pro-v1:0 `
@@ -467,6 +482,7 @@ aws cloudformation deploy `
     PublicSubnetIds=<public-subnet-a>,<public-subnet-b> `
     BackendImageUri=${BackendRepositoryUri}:phase12 `
     DesiredCount=1 `
+    WhatsAppVoiceEnabled=false `
     FrontendCorsOrigins=https://main.<app-id>.amplifyapp.com `
     MenuSiteBaseUrl=https://main.<app-id>.amplifyapp.com/menu `
     BedrockModelId=us.amazon.nova-pro-v1:0 `
@@ -655,6 +671,7 @@ aws cloudformation deploy `
     PublicSubnetIds=<public-subnet-a>,<public-subnet-b> `
     BackendImageUri=${BackendRepositoryUri}:<previous-good-tag> `
     DesiredCount=1 `
+    WhatsAppVoiceEnabled=false `
     FrontendCorsOrigins=https://main.<app-id>.amplifyapp.com `
     MenuSiteBaseUrl=https://main.<app-id>.amplifyapp.com/menu `
     BedrockModelId=us.amazon.nova-pro-v1:0 `
