@@ -1698,7 +1698,10 @@ def _require_agentflo_webhook_secret(
             },
         )
         return
-    provided_secret = request.headers.get("X-Agentflo-Webhook-Secret")
+    provided_secret = (
+        request.path_params.get("webhook_secret")
+        or request.headers.get("X-Agentflo-Webhook-Secret")
+    )
     if (
         not isinstance(provided_secret, str)
         or not hmac.compare_digest(provided_secret, configured_secret)
@@ -1740,6 +1743,7 @@ def chat(payload: ChatRequest, http_request: Request, response: Response) -> Cha
 
 
 @app.post("/api/channels/agentflo/whatsapp")
+@app.post("/api/channels/agentflo/whatsapp/{webhook_secret}")
 def agentflo_whatsapp(
     http_request: Request,
     response: Response,

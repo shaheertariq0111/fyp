@@ -70,3 +70,8 @@ def configure_logging(level: str = "INFO") -> None:
     handler.setFormatter(JsonFormatter())
     root.addHandler(handler)
     root.setLevel(level.upper())
+
+    # These libraries can emit complete request URLs, including bearer
+    # credentials stored in paths or signed media query parameters.
+    for logger_name in ("httpx", "httpcore", "uvicorn.access"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)

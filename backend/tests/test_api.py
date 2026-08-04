@@ -1480,6 +1480,33 @@ def test_agentflo_whatsapp_configured_secret_allows_correct_header(
     assert response.json()["reply"] == "Authenticated."
 
 
+def test_agentflo_whatsapp_configured_secret_allows_correct_path_secret(
+    monkeypatch,
+):
+    services = WhatsAppIdentityServices()
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(
+        main,
+        "get_settings",
+        lambda: make_test_settings(
+            agentflo_whatsapp_webhook_secret="configured-webhook-secret",
+        ),
+    )
+    stub_agent_client(monkeypatch, SimpleNamespace(), text="Path authenticated.")
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp/configured-webhook-secret",
+        json={
+            "message": "Hello",
+            "from": "10000000000",
+            "id": "path-authenticated-message-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Path authenticated."
+
+
 @pytest.mark.parametrize(
     "headers",
     [
@@ -1538,16 +1565,25 @@ def test_agentflo_whatsapp_authentication_logs_exclude_secrets(
         ),
     )
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         response = client().post(
-            "/api/channels/agentflo/whatsapp",
+            f"/api/channels/agentflo/whatsapp/{provided_secret}",
             json={"message": "Hello"},
-            headers={"X-Agentflo-Webhook-Secret": provided_secret},
         )
 
     assert response.status_code == 401
     assert configured_secret not in caplog.text
     assert provided_secret not in caplog.text
+
+    request_log = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "http_request_completed"
+    )
+    assert (
+        request_log.route
+        == "/api/channels/agentflo/whatsapp/{webhook_secret}"
+    )
 
 
 def test_agentflo_whatsapp_without_configured_secret_warns_and_remains_open(
