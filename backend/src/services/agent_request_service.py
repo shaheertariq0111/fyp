@@ -25,9 +25,10 @@ class AgentRequestService:
         message: str,
         channel: str,
         request_payload: dict[str, Any],
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         now = self._now()
-        request_id = f"req-{uuid.uuid4()}"
+        request_id = request_id or f"req-{uuid.uuid4()}"
         request = {
             "PK": f"REQUEST#{request_id}",
             "SK": "METADATA",
@@ -38,6 +39,7 @@ class AgentRequestService:
             "message": message,
             "channel": channel,
             "request": request_payload,
+            "invocation_state": "not_started",
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
             "expires_at": self._expires_at(now),
@@ -45,11 +47,42 @@ class AgentRequestService:
         self.repository.create(request)
         return request
 
+    def start_or_resume_processing(self, **kwargs) -> tuple[dict[str, Any], bool]:
+        request_id = kwargs.get("request_id")
+        if not request_id:
+            return self.start_processing(**kwargs), True
+        existing = self.get(request_id)
+        if existing is not None:
+            return existing, False
+        try:
+            return self.start_processing(**kwargs), True
+        except Exception as exc:
+            response = getattr(exc, "response", {})
+            if response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            existing = self.get(request_id)
+            if existing is None:
+                raise
+            return existing, False
+
+    def claim_invocation(self, request_id: str) -> bool:
+        return self.repository.transition_invocation_state(
+            request_id, expected_state="not_started", next_state="invoking",
+            updated_at=self._now().isoformat(),
+        )
+
+    def mark_invocation_ambiguous(self, request_id: str) -> bool:
+        return self.repository.transition_invocation_state(
+            request_id, expected_state="invoking", next_state="ambiguous",
+            updated_at=self._now().isoformat(),
+        )
+
     def complete(self, request_id: str, response: dict[str, Any]) -> dict[str, Any]:
         request = self._get_required(request_id)
         now = self._now()
         request.update({
             "status": "completed",
+            "invocation_state": "completed",
             "response": response,
             "updated_at": now.isoformat(),
         })

@@ -34,6 +34,12 @@ TRANSCRIPTION_ERROR_MESSAGES = {
 class VoiceTranscriptionError(Exception):
     def __init__(self, error_code: str):
         self.error_code = error_code
+        self.retryable = error_code in {
+            "VOICE_TRANSCRIPTION_START_FAILED",
+            "VOICE_TRANSCRIPTION_TIMEOUT",
+            "VOICE_TRANSCRIPT_DOWNLOAD_FAILED",
+            "VOICE_TRANSCRIPTION_CLEANUP_FAILED",
+        }
         super().__init__(TRANSCRIPTION_ERROR_MESSAGES[error_code])
 
 
@@ -68,7 +74,11 @@ class TranscriptionService:
                 "VOICE_TRANSCRIPTION_CONFIGURATION_INVALID"
             )
         digest = hashlib.sha256(normalized_message_id.encode("utf-8")).hexdigest()
-        job_name = f"{normalized_prefix}-whatsapp-voice-{digest}"
+        job_name = (
+            f"{normalized_prefix}{digest}"
+            if normalized_prefix.endswith("-whatsapp-voice-")
+            else f"{normalized_prefix}-whatsapp-voice-{digest}"
+        )
         if not TRANSCRIBE_JOB_NAME.fullmatch(job_name):
             raise VoiceTranscriptionError(
                 "VOICE_TRANSCRIPTION_CONFIGURATION_INVALID"
@@ -107,6 +117,7 @@ class TranscriptionService:
         )
         terminal = False
         primary_error: Exception | None = None
+        completed_transcript: str | None = None
         try:
             job = self._wait_for_terminal_job(job_name, timeout_seconds)
             terminal = True
@@ -120,7 +131,8 @@ class TranscriptionService:
             )
             if not isinstance(transcript_uri, str) or not transcript_uri.strip():
                 raise VoiceTranscriptionError("VOICE_TRANSCRIPT_INVALID")
-            return self._download_transcript(transcript_uri)
+            completed_transcript = self._download_transcript(transcript_uri)
+            return completed_transcript
         except Exception as exc:
             primary_error = exc
             raise
@@ -129,13 +141,12 @@ class TranscriptionService:
                 try:
                     self._delete_job(job_name)
                 except VoiceTranscriptionError:
-                    if primary_error is None:
-                        raise
                     logger.warning(
                         "Voice transcription cleanup failed",
                         extra={
                             "event": "voice_transcription_cleanup_failed",
                             "error_code": "VOICE_TRANSCRIPTION_CLEANUP_FAILED",
+                            "cleanup_after_valid_transcript": completed_transcript is not None,
                         },
                     )
 

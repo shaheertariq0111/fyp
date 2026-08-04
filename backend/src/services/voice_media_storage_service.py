@@ -14,6 +14,7 @@ VOICE_OBJECT_KEY = re.compile(r"^voice-input/[0-9a-f]{64}\.ogg$")
 
 class VoiceMediaStorageError(Exception):
     error_code = "VOICE_MEDIA_STORAGE_FAILED"
+    retryable = True
 
     def __init__(self) -> None:
         super().__init__("Temporary voice media storage failed.")

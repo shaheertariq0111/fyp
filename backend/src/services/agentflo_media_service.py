@@ -25,6 +25,7 @@ VOICE_MEDIA_ERROR_MESSAGES = {
 class VoiceMediaError(Exception):
     def __init__(self, error_code: str):
         self.error_code = error_code
+        self.retryable = error_code == "VOICE_MEDIA_DOWNLOAD_FAILED"
         super().__init__(VOICE_MEDIA_ERROR_MESSAGES[error_code])
 
 
@@ -163,10 +164,10 @@ class AgentfloMediaService:
         try:
             addresses = list(self.resolver(hostname, 443))
         except (OSError, socket.gaierror):
-            raise VoiceMediaError("VOICE_MEDIA_NETWORK_BLOCKED") from None
+            raise VoiceMediaError("VOICE_MEDIA_DOWNLOAD_FAILED") from None
 
         if not addresses:
-            raise VoiceMediaError("VOICE_MEDIA_NETWORK_BLOCKED")
+            raise VoiceMediaError("VOICE_MEDIA_DOWNLOAD_FAILED")
 
         try:
             parsed_addresses = {

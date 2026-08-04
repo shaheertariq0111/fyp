@@ -13,6 +13,19 @@ class ConversationMessageRepository:
     def save(self, message: dict) -> None:
         self.table.put_item(Item=to_dynamodb(message))
 
+    def save_if_absent(self, message: dict) -> bool:
+        try:
+            self.table.put_item(
+                Item=to_dynamodb(message),
+                ConditionExpression="attribute_not_exists(PK) AND attribute_not_exists(SK)",
+            )
+        except Exception as exc:
+            response = getattr(exc, "response", {})
+            if response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
     def list_recent_whatsapp_messages(self, *, limit: int) -> list[dict]:
         response = self.table.query(
             IndexName="GSI1",

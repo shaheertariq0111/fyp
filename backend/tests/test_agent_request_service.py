@@ -23,6 +23,14 @@ class MemoryAgentRequestRepository:
     def save(self, request):
         self.data[request["request_id"]] = deepcopy(request)
 
+    def transition_invocation_state(self, request_id, *, expected_state, next_state, updated_at):
+        request = self.data.get(request_id)
+        if not request or request.get("status") != "processing" or request.get("invocation_state") != expected_state:
+            return False
+        request["invocation_state"] = next_state
+        request["updated_at"] = updated_at
+        return True
+
     def claim_idempotency_key(self, marker, *, now_epoch):
         self.idempotency_claims.append((deepcopy(marker), now_epoch))
         if self.idempotency_result:
@@ -108,6 +116,25 @@ def test_agent_request_service_fails_with_safe_error_payload():
 def test_agent_request_service_missing_request_raises_structured_code():
     with pytest.raises(ValueError, match="AGENT_REQUEST_NOT_FOUND"):
         service().complete("missing", {"text": "hi"})
+
+
+def test_deterministic_voice_request_is_created_once_and_completed_request_resumes():
+    requests = service()
+    arguments = {
+        "actor_id": "opaque-customer", "session_id": "opaque-session",
+        "message": "private transcript", "channel": "whatsapp",
+        "request_payload": {"message": "private transcript"},
+        "request_id": "req-voice-" + "a" * 64,
+    }
+
+    first, created = requests.start_or_resume_processing(**arguments)
+    assert created is True
+    requests.complete(first["request_id"], {"text": "completed response"})
+    resumed, created = requests.start_or_resume_processing(**arguments)
+
+    assert created is False
+    assert resumed["status"] == "completed"
+    assert len([key for key in requests.repository.data if key.startswith("req-voice-")]) == 1
 
 
 def test_agentflo_whatsapp_message_claim_uses_exact_key_and_24_hour_ttl(

@@ -31,6 +31,7 @@ class ConversationHistoryService:
         request_id: str | None = None,
         customer_number: str | None = None,
         duplicate: bool = False,
+        idempotency_identifier: str | None = None,
     ) -> dict[str, Any]:
         now = self._now()
         item = self._base_message(
@@ -42,6 +43,7 @@ class ConversationHistoryService:
             timestamp_utc=now.isoformat(),
             message_identifier=inbound_message_id or f"inbound-{uuid.uuid4()}",
             request_id=request_id,
+            idempotency_identifier=idempotency_identifier,
         )
         item["inbound_whatsapp_message_id"] = inbound_message_id
         item["duplicate"] = duplicate
@@ -49,7 +51,10 @@ class ConversationHistoryService:
         if masked_phone is not None:
             item["masked_customer_phone"] = masked_phone
         item["expires_at"] = self._expires_at(now)
-        self.repository.save(item)
+        if idempotency_identifier is not None:
+            self.repository.save_if_absent(item)
+        else:
+            self.repository.save(item)
         return item
 
     def store_outbound_whatsapp_message(
@@ -61,6 +66,7 @@ class ConversationHistoryService:
         request_id: str | None,
         inbound_message_id: str | None = None,
         outbound: dict[str, Any] | None = None,
+        idempotency_identifier: str | None = None,
     ) -> dict[str, Any]:
         now = self._now()
         outbound_data = outbound or {}
@@ -79,6 +85,7 @@ class ConversationHistoryService:
                 provider_message_id or request_id or f"outbound-{uuid.uuid4()}"
             ),
             request_id=request_id,
+            idempotency_identifier=idempotency_identifier,
         )
         item["inbound_whatsapp_message_id"] = inbound_message_id
         item["outbound_provider_message_id"] = provider_message_id
@@ -86,7 +93,10 @@ class ConversationHistoryService:
         item["delivery_status"] = self._delivery_status(outbound_data)
         item["duplicate"] = False
         item["expires_at"] = self._expires_at(now)
-        self.repository.save(item)
+        if idempotency_identifier is not None:
+            self.repository.save_if_absent(item)
+        else:
+            self.repository.save(item)
         return item
 
     def admin_list_conversations(
@@ -144,11 +154,16 @@ class ConversationHistoryService:
         timestamp_utc: str,
         message_identifier: str,
         request_id: str | None,
+        idempotency_identifier: str | None = None,
     ) -> dict[str, Any]:
         safe_identifier = self._safe_identifier(message_identifier)
         return {
             "PK": f"CONVERSATION#{conversation_id}",
-            "SK": f"MSG#{timestamp_utc}#{direction}#{safe_identifier}",
+            "SK": (
+                f"MSG#IDEMPOTENT#{direction}#{self._safe_identifier(idempotency_identifier)}"
+                if idempotency_identifier is not None
+                else f"MSG#{timestamp_utc}#{direction}#{safe_identifier}"
+            ),
             "GSI1PK": "CHANNEL#whatsapp",
             "GSI1SK": f"{timestamp_utc}#{conversation_id}",
             "record_type": "conversation_message",
