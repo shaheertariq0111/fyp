@@ -1789,6 +1789,15 @@ def test_agentflo_whatsapp_audio_payload_logs_only_safe_shape(
     assert payload_shape["first_message_audio_has_url_or_link"] is True
     assert payload_shape["first_message_media_has_id"] is True
     assert payload_shape["first_message_media_has_url_or_link"] is True
+    hostname_log = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "agentflo_whatsapp_audio_media_hostname"
+    )
+    assert hostname_log.audio_media_hostname == "private.example"
+    assert not hasattr(hostname_log, "audio_media_url")
+
     serialized_log_records = repr([vars(record) for record in caplog.records])
     assert private_body not in formatted_shape_log
     assert private_phone not in formatted_shape_log
