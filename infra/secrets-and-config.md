@@ -128,6 +128,16 @@ WHATSAPP_VOICE_ENABLED=false
 VOICE_MEDIA_BUCKET_NAME=<temporary-voice-media-bucket>
 VOICE_MEDIA_INPUT_PREFIX=voice-input/
 VOICE_JOB_QUEUE_URL=<voice-processing-queue-url>
+WHATSAPP_VOICE_JOBS_TABLE_NAME=<cloudformation-managed-voice-jobs-table>
+VOICE_MEDIA_ALLOWED_HOSTS=
+VOICE_TRANSCRIPTION_LANGUAGE_CODE=
+VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE=false
+VOICE_SQS_WAIT_TIME_SECONDS=20
+VOICE_SQS_VISIBILITY_TIMEOUT_SECONDS=300
+VOICE_SQS_HEARTBEAT_SECONDS=60
+VOICE_JOB_LEASE_SECONDS=180
+VOICE_JOB_TTL_HOURS=24
+VOICE_TRANSCRIPTION_JOB_PREFIX=fyp-dev-whatsapp-voice-
 VOICE_MAX_MEDIA_BYTES=10485760
 VOICE_DOWNLOAD_TIMEOUT_SECONDS=10
 VOICE_TRANSCRIPTION_TIMEOUT_SECONDS=180
@@ -157,6 +167,28 @@ queue and S3 bucket do not activate voice handling by themselves. Keep
 `WHATSAPP_VOICE_ENABLED=false` until the media-validation backend and durable ECS
 worker are implemented, and deploy the Phase 7 CloudFormation changes before
 enabling any later voice code.
+
+## Disabled voice-worker task configuration
+
+Pass B1 defines a separate ECS service that uses the backend image with the
+command `python -m src.workers.whatsapp_voice_worker`. Its desired count defaults
+to `0`; the web feature flag and worker `WHATSAPP_VOICE_ENABLED` value remain
+`false`. The worker receives the existing application table names, the dedicated
+voice-jobs table, Standard queue URL, temporary S3 bucket, timing limits,
+AgentCore configuration, and Agentflo gateway configuration.
+
+Only these secrets are eligible for injection into the worker:
+
+```text
+SESSION_TOKEN_SECRET <- SessionTokenSecretArn
+AGENTFLO_GATEWAY_API_KEY <- AgentfloGatewayApiKeySecretArn
+```
+
+The worker does not receive `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, or
+`AGENTFLO_WHATSAPP_WEBHOOK_SECRET`. The media hostname and exactly one
+transcription language mode must be confirmed before a later controlled
+activation. The durable jobs table stores state and leases, not transcripts.
+The existing Standard queue, Standard DLQ, and temporary S3 bucket are preserved.
 
 ## CORS and admin cookie boundary
 

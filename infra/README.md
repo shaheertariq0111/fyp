@@ -6,11 +6,25 @@ This directory contains the Phase 7 infrastructure-as-code for the FastAPI backe
 API Gateway HTTP API -> VPC Link -> Cloud Map -> ECS Fargate backend
 ```
 
+The same stack also defines a separate durable WhatsApp voice worker path:
+
+```text
+Standard SQS queue -> ECS Fargate WhatsApp voice worker -> AgentCore / Agentflo
+                          |
+                          +-> dedicated DynamoDB voice-jobs table
+```
+
+The worker uses the same backend image but a separate task definition, execution
+role, application role, security group, log group, and ECS service. It has no
+port mapping, load balancer, Cloud Map registration, or API Gateway integration.
+`WorkerDesiredCount` defaults to `0`, and `WhatsAppVoiceEnabled` remains `false`,
+so Pass B1 creates disabled infrastructure without activating voice handling.
+
 The template intentionally does not create an Application Load Balancer, Route 53 record, ACM certificate, Amplify app, or AgentCore Runtime.
 
 ## Files
 
-- `phase7-ecs-api.yaml` - CloudFormation template for ECR, ECS, Cloud Map, API Gateway, security groups, log groups, optional AgentRequests DynamoDB table, and least-privilege IAM roles.
+- `phase7-ecs-api.yaml` - CloudFormation template for ECR, the web and disabled voice-worker ECS services, Cloud Map, API Gateway, security groups, log groups, durable voice-job storage, optional application DynamoDB tables, and least-privilege IAM roles.
 - `phase13-github-oidc.yaml` - CloudFormation template for the GitHub Actions OIDC provider selection and separate backend/AgentCore deployment roles. Do not deploy until the account has been checked for an existing GitHub OIDC provider.
 - `phase14-knowledge-base.yaml` - CloudFormation template for the separate Amazon Bedrock Knowledge Base stack, S3 approved-documents bucket, Amazon S3 Vectors bucket/index, data source, and Knowledge Base service role.
 - `parameters/dev.example.json` - placeholder development parameters. Replace placeholders locally before deploying. Do not commit real secret ARNs, account IDs, image URIs, or generated values.
@@ -25,7 +39,7 @@ The template intentionally does not create an Application Load Balancer, Route 5
 - The ECS service remains privately reached by API Gateway through VPC Link, Cloud Map service discovery, and an ECS security group that only allows inbound TCP `8000` from the VPC Link security group.
 - The Cloud Map service uses an `SRV` record, and the ECS service registry pins the `backend` container on port `8000`.
 - A backend container image URI. You can create the stack with `DesiredCount=0` before an image is pushed, then update it later.
-- Existing DynamoDB application tables unless this stack is explicitly creating `AgentRequests`.
+- Existing DynamoDB application tables unless this stack is explicitly creating them. The dedicated `WhatsAppVoiceJobs` table is always CloudFormation-managed by this stack.
 - Existing Secrets Manager secrets for sensitive config values if you plan to inject them during stack deployment.
 - `AGENTCORE_RUNTIME_ARN` can remain empty until AgentCore Runtime is created later.
 - `AgentRuntimeRepositoryUri` is an output from this stack and should be used for the Phase 6 AgentCore runtime image.
@@ -33,12 +47,33 @@ The template intentionally does not create an Application Load Balancer, Route 5
 - `AgentCoreMemoryArn` can remain empty until AgentCore Memory is created.
 - `AgentCoreSessionTokenSecretArn` should be set only if the AgentCore runtime keeps menu-link token creation enabled. Pass the Secrets Manager ARN, not the secret value.
 
+## Disabled WhatsApp voice-worker infrastructure
+
+Pass B1 preserves the existing Standard processing queue, Standard dead-letter
+queue, and temporary encrypted S3 bucket under their existing logical IDs and
+physical names. The new jobs table stores temporary durable processing state,
+leases, retry timing, and opaque request references; it does not store transcripts.
+
+The media hostname and transcription language mode are intentionally unresolved.
+Do not increase `WorkerDesiredCount` or change `WhatsAppVoiceEnabled` until a later
+controlled activation has supplied and verified those provider values. Pass B2
+will address deployment workflow, OIDC, and monitoring integration; it is not
+part of this change.
+
 ## IAM roles
 
-The template creates three separate role families:
+The template creates separate role families:
 
 - ECS task execution role: ECR image pull, CloudWatch container log delivery, and resource-specific Secrets Manager injection.
 - ECS application task role: approved DynamoDB tables and optional AgentCore Runtime invocation. Secrets are injected by ECS and are not read directly by the application role. Application metrics are derived from CloudWatch Logs metric filters in the Phase 11 monitoring template, so the task role does not need `cloudwatch:PutMetricData`.
+- Voice-worker execution role: pulls the existing backend image, writes only to the worker log group, and injects only the session-token and Agentflo gateway API-key secrets when configured. It cannot read admin or webhook secrets.
+- Voice-worker application role: consumes and recovers the Standard voice queue, accesses temporary voice input, manages scoped Transcribe jobs, invokes the configured AgentCore runtime, and accesses only the voice-job and shared conversation tables required by worker processing. It has no DLQ permission.
+
+The worker execution role uses `Resource: "*"` only for the ECR authorization
+token action, which AWS does not support as a repository-scoped permission. The
+worker task role uses `Resource: "*"` only for
+`transcribe:StartTranscriptionJob`; get/delete operations remain constrained to
+`${ProjectName}-whatsapp-voice-*` job ARNs.
 - AgentCore execution role: fixed AgentCore service trust with source-account/source-ARN conditions, AgentCore runtime image pull from the agent-runtime ECR repository, Nova Pro inference-profile invocation, optional event-only AgentCore Memory access, approved DynamoDB table access for tools, optional Knowledge Base retrieval, and AgentCore runtime log writes.
 
 The template does not attach `AdministratorAccess`, `AmazonBedrockFullAccess`, or `AmazonDynamoDBFullAccess`.
@@ -169,6 +204,8 @@ aws cloudformation deploy `
     PublicSubnetIds=<public-subnet-a>,<public-subnet-b> `
     BackendImageUri=<account-id>.dkr.ecr.us-east-1.amazonaws.com/fyp-dev-backend:<tag> `
     DesiredCount=0 `
+    WorkerDesiredCount=0 `
+    WhatsAppVoiceEnabled=false `
     FrontendCorsOrigins=https://<amplify-app>.amplifyapp.com `
     MenuSiteBaseUrl=https://<amplify-app>.amplifyapp.com/menu `
     AgentCoreRuntimeArn= `

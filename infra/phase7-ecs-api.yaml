@@ -37,6 +37,82 @@ Parameters:
       - "true"
       - "false"
     Description: Keep disabled until the inbound voice backend and durable worker are deployed.
+  WorkerDesiredCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 10
+    Description: Durable WhatsApp voice worker count. Keep at 0 until provider configuration is confirmed.
+  WorkerCpu:
+    Type: String
+    Default: "512"
+    AllowedValues:
+      - "256"
+      - "512"
+      - "1024"
+      - "2048"
+      - "4096"
+  WorkerMemory:
+    Type: String
+    Default: "1024"
+    AllowedValues:
+      - "512"
+      - "1024"
+      - "2048"
+      - "3072"
+      - "4096"
+      - "8192"
+  WhatsAppVoiceJobsTableName:
+    Type: String
+    Default: fyp-dev-WhatsAppVoiceJobs
+    AllowedPattern: "^[A-Za-z0-9_.-]{3,255}$"
+    Description: Dedicated CloudFormation-managed durable voice-job table.
+  VoiceMediaAllowedHosts:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9.-]+(,[a-z0-9.-]+)*$"
+    Description: Comma-separated exact media hostnames. Intentionally empty until verified.
+  VoiceTranscriptionLanguageCode:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z]{2,3}-[A-Z]{2}$"
+    Description: Exact Transcribe language code; leave empty unless identify-language is false and activation is approved.
+  VoiceTranscriptionIdentifyLanguage:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+  VoiceSqsWaitTimeSeconds:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 20
+  VoiceSqsVisibilityTimeoutSeconds:
+    Type: Number
+    Default: 300
+    MinValue: 1
+    MaxValue: 43200
+  VoiceSqsHeartbeatSeconds:
+    Type: Number
+    Default: 60
+    MinValue: 1
+    MaxValue: 43199
+  VoiceJobLeaseSeconds:
+    Type: Number
+    Default: 180
+    MinValue: 2
+    MaxValue: 43200
+  VoiceJobTtlHours:
+    Type: Number
+    Default: 24
+    MinValue: 1
+    MaxValue: 168
+  VoiceTranscriptionJobPrefix:
+    Type: String
+    Default: fyp-dev-whatsapp-voice-
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{0,62}-whatsapp-voice-$"
+    Description: Must match the existing Transcribe job IAM resource prefix.
   BackendCpu:
     Type: String
     Default: "512"
@@ -254,6 +330,15 @@ Resources:
         - Key: Project
           Value: !Ref ProjectName
 
+  WhatsAppVoiceWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${ProjectName}/whatsapp-voice-worker
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
   BackendApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -375,6 +460,20 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub ${ProjectName}-backend-tasks
+        - Key: Project
+          Value: !Ref ProjectName
+
+  WhatsAppVoiceWorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${ProjectName} WhatsApp voice worker tasks with no ingress
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-whatsapp-voice-worker-tasks
         - Key: Project
           Value: !Ref ProjectName
 
@@ -541,6 +640,196 @@ Resources:
               - secretsmanager:GetSecretValue
             Resource: !Ref AdminSessionSecretArn
 
+  WhatsAppVoiceWorkerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-voice-worker-execution
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  WhatsAppVoiceWorkerExecutionBasePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-voice-worker-execution-base
+      Roles:
+        - !Ref WhatsAppVoiceWorkerExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EcrAuthorizationToken
+            Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+            Resource: "*"
+          - Sid: PullBackendImage
+            Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+            Resource: !GetAtt BackendRepository.Arn
+          - Sid: WriteWorkerContainerLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${ProjectName}/whatsapp-voice-worker:log-stream:*
+
+  WhatsAppVoiceWorkerExecutionSessionSecretPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasSessionTokenSecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-voice-worker-session-secret
+      Roles:
+        - !Ref WhatsAppVoiceWorkerExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref SessionTokenSecretArn
+
+  WhatsAppVoiceWorkerExecutionGatewaySecretPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAgentfloGatewayApiKeySecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-voice-worker-gateway-secret
+      Roles:
+        - !Ref WhatsAppVoiceWorkerExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref AgentfloGatewayApiKeySecretArn
+
+  WhatsAppVoiceWorkerTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-voice-worker-app
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  WhatsAppVoiceWorkerDynamoDbPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-voice-worker-dynamodb
+      Roles:
+        - !Ref WhatsAppVoiceWorkerTaskRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: UseVoiceJobsTable
+            Effect: Allow
+            Action:
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt WhatsAppVoiceJobsTable.Arn
+              - !Sub ${WhatsAppVoiceJobsTable.Arn}/index/*
+          - Sid: UseSharedConversationTables
+            Effect: Allow
+            Action:
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:UpdateItem
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentRequestsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentRequestsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConversationMessagesTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConversationMessagesTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CartsTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CartsTableName}/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}/index/*
+
+  WhatsAppVoiceWorkerAgentCorePolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAgentCoreRuntimeArn
+    Properties:
+      PolicyName: !Sub ${ProjectName}-voice-worker-agentcore
+      Roles:
+        - !Ref WhatsAppVoiceWorkerTaskRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - bedrock-agentcore:InvokeAgentRuntime
+              - bedrock-agentcore:InvokeAgentRuntimeForUser
+            Resource:
+              - !Ref AgentCoreRuntimeArn
+              - !Sub ${AgentCoreRuntimeArn}/runtime-endpoint/*
+
+  WhatsAppVoiceWorkerVoicePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-voice-worker-media-queue-transcribe
+      Roles:
+        - !Ref WhatsAppVoiceWorkerTaskRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: GetVoiceMediaBucketLocation
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+            Resource: !GetAtt VoiceMediaBucket.Arn
+          - Sid: ManageTemporaryVoiceInput
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub ${VoiceMediaBucket.Arn}/voice-input/*
+          - Sid: ConsumeAndRecoverVoiceQueue
+            Effect: Allow
+            Action:
+              - sqs:SendMessage
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:ChangeMessageVisibility
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt VoiceProcessingQueue.Arn
+          - Sid: StartVoiceTranscriptionJob
+            Effect: Allow
+            Action:
+              - transcribe:StartTranscriptionJob
+            Resource: "*"
+          - Sid: ManageScopedVoiceTranscriptionJobs
+            Effect: Allow
+            Action:
+              - transcribe:GetTranscriptionJob
+              - transcribe:DeleteTranscriptionJob
+            Resource: !Sub arn:${AWS::Partition}:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/${ProjectName}-whatsapp-voice-*
+
   EcsTaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -643,38 +932,20 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: GetVoiceMediaBucketLocation
+          - Sid: PersistVoiceJobState
             Effect: Allow
             Action:
-              - s3:GetBucketLocation
-            Resource: !GetAtt VoiceMediaBucket.Arn
-          - Sid: ManageTemporaryVoiceInput
-            Effect: Allow
-            Action:
-              - s3:PutObject
-              - s3:GetObject
-              - s3:DeleteObject
-            Resource: !Sub ${VoiceMediaBucket.Arn}/voice-input/*
-          - Sid: UseVoiceProcessingQueue
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt WhatsAppVoiceJobsTable.Arn
+              - !Sub ${WhatsAppVoiceJobsTable.Arn}/index/*
+          - Sid: SubmitVoiceProcessingJob
             Effect: Allow
             Action:
               - sqs:SendMessage
-              - sqs:ReceiveMessage
-              - sqs:DeleteMessage
-              - sqs:ChangeMessageVisibility
-              - sqs:GetQueueAttributes
             Resource: !GetAtt VoiceProcessingQueue.Arn
-          - Sid: StartVoiceTranscriptionJob
-            Effect: Allow
-            Action:
-              - transcribe:StartTranscriptionJob
-            Resource: "*"
-          - Sid: ManageVoiceTranscriptionJobs
-            Effect: Allow
-            Action:
-              - transcribe:GetTranscriptionJob
-              - transcribe:DeleteTranscriptionJob
-            Resource: !Sub arn:${AWS::Partition}:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/${ProjectName}-whatsapp-voice-*
 
   AgentCoreExecutionRole:
     Type: AWS::IAM::Role
@@ -925,6 +1196,49 @@ Resources:
               StringEquals:
                 cloudwatch:namespace: bedrock-agentcore
 
+  WhatsAppVoiceJobsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref WhatsAppVoiceJobsTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: N
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: DueJobsIndex
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: DataClassification
+          Value: temporary-voice-job-state
+
   AgentRequestsTable:
     Type: AWS::DynamoDB::Table
     Condition: ShouldCreateAgentRequestsTable
@@ -1086,6 +1400,26 @@ Resources:
               Value: voice-input/
             - Name: VOICE_JOB_QUEUE_URL
               Value: !Ref VoiceProcessingQueue
+            - Name: WHATSAPP_VOICE_JOBS_TABLE_NAME
+              Value: !Ref WhatsAppVoiceJobsTableName
+            - Name: VOICE_MEDIA_ALLOWED_HOSTS
+              Value: !Ref VoiceMediaAllowedHosts
+            - Name: VOICE_TRANSCRIPTION_LANGUAGE_CODE
+              Value: !Ref VoiceTranscriptionLanguageCode
+            - Name: VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE
+              Value: !Ref VoiceTranscriptionIdentifyLanguage
+            - Name: VOICE_SQS_WAIT_TIME_SECONDS
+              Value: !Ref VoiceSqsWaitTimeSeconds
+            - Name: VOICE_SQS_VISIBILITY_TIMEOUT_SECONDS
+              Value: !Ref VoiceSqsVisibilityTimeoutSeconds
+            - Name: VOICE_SQS_HEARTBEAT_SECONDS
+              Value: !Ref VoiceSqsHeartbeatSeconds
+            - Name: VOICE_JOB_LEASE_SECONDS
+              Value: !Ref VoiceJobLeaseSeconds
+            - Name: VOICE_JOB_TTL_HOURS
+              Value: !Ref VoiceJobTtlHours
+            - Name: VOICE_TRANSCRIPTION_JOB_PREFIX
+              Value: !Ref VoiceTranscriptionJobPrefix
             - Name: VOICE_MAX_MEDIA_BYTES
               Value: "10485760"
             - Name: VOICE_DOWNLOAD_TIMEOUT_SECONDS
@@ -1192,6 +1526,144 @@ Resources:
         - Key: Project
           Value: !Ref ProjectName
 
+  WhatsAppVoiceWorkerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: HasBackendImageUri
+    Properties:
+      Family: !Sub ${ProjectName}-whatsapp-voice-worker
+      Cpu: !Ref WorkerCpu
+      Memory: !Ref WorkerMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt WhatsAppVoiceWorkerExecutionRole.Arn
+      TaskRoleArn: !GetAtt WhatsAppVoiceWorkerTaskRole.Arn
+      ContainerDefinitions:
+        - Name: whatsapp-voice-worker
+          Image: !Ref BackendImageUri
+          Essential: true
+          Command:
+            - python
+            - -m
+            - src.workers.whatsapp_voice_worker
+          StopTimeout: 120
+          Environment:
+            - Name: ENVIRONMENT
+              Value: !Ref EnvironmentName
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: WHATSAPP_VOICE_ENABLED
+              Value: "false"
+            - Name: VOICE_MEDIA_BUCKET_NAME
+              Value: !Ref VoiceMediaBucket
+            - Name: VOICE_MEDIA_INPUT_PREFIX
+              Value: voice-input/
+            - Name: VOICE_JOB_QUEUE_URL
+              Value: !Ref VoiceProcessingQueue
+            - Name: WHATSAPP_VOICE_JOBS_TABLE_NAME
+              Value: !Ref WhatsAppVoiceJobsTableName
+            - Name: VOICE_MAX_MEDIA_BYTES
+              Value: "10485760"
+            - Name: VOICE_DOWNLOAD_TIMEOUT_SECONDS
+              Value: "10"
+            - Name: VOICE_TRANSCRIPTION_TIMEOUT_SECONDS
+              Value: "180"
+            - Name: VOICE_MEDIA_ALLOWED_HOSTS
+              Value: !Ref VoiceMediaAllowedHosts
+            - Name: VOICE_TRANSCRIPTION_LANGUAGE_CODE
+              Value: !Ref VoiceTranscriptionLanguageCode
+            - Name: VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE
+              Value: !Ref VoiceTranscriptionIdentifyLanguage
+            - Name: VOICE_SQS_WAIT_TIME_SECONDS
+              Value: !Ref VoiceSqsWaitTimeSeconds
+            - Name: VOICE_SQS_VISIBILITY_TIMEOUT_SECONDS
+              Value: !Ref VoiceSqsVisibilityTimeoutSeconds
+            - Name: VOICE_SQS_HEARTBEAT_SECONDS
+              Value: !Ref VoiceSqsHeartbeatSeconds
+            - Name: VOICE_JOB_LEASE_SECONDS
+              Value: !Ref VoiceJobLeaseSeconds
+            - Name: VOICE_JOB_TTL_HOURS
+              Value: !Ref VoiceJobTtlHours
+            - Name: VOICE_TRANSCRIPTION_JOB_PREFIX
+              Value: !Ref VoiceTranscriptionJobPrefix
+            - Name: BEDROCK_MODEL_ID
+              Value: !Ref BedrockModelId
+            - Name: BEDROCK_GUARDRAIL_ID
+              Value: !Ref BedrockGuardrailId
+            - Name: BEDROCK_GUARDRAIL_VERSION
+              Value: !Ref BedrockGuardrailVersion
+            - Name: KNOWLEDGE_BASE_ID
+              Value: !Ref KnowledgeBaseId
+            - Name: AGENTCORE_RUNTIME_ARN
+              Value: !Ref AgentCoreRuntimeArn
+            - Name: AGENT_REQUESTS_TABLE_NAME
+              Value: !Ref AgentRequestsTableName
+            - Name: CONVERSATION_MESSAGES_TABLE_NAME
+              Value: !Ref ConversationMessagesTableName
+            - Name: CONVERSATION_MESSAGE_TTL_DAYS
+              Value: "90"
+            - Name: TICKETS_TABLE_NAME
+              Value: !Ref TicketsTableName
+            - Name: SUPPORT_PHONE_NUMBER
+              Value: !Ref SupportPhoneNumber
+            - Name: AGENTFLO_GATEWAY_BASE_URL
+              Value: !Ref AgentfloGatewayBaseUrl
+            - Name: AGENTFLO_GATEWAY_TENANT_ID
+              Value: !Ref AgentfloGatewayTenantId
+            - Name: AGENTFLO_GATEWAY_AGENT_ID
+              Value: !Ref AgentfloGatewayAgentId
+            - Name: AGENTFLO_GATEWAY_ACTOR_ID
+              Value: !Ref AgentfloGatewayActorId
+            - Name: MENU_TABLE_NAME
+              Value: !Ref MenuTableName
+            - Name: CARTS_TABLE_NAME
+              Value: !Ref CartsTableName
+            - Name: ORDERS_TABLE_NAME
+              Value: !Ref OrdersTableName
+            - Name: CUSTOMERS_TABLE_NAME
+              Value: !Ref CustomersTableName
+            - Name: AGENT_SESSIONS_TABLE_NAME
+              Value: !Ref AgentSessionsTableName
+            - Name: MENU_SESSIONS_TABLE_NAME
+              Value: !Ref MenuSessionsTableName
+            - Name: AUDIT_TABLE_NAME
+              Value: !Ref AuditTableName
+            - Name: MENU_SITE_BASE_URL
+              Value: !Ref MenuSiteBaseUrl
+            - Name: RESTAURANT_ID
+              Value: !Ref RestaurantId
+            - Name: BRANCH_ID
+              Value: !Ref BranchId
+            - Name: LOG_LEVEL
+              Value: INFO
+            - Name: FRONTEND_CORS_ORIGINS
+              Value: !Ref FrontendCorsOrigins
+            - Name: STRANDS_SESSION_STORAGE_DIR
+              Value: ""
+          Secrets:
+            - !If
+              - HasSessionTokenSecret
+              - Name: SESSION_TOKEN_SECRET
+                ValueFrom: !Ref SessionTokenSecretArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasAgentfloGatewayApiKeySecret
+              - Name: AGENTFLO_GATEWAY_API_KEY
+                ValueFrom: !Ref AgentfloGatewayApiKeySecretArn
+              - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WhatsAppVoiceWorkerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: whatsapp-voice-worker
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
   BackendService:
     Type: AWS::ECS::Service
     Condition: HasBackendImageUri
@@ -1218,6 +1690,33 @@ Resources:
         - RegistryArn: !GetAtt BackendDiscoveryService.Arn
           ContainerName: backend
           ContainerPort: !Ref BackendContainerPort
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  WhatsAppVoiceWorkerService:
+    Type: AWS::ECS::Service
+    Condition: HasBackendImageUri
+    Properties:
+      ServiceName: !Sub ${ProjectName}-whatsapp-voice-worker
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref WhatsAppVoiceWorkerTaskDefinition
+      DesiredCount: !Ref WorkerDesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      EnableExecuteCommand: false
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref WhatsAppVoiceWorkerSecurityGroup
+          Subnets: !Ref PublicSubnetIds
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -1313,6 +1812,25 @@ Outputs:
     Value: !GetAtt EcsTaskExecutionRole.Arn
   BackendTaskRoleArn:
     Value: !GetAtt EcsTaskRole.Arn
+  WhatsAppVoiceJobsTableName:
+    Description: Dedicated durable WhatsApp voice processing-state table name.
+    Value: !Ref WhatsAppVoiceJobsTable
+  WhatsAppVoiceJobsTableArn:
+    Description: Dedicated durable WhatsApp voice processing-state table ARN.
+    Value: !GetAtt WhatsAppVoiceJobsTable.Arn
+  WhatsAppVoiceWorkerTaskDefinitionArn:
+    Condition: HasBackendImageUri
+    Value: !Ref WhatsAppVoiceWorkerTaskDefinition
+  WhatsAppVoiceWorkerServiceName:
+    Condition: HasBackendImageUri
+    Value: !GetAtt WhatsAppVoiceWorkerService.Name
+  WhatsAppVoiceWorkerLogGroupName:
+    Value: !Ref WhatsAppVoiceWorkerLogGroup
+  WhatsAppVoiceWorkerSecurityGroupId:
+    Value: !Ref WhatsAppVoiceWorkerSecurityGroup
+  WhatsAppVoiceWorkerDesiredCount:
+    Description: Configured worker desired count; remains zero until controlled activation.
+    Value: !Ref WorkerDesiredCount
   AgentCoreExecutionRoleArn:
     Value: !GetAtt AgentCoreExecutionRole.Arn
   VoiceMediaBucketName:

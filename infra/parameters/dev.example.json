@@ -24,6 +24,58 @@
     "ParameterValue": "false"
   },
   {
+    "ParameterKey": "WorkerDesiredCount",
+    "ParameterValue": "0"
+  },
+  {
+    "ParameterKey": "WorkerCpu",
+    "ParameterValue": "512"
+  },
+  {
+    "ParameterKey": "WorkerMemory",
+    "ParameterValue": "1024"
+  },
+  {
+    "ParameterKey": "WhatsAppVoiceJobsTableName",
+    "ParameterValue": "fyp-dev-WhatsAppVoiceJobs"
+  },
+  {
+    "ParameterKey": "VoiceMediaAllowedHosts",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "VoiceTranscriptionLanguageCode",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "VoiceTranscriptionIdentifyLanguage",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "VoiceSqsWaitTimeSeconds",
+    "ParameterValue": "20"
+  },
+  {
+    "ParameterKey": "VoiceSqsVisibilityTimeoutSeconds",
+    "ParameterValue": "300"
+  },
+  {
+    "ParameterKey": "VoiceSqsHeartbeatSeconds",
+    "ParameterValue": "60"
+  },
+  {
+    "ParameterKey": "VoiceJobLeaseSeconds",
+    "ParameterValue": "180"
+  },
+  {
+    "ParameterKey": "VoiceJobTtlHours",
+    "ParameterValue": "24"
+  },
+  {
+    "ParameterKey": "VoiceTranscriptionJobPrefix",
+    "ParameterValue": "fyp-dev-whatsapp-voice-"
+  },
+  {
     "ParameterKey": "AgentCoreRuntimeArn",
     "ParameterValue": ""
   },
