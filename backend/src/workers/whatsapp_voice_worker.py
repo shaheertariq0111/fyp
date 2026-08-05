@@ -6,6 +6,8 @@ import threading
 import uuid
 from contextlib import contextmanager
 
+from botocore.exceptions import ClientError
+
 from src.agent.dependencies import get_services
 from src.agent_client.factory import get_agent_runtime_client
 from src.api.whatsapp import WhatsAppInboundAudioMessage, WhatsAppInboundMessage
@@ -89,6 +91,23 @@ class WhatsAppVoiceWorker:
                 self.handle(received)
 
     def handle(self, received) -> None:
+        try:
+            self._handle(received)
+        except ClientError as exc:
+            error = exc.response.get("Error", {})
+            logger.error(
+                "Voice worker AWS operation failed; message left for bounded queue retry",
+                extra={
+                    "event": "voice_worker_aws_operation_failed",
+                    "voice_job_id": received.queue_message.job_id,
+                    "error_code": "VOICE_WORKER_AWS_OPERATION_FAILED",
+                    "aws_error_code": error.get("Code"),
+                    "aws_operation": exc.operation_name,
+                    "retryable": True,
+                },
+            )
+
+    def _handle(self, received) -> None:
         job_id = received.queue_message.job_id
         record = self.jobs.repository.get(job_id)
         logger.info("Voice worker job received", extra={"event": "voice_worker_job_received", "voice_job_id": job_id, "receive_count": received.receive_count})

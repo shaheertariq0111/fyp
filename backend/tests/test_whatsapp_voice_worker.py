@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from botocore.exceptions import ClientError
 
 from src.models.whatsapp_voice_job import VoiceQueueMessage, voice_job_id
 from src.repositories.base import to_dynamodb
@@ -174,3 +175,67 @@ def test_worker_legacy_job_without_audio_id_fails_terminally():
 
     assert error.value.error_code == "AGENTFLO_MEDIA_AUDIO_ID_REQUIRED"
     assert error.value.retryable is False
+
+
+def test_job_scoped_aws_access_denied_is_logged_and_does_not_escape(caplog):
+    job_id = voice_job_id("access-denied-provider-id")
+    error = ClientError(
+        {
+            "Error": {
+                "Code": "AccessDeniedException",
+                "Message": "private infrastructure detail",
+            }
+        },
+        "Scan",
+    )
+    worker = WhatsAppVoiceWorker(
+        settings=SimpleNamespace(),
+        jobs=SimpleNamespace(
+            repository=SimpleNamespace(get=lambda _job_id: (_ for _ in ()).throw(error))
+        ),
+        queue=SimpleNamespace(),
+        voice=SimpleNamespace(),
+        conversations=SimpleNamespace(),
+    )
+    received = SimpleNamespace(
+        queue_message=SimpleNamespace(job_id=job_id),
+        receive_count=1,
+    )
+
+    with caplog.at_level("ERROR"):
+        worker.handle(received)
+
+    record = next(
+        item
+        for item in caplog.records
+        if getattr(item, "event", None) == "voice_worker_aws_operation_failed"
+    )
+    assert record.voice_job_id == job_id
+    assert record.error_code == "VOICE_WORKER_AWS_OPERATION_FAILED"
+    assert record.aws_error_code == "AccessDeniedException"
+    assert record.aws_operation == "Scan"
+    assert record.retryable is True
+    assert "private infrastructure detail" not in caplog.text
+
+
+def test_job_scoped_programming_error_still_terminates_worker_turn():
+    worker = WhatsAppVoiceWorker(
+        settings=SimpleNamespace(),
+        jobs=SimpleNamespace(
+            repository=SimpleNamespace(
+                get=lambda _job_id: (_ for _ in ()).throw(
+                    RuntimeError("programming defect")
+                )
+            )
+        ),
+        queue=SimpleNamespace(),
+        voice=SimpleNamespace(),
+        conversations=SimpleNamespace(),
+    )
+    received = SimpleNamespace(
+        queue_message=SimpleNamespace(job_id=voice_job_id("programming-error")),
+        receive_count=1,
+    )
+
+    with pytest.raises(RuntimeError, match="programming defect"):
+        worker.handle(received)
