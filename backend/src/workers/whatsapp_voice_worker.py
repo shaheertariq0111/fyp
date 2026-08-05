@@ -14,7 +14,7 @@ from src.infrastructure.dynamodb import get_dynamodb_resource
 from src.infrastructure.logging import configure_logging
 from src.infrastructure.s3 import get_s3_client
 from src.infrastructure.sqs import create_sqs_client
-from src.infrastructure.transcribe import get_transcribe_client
+from src.infrastructure.transcribe import get_transcribe_client_provider
 from src.models.whatsapp_voice_job import VoiceJobState
 from src.repositories.whatsapp_voice_job_repository import WhatsAppVoiceJobRepository, VoiceJobConditionFailed
 from src.services.agent_request_processor import AgentRequestProcessor, build_identity_resolver, build_response_builder
@@ -280,7 +280,10 @@ def build_worker(settings=None) -> WhatsAppVoiceWorker:
             client=get_s3_client(settings), bucket_name=settings.voice_media_bucket_name,
             input_prefix=settings.voice_media_input_prefix,
         ),
-        transcription_service=TranscriptionService(client=get_transcribe_client(settings), aws_region=settings.aws_region),
+        transcription_service=TranscriptionService(
+            client_provider=get_transcribe_client_provider(settings),
+            aws_region=settings.aws_region,
+        ),
         transcription_job_prefix=settings.voice_transcription_job_prefix,
         language_code=settings.voice_transcription_language_code,
         identify_language=settings.voice_transcription_identify_language,

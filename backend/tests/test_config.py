@@ -246,6 +246,7 @@ def test_voice_configuration_has_disabled_safe_defaults():
     assert settings.voice_job_lease_seconds == 180
     assert settings.voice_job_ttl_hours == 24
     assert settings.voice_transcription_job_prefix == ""
+    assert settings.voice_transcribe_role_arn == ""
     assert settings.voice_max_media_bytes == 10_485_760
     assert settings.voice_download_timeout_seconds == 10
     assert settings.voice_transcription_timeout_seconds == 180
@@ -264,6 +265,10 @@ def test_voice_environment_variables_are_parsed(monkeypatch):
         "Media.Example.Test, media.example.test,cdn.example.test",
     )
     monkeypatch.setenv("VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE", "true")
+    monkeypatch.setenv(
+        "VOICE_TRANSCRIBE_ROLE_ARN",
+        "arn:aws:iam::769377364291:role/fyp-cross-account-transcribe",
+    )
 
     settings = Settings(_env_file=None, **BASE)
 
@@ -273,6 +278,40 @@ def test_voice_environment_variables_are_parsed(monkeypatch):
         "cdn.example.test",
     ]
     assert settings.voice_transcription_identify_language is True
+    assert settings.voice_transcribe_role_arn == (
+        "arn:aws:iam::769377364291:role/fyp-cross-account-transcribe"
+    )
+
+
+@pytest.mark.parametrize(
+    "role_arn",
+    [
+        "arn:aws:iam::769377364291:role/",
+        "arn:aws:iam::769377364291:role/path/",
+        "arn:aws:iam::769377364291:role/path//name",
+        "arn:aws:iam::769377364291:user/not-a-role",
+        "arn:aws:s3:::not-an-iam-role",
+    ],
+)
+def test_voice_transcribe_role_arn_rejects_malformed_or_non_role_arns(role_arn):
+    with pytest.raises(ValidationError, match="VOICE_TRANSCRIBE_ROLE_ARN"):
+        make_test_settings(voice_transcribe_role_arn=role_arn)
+
+
+@pytest.mark.parametrize(
+    "role_arn",
+    [
+        "arn:aws:iam::123456789012:role/transcribe-role",
+        "arn:aws-us-gov:iam::123456789012:role/path/transcribe-role",
+        "arn:aws-cn:iam::123456789012:role/path/deeper/transcribe-role",
+    ],
+)
+def test_voice_transcribe_role_arn_accepts_simple_and_segmented_role_paths(
+    role_arn,
+):
+    settings = make_test_settings(voice_transcribe_role_arn=f"  {role_arn}  ")
+
+    assert settings.voice_transcribe_role_arn == role_arn
 
 
 @pytest.mark.parametrize(
@@ -402,6 +441,7 @@ def test_backend_env_example_documents_voice_configuration():
         "VOICE_JOB_LEASE_SECONDS=180",
         "VOICE_JOB_TTL_HOURS=24",
         "VOICE_TRANSCRIPTION_JOB_PREFIX=",
+        "VOICE_TRANSCRIBE_ROLE_ARN=",
         "VOICE_MAX_MEDIA_BYTES=10485760",
         "VOICE_DOWNLOAD_TIMEOUT_SECONDS=10",
         "VOICE_TRANSCRIPTION_TIMEOUT_SECONDS=180",

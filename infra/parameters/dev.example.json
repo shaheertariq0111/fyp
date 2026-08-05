@@ -76,6 +76,10 @@
     "ParameterValue": "fyp-dev-whatsapp-voice-"
   },
   {
+    "ParameterKey": "VoiceTranscribeRoleArn",
+    "ParameterValue": ""
+  },
+  {
     "ParameterKey": "AgentCoreRuntimeArn",
     "ParameterValue": ""
   },

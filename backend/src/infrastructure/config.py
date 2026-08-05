@@ -19,6 +19,10 @@ HOSTNAME_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 VOICE_TRANSCRIPTION_JOB_PREFIX = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,62})-whatsapp-voice-$"
 )
+VOICE_TRANSCRIBE_ROLE_ARN = re.compile(
+    r"^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/"
+    r"[A-Za-z0-9+=,.@*-]+(?:/[A-Za-z0-9+=,.@*-]+)*$"
+)
 
 
 class BedrockModelSettings(BaseSettings):
@@ -131,6 +135,7 @@ class Settings(BaseSettings):
     voice_job_lease_seconds: int = 180
     voice_job_ttl_hours: int = 24
     voice_transcription_job_prefix: str = ""
+    voice_transcribe_role_arn: str = ""
     voice_max_media_bytes: int = VOICE_MAX_MEDIA_BYTES
     voice_download_timeout_seconds: float = VOICE_DOWNLOAD_TIMEOUT_SECONDS
     voice_transcription_timeout_seconds: int = VOICE_TRANSCRIPTION_TIMEOUT_SECONDS
@@ -181,6 +186,10 @@ class Settings(BaseSettings):
             raise ValueError("VOICE_SQS_HEARTBEAT_SECONDS must be shorter than lease and visibility")
         if not 0 < self.voice_job_ttl_hours <= 168:
             raise ValueError("VOICE_JOB_TTL_HOURS must be between 1 and 168")
+        role_arn = self.voice_transcribe_role_arn.strip()
+        if role_arn and not VOICE_TRANSCRIBE_ROLE_ARN.fullmatch(role_arn):
+            raise ValueError("VOICE_TRANSCRIBE_ROLE_ARN must be a valid IAM role ARN")
+        self.voice_transcribe_role_arn = role_arn
         language_code_configured = bool(
             self.voice_transcription_language_code.strip()
         )

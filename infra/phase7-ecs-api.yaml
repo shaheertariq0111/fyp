@@ -113,6 +113,11 @@ Parameters:
     Default: fyp-dev-whatsapp-voice-
     AllowedPattern: "^[a-z0-9][a-z0-9-]{0,62}-whatsapp-voice-$"
     Description: Must match the existing Transcribe job IAM resource prefix.
+  VoiceTranscribeRoleArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@*-]+(?:/[A-Za-z0-9+=,.@*-]+)*$"
+    Description: Optional cross-account IAM role assumed only by the WhatsApp voice worker for Amazon Transcribe.
   BackendCpu:
     Type: String
     Default: "512"
@@ -293,6 +298,7 @@ Conditions:
   HasAdminPasswordSecret: !Not [!Equals [!Ref AdminPasswordSecretArn, ""]]
   HasAdminSessionSecret: !Not [!Equals [!Ref AdminSessionSecretArn, ""]]
   HasAgentCoreGuardrailId: !Not [!Equals [!Ref AgentCoreGuardrailId, ""]]
+  HasVoiceTranscribeRoleArn: !Not [!Equals [!Ref VoiceTranscribeRoleArn, ""]]
 
 Resources:
   BackendRepository:
@@ -397,6 +403,29 @@ Resources:
             Condition:
               Bool:
                 aws:SecureTransport: "false"
+          - !If
+            - HasVoiceTranscribeRoleArn
+            - Sid: AllowConfiguredTranscribeRoleToListVoiceInput
+              Effect: Allow
+              Principal:
+                AWS: !Ref VoiceTranscribeRoleArn
+              Action:
+                - s3:ListBucket
+              Resource: !GetAtt VoiceMediaBucket.Arn
+              Condition:
+                StringLike:
+                  s3:prefix: voice-input/*
+            - !Ref AWS::NoValue
+          - !If
+            - HasVoiceTranscribeRoleArn
+            - Sid: AllowConfiguredTranscribeRoleToReadVoiceInput
+              Effect: Allow
+              Principal:
+                AWS: !Ref VoiceTranscribeRoleArn
+              Action:
+                - s3:GetObject
+              Resource: !Sub ${VoiceMediaBucket.Arn}/voice-input/*
+            - !Ref AWS::NoValue
 
   VoiceProcessingDeadLetterQueue:
     Type: AWS::SQS::Queue
@@ -829,6 +858,14 @@ Resources:
               - transcribe:GetTranscriptionJob
               - transcribe:DeleteTranscriptionJob
             Resource: !Sub arn:${AWS::Partition}:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/${ProjectName}-whatsapp-voice-*
+          - !If
+            - HasVoiceTranscribeRoleArn
+            - Sid: AssumeConfiguredVoiceTranscribeRole
+              Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource: !Ref VoiceTranscribeRoleArn
+            - !Ref AWS::NoValue
 
   EcsTaskRole:
     Type: AWS::IAM::Role
@@ -1589,6 +1626,8 @@ Resources:
               Value: !Ref VoiceJobTtlHours
             - Name: VOICE_TRANSCRIPTION_JOB_PREFIX
               Value: !Ref VoiceTranscriptionJobPrefix
+            - Name: VOICE_TRANSCRIBE_ROLE_ARN
+              Value: !Ref VoiceTranscribeRoleArn
             - Name: BEDROCK_MODEL_ID
               Value: !Ref BedrockModelId
             - Name: BEDROCK_GUARDRAIL_ID

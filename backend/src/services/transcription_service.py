@@ -20,6 +20,8 @@ from botocore.exceptions import (
     ReadTimeoutError,
 )
 
+from src.infrastructure.transcribe import TranscribeRoleAssumptionError
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,9 @@ TRANSCRIBE_JOB_NAME = re.compile(r"^[0-9A-Za-z._-]{1,200}$")
 TRANSCRIPTION_ERROR_MESSAGES = {
     "VOICE_TRANSCRIPTION_CONFIGURATION_INVALID": (
         "Voice transcription configuration is invalid."
+    ),
+    "VOICE_TRANSCRIBE_ROLE_ASSUME_FAILED": (
+        "Voice transcription authorization could not be established."
     ),
     "VOICE_TRANSCRIPTION_START_FAILED": "Voice transcription could not be started.",
     "VOICE_TRANSCRIPTION_CONFLICT": "The voice transcription job conflicts with existing work.",
@@ -85,7 +90,8 @@ class TranscriptionService:
     def __init__(
         self,
         *,
-        client,
+        client=None,
+        client_provider=None,
         aws_region: str,
         transcript_client: httpx.Client | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -93,7 +99,10 @@ class TranscriptionService:
         poll_interval_seconds: float = 1.0,
         transcript_max_bytes: int = TRANSCRIPT_MAX_BYTES,
     ) -> None:
+        if (client is None) == (client_provider is None):
+            raise ValueError("Exactly one Transcribe client source is required")
         self.client = client
+        self.client_provider = client_provider
         self.aws_region = aws_region.strip().lower()
         self.transcript_client = transcript_client
         self.clock = clock
@@ -146,7 +155,9 @@ class TranscriptionService:
                 "VOICE_TRANSCRIPTION_CONFIGURATION_INVALID"
             )
 
+        client = self._resolve_client()
         self._start_or_recover(
+            client=client,
             media_s3_uri=media_s3_uri,
             media_format=media_format,
             job_name=job_name,
@@ -157,7 +168,7 @@ class TranscriptionService:
         primary_error: Exception | None = None
         completed_transcript: str | None = None
         try:
-            job = self._wait_for_terminal_job(job_name, timeout_seconds)
+            job = self._wait_for_terminal_job(client, job_name, timeout_seconds)
             terminal = True
             if job.get("TranscriptionJobStatus") != "COMPLETED":
                 raise VoiceTranscriptionError("VOICE_TRANSCRIPTION_FAILED")
@@ -177,7 +188,7 @@ class TranscriptionService:
         finally:
             if terminal:
                 try:
-                    self._delete_job(job_name)
+                    self._delete_job(client, job_name)
                 except VoiceTranscriptionError:
                     logger.warning(
                         "Voice transcription cleanup failed",
@@ -204,9 +215,57 @@ class TranscriptionService:
             and not parsed.fragment
         )
 
+    def _resolve_client(self):
+        if self.client_provider is None:
+            return self.client
+        try:
+            return self.client_provider()
+        except TranscribeRoleAssumptionError as exc:
+            self._log_role_assumption_failure(
+                exception_type=exc.exception_type,
+                aws_error_code=exc.aws_error_code,
+                status_code=exc.status_code,
+                retryable=exc.retryable,
+            )
+            raise VoiceTranscriptionError(
+                "VOICE_TRANSCRIBE_ROLE_ASSUME_FAILED",
+                retryable=exc.retryable,
+            ) from None
+        except Exception as exc:
+            self._log_role_assumption_failure(
+                exception_type=type(exc).__name__,
+                retryable=False,
+            )
+            raise VoiceTranscriptionError(
+                "VOICE_TRANSCRIBE_ROLE_ASSUME_FAILED",
+                retryable=False,
+            ) from None
+
+    @staticmethod
+    def _log_role_assumption_failure(
+        *,
+        exception_type: str,
+        retryable: bool,
+        aws_error_code: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        logger.warning(
+            "Voice Transcribe role assumption failed",
+            extra={
+                "event": "voice_transcribe_role_assume_failed",
+                "failure_stage": "assume_transcribe_role",
+                "exception_type": exception_type,
+                "aws_error_code": aws_error_code,
+                "status_code": status_code,
+                "retryable": retryable,
+                "error_code": "VOICE_TRANSCRIBE_ROLE_ASSUME_FAILED",
+            },
+        )
+
     def _start_or_recover(
         self,
         *,
+        client,
         media_s3_uri: str,
         media_format: str,
         job_name: str,
@@ -223,7 +282,7 @@ class TranscriptionService:
         else:
             parameters["LanguageCode"] = language_code
         try:
-            self.client.start_transcription_job(**parameters)
+            client.start_transcription_job(**parameters)
         except ClientError as exc:
             aws_error_code = exc.response.get("Error", {}).get("Code")
             if aws_error_code != "ConflictException":
@@ -245,7 +304,7 @@ class TranscriptionService:
                     "VOICE_TRANSCRIPTION_START_FAILED",
                     retryable=retryable,
                 ) from None
-            existing_job = self._get_job(job_name, conflict=True)
+            existing_job = self._get_job(client, job_name, conflict=True)
             existing_media = existing_job.get("Media")
             existing_uri = (
                 existing_media.get("MediaFileUri")
@@ -309,12 +368,13 @@ class TranscriptionService:
 
     def _wait_for_terminal_job(
         self,
+        client,
         job_name: str,
         timeout_seconds: float,
     ) -> dict:
         started = self.clock()
         while True:
-            job = self._get_job(job_name)
+            job = self._get_job(client, job_name)
             status = job.get("TranscriptionJobStatus")
             if status in {"COMPLETED", "FAILED"}:
                 return job
@@ -324,9 +384,9 @@ class TranscriptionService:
                 raise VoiceTranscriptionError("VOICE_TRANSCRIPTION_TIMEOUT")
             self.sleep(self.poll_interval_seconds)
 
-    def _get_job(self, job_name: str, *, conflict: bool = False) -> dict:
+    def _get_job(self, client, job_name: str, *, conflict: bool = False) -> dict:
         try:
-            response = self.client.get_transcription_job(
+            response = client.get_transcription_job(
                 TranscriptionJobName=job_name
             )
             job = response.get("TranscriptionJob")
@@ -434,9 +494,9 @@ class TranscriptionService:
             raise VoiceTranscriptionError("VOICE_TRANSCRIPT_INVALID")
         return b"".join(chunks)
 
-    def _delete_job(self, job_name: str) -> None:
+    def _delete_job(self, client, job_name: str) -> None:
         try:
-            self.client.delete_transcription_job(
+            client.delete_transcription_job(
                 TranscriptionJobName=job_name
             )
         except ClientError as exc:
