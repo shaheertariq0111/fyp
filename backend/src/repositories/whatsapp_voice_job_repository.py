@@ -3,6 +3,8 @@ from __future__ import annotations
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
 
+from src.models.whatsapp_voice_job import validate_voice_job_record
+
 from .base import from_dynamodb, to_dynamodb
 
 
@@ -25,6 +27,7 @@ class WhatsAppVoiceJobRepository:
         return exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException"
 
     def create_if_absent(self, record: dict) -> bool:
+        validate_voice_job_record(record, require_audio_id=True)
         try:
             self.table.put_item(
                 Item=to_dynamodb(record),
@@ -38,7 +41,10 @@ class WhatsAppVoiceJobRepository:
 
     def get(self, job_id: str) -> dict | None:
         response = self.table.get_item(Key=self._key(job_id), ConsistentRead=True)
-        return from_dynamodb(response.get("Item"))
+        record = from_dynamodb(response.get("Item"))
+        if record is not None:
+            validate_voice_job_record(record, require_audio_id=False)
+        return record
 
     def transition(self, job_id: str, *, expected_states: set[str], expected_version: int, next_state: str, updated_at: str, values: dict | None = None, remove: tuple[str, ...] = ()) -> dict:
         names = {"#state": "state", "#version": "version", "#updated": "updated_at"}
@@ -157,4 +163,7 @@ class WhatsAppVoiceJobRepository:
             KeyConditionExpression=Key("GSI1PK").eq(due_partition) & Key("GSI1SK").lte(now_epoch),
             Limit=limit,
         )
-        return [from_dynamodb(item) for item in response.get("Items", [])]
+        records = [from_dynamodb(item) for item in response.get("Items", [])]
+        for record in records:
+            validate_voice_job_record(record, require_audio_id=False)
+        return records

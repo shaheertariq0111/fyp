@@ -310,7 +310,7 @@ def test_voice_allowed_hosts_reject_unsafe_or_non_exact_values(hosts):
         },
     ],
 )
-def test_enabled_voice_requires_bucket_queue_hosts_and_language(overrides):
+def test_enabled_voice_requires_bucket_queue_table_and_language(overrides):
     with pytest.raises(ValidationError):
         make_test_settings(whatsapp_voice_enabled=True, **overrides)
 
@@ -321,7 +321,6 @@ def test_enabled_voice_accepts_exactly_one_language_mode():
         "voice_media_bucket_name": "voice-bucket",
         "voice_job_queue_url": "https://sqs.example.test/queue",
         "whatsapp_voice_jobs_table_name": "voice-jobs-test",
-        "voice_media_allowed_hosts": "media.example.test",
     }
 
     assert make_test_settings(
@@ -368,7 +367,7 @@ def test_worker_configuration_fails_closed_and_accepts_iam_scoped_prefix():
         voice_media_bucket_name="voice-bucket",
         voice_job_queue_url="https://sqs.example.test/queue",
         whatsapp_voice_jobs_table_name="voice-jobs-test",
-        voice_media_allowed_hosts="media.example.test",
+        voice_media_allowed_hosts="",
         voice_transcription_language_code="en-US",
         voice_transcription_job_prefix="fyp-dev-whatsapp-voice-",
     )

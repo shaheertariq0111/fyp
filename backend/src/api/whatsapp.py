@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from src.models.whatsapp_voice_job import validate_voice_audio_id
+
 
 @dataclass(frozen=True)
 class WhatsAppInboundMessage:
@@ -19,8 +21,8 @@ class WhatsAppInboundAudioMessage:
     customer_name: str | None
     sender_id: str | None
     message_id: str | None
-    media_id: str | None
-    media_url: str
+    audio_id: str | None
+    media_url: str | None
 
 
 def extract_whatsapp_message(
@@ -99,8 +101,7 @@ def _extract_meta_audio_message(
                 if not isinstance(audio, dict):
                     continue
                 media_url = _first_string(audio, ("url", "link"))
-                if media_url is None:
-                    continue
+                audio_id = _validated_audio_id(audio.get("id"))
                 customer_number = _first_string(message, ("from", "wa_id"))
                 contact = _matching_contact(contact_items, customer_number)
                 if customer_number is None and contact is not None:
@@ -110,7 +111,7 @@ def _extract_meta_audio_message(
                     customer_name=_contact_name(contact),
                     sender_id=sender_id,
                     message_id=_first_string(message, ("id", "message_id")),
-                    media_id=_first_string(audio, ("id",)),
+                    audio_id=audio_id,
                     media_url=media_url,
                 )
     return None
@@ -244,3 +245,12 @@ def _clean_string(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     return value.strip() or None
+
+
+def _validated_audio_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return validate_voice_audio_id(value)
+    except ValueError:
+        return None

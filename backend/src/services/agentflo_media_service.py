@@ -41,6 +41,15 @@ class DownloadedVoiceMedia:
         self.file.close()
 
 
+def detect_voice_media_format(media_file: BinaryIO) -> tuple[str, str, str]:
+    media_file.seek(0)
+    header = media_file.read(4096)
+    media_file.seek(0)
+    if header.startswith(b"OggS") and b"OpusHead" in header:
+        return "ogg", ".ogg", "audio/ogg"
+    raise VoiceMediaError("VOICE_MEDIA_FORMAT_UNSUPPORTED")
+
+
 def _resolve_host(hostname: str, port: int) -> Iterable[str]:
     return {
         result[4][0]
@@ -109,7 +118,7 @@ class AgentfloMediaService:
                     deadline,
                 )
 
-            media_format, suffix, content_type = self._detect_format(
+            media_format, suffix, content_type = detect_voice_media_format(
                 temporary_file
             )
             temporary_file.seek(0)
@@ -319,9 +328,4 @@ class AgentfloMediaService:
 
     @staticmethod
     def _detect_format(media_file: BinaryIO) -> tuple[str, str, str]:
-        media_file.seek(0)
-        header = media_file.read(4096)
-        media_file.seek(0)
-        if header.startswith(b"OggS") and b"OpusHead" in header:
-            return "ogg", ".ogg", "audio/ogg"
-        raise VoiceMediaError("VOICE_MEDIA_FORMAT_UNSUPPORTED")
+        return detect_voice_media_format(media_file)

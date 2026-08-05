@@ -62,7 +62,7 @@ def test_audio_extraction_preserves_confirmed_identity_fields():
     assert inbound.customer_name == "Customer"
     assert inbound.sender_id == "sender-123"
     assert inbound.message_id == "message-123"
-    assert inbound.media_id == "media-123"
+    assert inbound.audio_id == "media-123"
     assert inbound.media_url == "https://media.example.test/file"
 
 
@@ -109,6 +109,13 @@ def test_audio_extractor_uses_contact_fallback_but_not_from_user_id():
 
 def test_audio_extractor_rejects_malformed_incomplete_and_text_messages():
     assert extract_whatsapp_audio_message(meta_payload({"audio": "invalid"})) is None
-    assert extract_whatsapp_audio_message(meta_payload({"audio": {"url": "  "}})) is None
+    missing_id = extract_whatsapp_audio_message(
+        meta_payload({"audio": {"url": "https://media.example.test/a"}})
+    )
+    oversized_id = extract_whatsapp_audio_message(
+        meta_payload({"audio": {"id": "x" * 513}})
+    )
+    assert missing_id is not None and missing_id.audio_id is None
+    assert oversized_id is not None and oversized_id.audio_id is None
     assert extract_whatsapp_audio_message(meta_payload({"text": {"body": "hello"}})) is None
     assert extract_whatsapp_audio_message({"entry": "invalid"}) is None

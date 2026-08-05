@@ -1784,7 +1784,7 @@ def agentflo_whatsapp(
 
         settings = get_settings()
         if audio is not None and settings.whatsapp_voice_enabled:
-            if not all((audio.message_id, audio.media_url, audio.customer_number, audio.sender_id)):
+            if not all((audio.message_id, audio.audio_id, audio.customer_number, audio.sender_id)):
                 logger.warning(
                     "Agentflo audio missing required metadata",
                     extra={"event": "voice_permanent_failure", "http_request_id": http_request_id, "channel": "whatsapp", "failure_stage": "webhook_validation"},

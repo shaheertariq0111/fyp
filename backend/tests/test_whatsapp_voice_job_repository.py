@@ -3,6 +3,7 @@ from copy import deepcopy
 import pytest
 from botocore.exceptions import ClientError
 
+from src.repositories.base import to_dynamodb
 from src.repositories.whatsapp_voice_job_repository import WhatsAppVoiceJobRepository, VoiceJobConditionFailed
 
 
@@ -42,14 +43,85 @@ class Dynamo:
         return self.table
 
 
+def durable_record(*, audio_id="agentflo-audio-id"):
+    job_id = "wv1_" + "a" * 64
+    record = {
+        "PK": f"JOB#{job_id}",
+        "SK": "METADATA",
+        "job_id": job_id,
+        "state": "queued",
+        "version": 1,
+        "media_url": "https://lookaside.example.test/private",
+        "customer_number": "+15550100000",
+        "sender_id": "sender-private",
+        "conversation_identity_hash": "b" * 64,
+        "attempt_count": 0,
+        "enqueue_attempt_count": 1,
+        "created_at": "2026-08-05T00:00:00+00:00",
+        "updated_at": "2026-08-05T00:00:00+00:00",
+        "expires_at": 1785974400,
+    }
+    if audio_id is not None:
+        record["audio_id"] = audio_id
+    return record
+
+
 def test_create_if_absent_is_conditional():
     table = Table()
     repository = WhatsAppVoiceJobRepository(Dynamo(table), "jobs")
+    record = durable_record()
 
-    assert repository.create_if_absent({"PK": "JOB#opaque", "SK": "METADATA"})
+    assert repository.create_if_absent(record)
     assert table.calls[0][1]["ConditionExpression"] == "attribute_not_exists(PK)"
     table.fail = True
-    assert repository.create_if_absent({"PK": "JOB#opaque", "SK": "METADATA"}) is False
+    assert repository.create_if_absent(record) is False
+
+
+def test_new_durable_job_write_requires_valid_audio_id():
+    repository = WhatsAppVoiceJobRepository(Dynamo(Table()), "jobs")
+
+    with pytest.raises(ValueError, match="VOICE_JOB_RECORD_INVALID"):
+        repository.create_if_absent(durable_record(audio_id=None))
+    with pytest.raises(ValueError, match="VOICE_AUDIO_ID_INVALID"):
+        repository.create_if_absent(durable_record(audio_id=""))
+
+
+def test_audio_id_survives_durable_job_serialization_and_deserialization():
+    class RoundTripTable(Table):
+        def put_item(self, **kwargs):
+            super().put_item(**kwargs)
+            self.item = deepcopy(kwargs["Item"])
+
+        def get_item(self, **_kwargs):
+            return {"Item": deepcopy(self.item)}
+
+    table = RoundTripTable()
+    repository = WhatsAppVoiceJobRepository(Dynamo(table), "jobs")
+    record = durable_record()
+
+    assert repository.create_if_absent(record) is True
+    restored = repository.get("wv1_" + "a" * 64)
+
+    assert restored["audio_id"] == "agentflo-audio-id"
+    assert restored["media_url"] == "https://lookaside.example.test/private"
+
+
+def test_legacy_outbox_record_without_audio_id_deserializes():
+    legacy = durable_record(audio_id=None)
+
+    class LegacyQueryTable(Table):
+        def query(self, **_kwargs):
+            return {"Items": [to_dynamodb(legacy)]}
+
+    repository = WhatsAppVoiceJobRepository(Dynamo(LegacyQueryTable()), "jobs")
+
+    records = repository.query_due(
+        due_partition="VOICE_OUTBOX",
+        now_epoch=1785974400,
+    )
+
+    assert records == [legacy]
+    assert "audio_id" not in records[0]
 
 
 def test_state_transition_requires_expected_state_and_version():
