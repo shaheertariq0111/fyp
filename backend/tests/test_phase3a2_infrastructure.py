@@ -64,6 +64,10 @@ VOICE_TRANSCRIPTION_JOB_ARN = {
         "${AWS::AccountId}:transcription-job/${ProjectName}-whatsapp-voice-*"
     )
 }
+VOICE_TRANSCRIBE_ROLE_ARN_PATTERN = (
+    "^$|^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:"
+    "role/[A-Za-z0-9+=,.@*-]+(?:/[A-Za-z0-9+=,.@*-]+)*$"
+)
 
 
 class CloudFormationLoader(yaml.SafeLoader):
@@ -125,6 +129,16 @@ def environment_map(template):
     definitions = template["Resources"]["BackendTaskDefinition"]["Properties"][
         "ContainerDefinitions"
     ]
+    return {
+        entry["Name"]: entry["Value"]
+        for entry in definitions[0]["Environment"]
+    }
+
+
+def voice_worker_environment_map(template):
+    definitions = template["Resources"]["WhatsAppVoiceWorkerTaskDefinition"][
+        "Properties"
+    ]["ContainerDefinitions"]
     return {
         entry["Name"]: entry["Value"]
         for entry in definitions[0]["Environment"]
@@ -421,17 +435,48 @@ def test_voice_media_bucket_is_temporary_private_and_encrypted():
     bucket_policy = template["Resources"]["VoiceMediaBucketPolicy"]
     assert bucket_policy["Type"] == "AWS::S3::BucketPolicy"
     assert bucket_policy["Properties"]["Bucket"] == {"Ref": "VoiceMediaBucket"}
-    assert bucket_policy["Properties"]["PolicyDocument"]["Statement"] == [{
-        "Sid": "DenyInsecureTransport",
-        "Effect": "Deny",
-        "Principal": "*",
-        "Action": "s3:*",
-        "Resource": [
-            VOICE_BUCKET_ARN,
-            {"Fn::Sub": "${VoiceMediaBucket.Arn}/*"},
-        ],
-        "Condition": {"Bool": {"aws:SecureTransport": "false"}},
-    }]
+    assert bucket_policy["Properties"]["PolicyDocument"]["Statement"] == [
+        {
+            "Sid": "DenyInsecureTransport",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:*",
+            "Resource": [
+                VOICE_BUCKET_ARN,
+                {"Fn::Sub": "${VoiceMediaBucket.Arn}/*"},
+            ],
+            "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+        },
+        {
+            "Fn::If": [
+                "HasVoiceTranscribeRoleArn",
+                {
+                    "Sid": "AllowConfiguredTranscribeRoleToListVoiceInput",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": {"Ref": "VoiceTranscribeRoleArn"}},
+                    "Action": ["s3:ListBucket"],
+                    "Resource": VOICE_BUCKET_ARN,
+                    "Condition": {
+                        "StringLike": {"s3:prefix": "voice-input/*"}
+                    },
+                },
+                {"Ref": "AWS::NoValue"},
+            ]
+        },
+        {
+            "Fn::If": [
+                "HasVoiceTranscribeRoleArn",
+                {
+                    "Sid": "AllowConfiguredTranscribeRoleToReadVoiceInput",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": {"Ref": "VoiceTranscribeRoleArn"}},
+                    "Action": ["s3:GetObject"],
+                    "Resource": VOICE_INPUT_ARN,
+                },
+                {"Ref": "AWS::NoValue"},
+            ]
+        },
+    ]
 
 
 def test_voice_queues_are_encrypted_bounded_and_have_exact_redrive_target():
@@ -619,6 +664,101 @@ def test_voice_transcribe_wildcard_is_isolated_and_job_access_is_scoped():
     serialized_template = json.dumps(template)
     assert "iam:PassRole" not in serialized_template
     assert "transcribe.amazonaws.com" not in serialized_template
+
+
+def test_optional_cross_account_transcribe_role_is_exact_and_worker_only():
+    template = load_template()
+    parameter = template["Parameters"]["VoiceTranscribeRoleArn"]
+
+    assert parameter == {
+        "Type": "String",
+        "Default": "",
+        "AllowedPattern": VOICE_TRANSCRIBE_ROLE_ARN_PATTERN,
+        "Description": (
+            "Optional cross-account IAM role assumed only by the WhatsApp "
+            "voice worker for Amazon Transcribe."
+        ),
+    }
+    assert template["Conditions"]["HasVoiceTranscribeRoleArn"] == {
+        "Fn::Not": [{"Fn::Equals": [{"Ref": "VoiceTranscribeRoleArn"}, ""]}]
+    }
+
+    conditional_assume = next(
+        statement["Fn::If"]
+        for statement in policy_statements(
+            template,
+            "WhatsAppVoiceWorkerVoicePolicy",
+        )
+        if "Fn::If" in statement
+        and statement["Fn::If"][1].get("Sid")
+        == "AssumeConfiguredVoiceTranscribeRole"
+    )
+    assert conditional_assume == [
+        "HasVoiceTranscribeRoleArn",
+        {
+            "Sid": "AssumeConfiguredVoiceTranscribeRole",
+            "Effect": "Allow",
+            "Action": ["sts:AssumeRole"],
+            "Resource": {"Ref": "VoiceTranscribeRoleArn"},
+        },
+        {"Ref": "AWS::NoValue"},
+    ]
+
+    for role_name in (
+        "EcsTaskRole",
+        "EcsTaskExecutionRole",
+        "WhatsAppVoiceWorkerExecutionRole",
+    ):
+        attached = [
+            resource
+            for resource in template["Resources"].values()
+            if resource.get("Type") == "AWS::IAM::Policy"
+            and {"Ref": role_name}
+            in resource.get("Properties", {}).get("Roles", [])
+        ]
+        assert "sts:AssumeRole" not in json.dumps(attached)
+
+    worker_environment = voice_worker_environment_map(template)
+    backend_environment = environment_map(template)
+    assert worker_environment["VOICE_TRANSCRIBE_ROLE_ARN"] == {
+        "Ref": "VoiceTranscribeRoleArn"
+    }
+    assert "VOICE_TRANSCRIBE_ROLE_ARN" not in backend_environment
+    assert template["Parameters"]["WhatsAppVoiceEnabled"]["Default"] == "false"
+    assert template["Parameters"]["WorkerDesiredCount"]["Default"] == 0
+
+
+def test_cross_account_option_preserves_persistent_resource_identities():
+    resources = load_template()["Resources"]
+    expected_types = {
+        "BackendRepository": "AWS::ECR::Repository",
+        "AgentRuntimeRepository": "AWS::ECR::Repository",
+        "VoiceMediaBucket": "AWS::S3::Bucket",
+        "VoiceProcessingQueue": "AWS::SQS::Queue",
+        "VoiceProcessingDeadLetterQueue": "AWS::SQS::Queue",
+        "WhatsAppVoiceJobsTable": "AWS::DynamoDB::Table",
+        "EcsCluster": "AWS::ECS::Cluster",
+        "BackendService": "AWS::ECS::Service",
+        "WhatsAppVoiceWorkerService": "AWS::ECS::Service",
+        "BackendHttpApi": "AWS::ApiGatewayV2::Api",
+        "BackendDiscoveryService": "AWS::ServiceDiscovery::Service",
+    }
+
+    for logical_id, resource_type in expected_types.items():
+        assert resources[logical_id]["Type"] == resource_type
+
+    assert resources["VoiceMediaBucket"]["Properties"]["BucketName"] == {
+        "Fn::Sub": "${ProjectName}-voice-${AWS::AccountId}-${AWS::Region}"
+    }
+    assert resources["VoiceProcessingQueue"]["Properties"]["QueueName"] == {
+        "Fn::Sub": "${ProjectName}-whatsapp-voice-processing"
+    }
+    assert resources["VoiceProcessingDeadLetterQueue"]["Properties"][
+        "QueueName"
+    ] == {"Fn::Sub": "${ProjectName}-whatsapp-voice-processing-dlq"}
+    assert resources["WhatsAppVoiceJobsTable"]["Properties"]["TableName"] == {
+        "Ref": "WhatsAppVoiceJobsTableName"
+    }
 
 
 def test_voice_environment_defaults_disabled_and_outputs_are_wired():
@@ -816,6 +956,7 @@ def test_tracked_parameter_example_includes_ticket_configuration_without_phone()
     assert example["AgentfloGatewayAgentId"] == "restaurant-agent"
     assert example["AgentfloGatewayActorId"] == "restaurant-agent"
     assert example["AgentfloGatewayApiKeySecretArn"] == ""
+    assert example["VoiceTranscribeRoleArn"] == ""
 
 
 def test_agentcore_example_and_deployment_wire_required_runtime_environment():

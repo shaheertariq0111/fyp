@@ -6,6 +6,7 @@ import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 
 from src.infrastructure.logging import JsonFormatter
+from src.infrastructure.transcribe import TranscribeRoleAssumptionError
 from src.services.transcription_service import (
     TranscriptionService,
     VoiceTranscriptionError,
@@ -116,6 +117,64 @@ def test_transcription_starts_with_explicit_language_and_cleans_up():
     assert client.deleted == [
         {"TranscriptionJobName": "fyp-dev-whatsapp-voice-safehash"}
     ]
+
+
+def test_transcription_provider_is_resolved_once_for_start_poll_and_cleanup():
+    client = FakeTranscribeClient([completed_job()])
+    provider_calls = []
+
+    def provider():
+        provider_calls.append(True)
+        return client
+
+    service = TranscriptionService(
+        client_provider=provider,
+        aws_region="us-east-1",
+        transcript_client=transcript_http_client(),
+        sleep=lambda _seconds: None,
+    )
+
+    assert transcribe(service) == "spoken order"
+    assert provider_calls == [True]
+    assert len(client.started) == 1
+    assert len(client.gotten) == 1
+    assert len(client.deleted) == 1
+
+
+def test_transcription_conflict_recovery_uses_one_provider_client():
+    client = FakeTranscribeClient([completed_job(), completed_job()])
+    client.start_error = conflict_error()
+    provider_calls = []
+
+    def provider():
+        provider_calls.append(True)
+        return client
+
+    service = TranscriptionService(
+        client_provider=provider,
+        aws_region="us-east-1",
+        transcript_client=transcript_http_client(),
+        sleep=lambda _seconds: None,
+    )
+
+    assert transcribe(service) == "spoken order"
+    assert provider_calls == [True]
+    assert len(client.started) == 1
+    assert len(client.gotten) == 2
+    assert len(client.deleted) == 1
+
+
+def test_transcription_requires_exactly_one_client_source():
+    client = FakeTranscribeClient([completed_job()])
+
+    with pytest.raises(ValueError, match="Exactly one Transcribe client source"):
+        TranscriptionService(client=None, aws_region="us-east-1")
+    with pytest.raises(ValueError, match="Exactly one Transcribe client source"):
+        TranscriptionService(
+            client=client,
+            client_provider=lambda: client,
+            aws_region="us-east-1",
+        )
 
 
 def test_transcription_supports_automatic_language_identification():
@@ -306,6 +365,87 @@ def test_transcription_start_unexpected_programming_error_is_terminal(caplog):
     assert error.value.error_code == "VOICE_TRANSCRIPTION_START_FAILED"
     assert error.value.retryable is False
     assert "private request payload" not in caplog.text
+
+
+@pytest.mark.parametrize("retryable", [False, True])
+def test_transcribe_role_assumption_failure_is_stable_and_sanitized(
+    retryable,
+    caplog,
+):
+    sensitive_role_arn = (
+        "arn:aws:iam::769377364291:role/fyp-cross-account-transcribe"
+    )
+    sensitive_access_key = "temporary-access-key"
+    sensitive_secret_key = "temporary-secret-key"
+    sensitive_session_token = "temporary-session-token"
+
+    def provider():
+        raise TranscribeRoleAssumptionError(
+            exception_type="ClientError",
+            retryable=retryable,
+            aws_error_code="ThrottlingException" if retryable else "AccessDenied",
+            status_code=429 if retryable else 403,
+        )
+
+    service = TranscriptionService(
+        client_provider=provider,
+        aws_region="us-east-1",
+    )
+
+    with caplog.at_level(logging.WARNING), pytest.raises(
+        VoiceTranscriptionError
+    ) as error:
+        transcribe(service)
+
+    assert error.value.error_code == "VOICE_TRANSCRIBE_ROLE_ASSUME_FAILED"
+    assert error.value.retryable is retryable
+    assert str(error.value) == (
+        "Voice transcription authorization could not be established."
+    )
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "voice_transcribe_role_assume_failed"
+    )
+    assert record.failure_stage == "assume_transcribe_role"
+    assert record.exception_type == "ClientError"
+    assert record.aws_error_code == (
+        "ThrottlingException" if retryable else "AccessDenied"
+    )
+    assert record.status_code == (429 if retryable else 403)
+    assert record.retryable is retryable
+    assert record.error_code == "VOICE_TRANSCRIBE_ROLE_ASSUME_FAILED"
+    formatted = JsonFormatter().format(record)
+    for forbidden in (
+        sensitive_role_arn,
+        sensitive_access_key,
+        sensitive_secret_key,
+        sensitive_session_token,
+        MEDIA_URI,
+        "fyp-dev-whatsapp-voice-safehash",
+    ):
+        assert forbidden not in caplog.text
+        assert forbidden not in formatted
+
+
+def test_unexpected_client_provider_failure_is_terminal_and_sanitized(caplog):
+    def provider():
+        raise RuntimeError("private role request and credential detail")
+
+    service = TranscriptionService(
+        client_provider=provider,
+        aws_region="us-east-1",
+    )
+
+    with caplog.at_level(logging.WARNING), pytest.raises(
+        VoiceTranscriptionError
+    ) as error:
+        transcribe(service)
+
+    assert error.value.error_code == "VOICE_TRANSCRIBE_ROLE_ASSUME_FAILED"
+    assert error.value.retryable is False
+    assert "private role request and credential detail" not in caplog.text
 
 
 def test_transcription_recovers_matching_deterministic_conflict():

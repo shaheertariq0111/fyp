@@ -238,6 +238,25 @@ AgentCore Runtime
 
 Do not implement WhatsApp, Lambda or SQS now unless reusable interfaces are required.
 
+### Existing durable WhatsApp voice extension
+
+The repository now includes a separately gated ECS WhatsApp voice worker. This
+extension does not change the public API Gateway architecture above. Voice
+enqueueing defaults to disabled and the worker desired count defaults to zero.
+
+Amazon Transcribe access supports an optional external IAM role configured by
+`VoiceTranscribeRoleArn` / `VOICE_TRANSCRIBE_ROLE_ARN`. Empty configuration uses
+the primary worker task role and the normal boto3 credential chain. When set,
+the worker uses its primary task-role credentials to call STS AssumeRole once
+per transcription and uses the returned temporary credentials for that job's
+Start/Get/Delete lifecycle. It does not store secondary-account access keys.
+
+The external role must already exist in the secondary account and trust only
+the primary voice-worker task role. The primary Phase 7 stack grants the role
+read-only access to `voice-input/*`; primary-account upload and deletion remain
+with the worker task role. The Phase 7 stack does not create cross-account
+resources. Activation remains a separate controlled deployment action.
+
 Keep the current web chat working during this deployment phase.
 
 ## Required work

@@ -133,6 +133,14 @@ delete temporary audio promptly after processing. The one-day S3 lifecycle rule 
 an asynchronous fallback. CloudFormation must be applied before any later backend
 or worker activation.
 
+`VoiceTranscribeRoleArn` is optional, non-secret configuration. Leave it empty
+for same-account Transcribe. Cross-account mode requires an IAM role that already
+exists in the secondary account and trusts only the primary voice-worker task
+role; this stack does not create that role. The worker uses STS temporary
+credentials, while S3 upload and deletion remain in the primary account and the
+secondary role receives read-only access to `voice-input/*`. Keep both voice
+controls disabled until a separate controlled activation.
+
 `[CREATES OR UPDATES AWS RESOURCES]`
 
 ```powershell
@@ -148,6 +156,7 @@ aws cloudformation deploy `
     BackendImageUri= `
     DesiredCount=0 `
     WhatsAppVoiceEnabled=false `
+    VoiceTranscribeRoleArn=<external-transcribe-role-arn-or-empty> `
     FrontendCorsOrigins=https://bootstrap.invalid `
     MenuSiteBaseUrl=https://bootstrap.invalid/menu `
     BedrockModelId=us.amazon.nova-pro-v1:0 `
@@ -281,6 +290,7 @@ aws cloudformation deploy `
     BackendImageUri=${BackendRepositoryUri}:phase12 `
     DesiredCount=0 `
     WhatsAppVoiceEnabled=false `
+    VoiceTranscribeRoleArn=<external-transcribe-role-arn-or-empty> `
     FrontendCorsOrigins=https://main.<app-id>.amplifyapp.com `
     MenuSiteBaseUrl=https://main.<app-id>.amplifyapp.com/menu `
     BedrockModelId=us.amazon.nova-pro-v1:0 `
@@ -483,6 +493,7 @@ aws cloudformation deploy `
     BackendImageUri=${BackendRepositoryUri}:phase12 `
     DesiredCount=1 `
     WhatsAppVoiceEnabled=false `
+    VoiceTranscribeRoleArn=<external-transcribe-role-arn-or-empty> `
     FrontendCorsOrigins=https://main.<app-id>.amplifyapp.com `
     MenuSiteBaseUrl=https://main.<app-id>.amplifyapp.com/menu `
     BedrockModelId=us.amazon.nova-pro-v1:0 `
@@ -672,6 +683,7 @@ aws cloudformation deploy `
     BackendImageUri=${BackendRepositoryUri}:<previous-good-tag> `
     DesiredCount=1 `
     WhatsAppVoiceEnabled=false `
+    VoiceTranscribeRoleArn=<external-transcribe-role-arn-or-empty> `
     FrontendCorsOrigins=https://main.<app-id>.amplifyapp.com `
     MenuSiteBaseUrl=https://main.<app-id>.amplifyapp.com/menu `
     BedrockModelId=us.amazon.nova-pro-v1:0 `

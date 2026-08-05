@@ -44,6 +44,7 @@ VOICE_SQS_HEARTBEAT_SECONDS=60
 VOICE_JOB_LEASE_SECONDS=180
 VOICE_JOB_TTL_HOURS=24
 VOICE_TRANSCRIPTION_JOB_PREFIX=<project-name>-whatsapp-voice-
+VOICE_TRANSCRIBE_ROLE_ARN=
 VOICE_MAX_MEDIA_BYTES=10485760
 VOICE_DOWNLOAD_TIMEOUT_SECONDS=10
 VOICE_TRANSCRIPTION_TIMEOUT_SECONDS=180
@@ -96,10 +97,15 @@ remain unset. Future activation must configure exactly one of an explicit
 `VOICE_TRANSCRIPTION_LANGUAGE_CODE` or
 `VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE=true`.
 
-PR 2 provides backend-only download, temporary storage, Transcribe, and cleanup
-primitives. They are intentionally not wired to the WhatsApp webhook or an SQS
-worker. `WHATSAPP_VOICE_ENABLED` must remain `false` until the later durable
-worker and activation work is complete.
+The standalone SQS voice worker supports optional cross-account Transcribe.
+When `VOICE_TRANSCRIBE_ROLE_ARN` is empty, it uses the existing same-account
+boto3 credential chain. When configured, the primary worker assumes that
+external IAM role once per transcription and uses only the returned temporary
+credentials for Start/Get/Delete. The role ARN is non-secret configuration;
+never configure permanent secondary-account access keys. S3 upload and cleanup
+remain under the primary worker role, while the external role receives
+read-only access to `voice-input/*`. Keep `WHATSAPP_VOICE_ENABLED=false` and the
+worker desired count at `0` until a separate controlled activation.
 
 ## AgentCore Runtime
 

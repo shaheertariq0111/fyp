@@ -81,6 +81,16 @@ token action, which AWS does not support as a repository-scoped permission. The
 worker task role uses `Resource: "*"` only for
 `transcribe:StartTranscriptionJob`; get/delete operations remain constrained to
 `${ProjectName}-whatsapp-voice-*` job ARNs.
+
+Cross-account Transcribe is optional. `VoiceTranscribeRoleArn` defaults to an
+empty string, preserving the existing same-account client and permissions. When
+configured, only the voice-worker application role may assume that exact ARN.
+The primary bucket policy grants that external role only `s3:ListBucket` for
+`voice-input/*` and `s3:GetObject` under `voice-input/*`. Upload and deletion
+remain with the primary worker role. The role is an external prerequisite: this
+stack does not create resources in the secondary account, and no permanent
+secondary-account credentials are stored. Voice remains disabled until a
+separate controlled activation.
 - AgentCore execution role: fixed AgentCore service trust with source-account/source-ARN conditions, AgentCore runtime image pull from the agent-runtime ECR repository, Nova Pro inference-profile invocation, optional event-only AgentCore Memory access, approved DynamoDB table access for tools, optional Knowledge Base retrieval, and AgentCore runtime log writes.
 
 The template does not attach `AdministratorAccess`, `AmazonBedrockFullAccess`, or `AmazonDynamoDBFullAccess`.
@@ -213,6 +223,7 @@ aws cloudformation deploy `
     DesiredCount=0 `
     WorkerDesiredCount=0 `
     WhatsAppVoiceEnabled=false `
+    VoiceTranscribeRoleArn= `
     FrontendCorsOrigins=https://<amplify-app>.amplifyapp.com `
     MenuSiteBaseUrl=https://<amplify-app>.amplifyapp.com/menu `
     AgentCoreRuntimeArn= `

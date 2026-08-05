@@ -138,6 +138,7 @@ VOICE_SQS_HEARTBEAT_SECONDS=60
 VOICE_JOB_LEASE_SECONDS=180
 VOICE_JOB_TTL_HOURS=24
 VOICE_TRANSCRIPTION_JOB_PREFIX=fyp-dev-whatsapp-voice-
+VOICE_TRANSCRIBE_ROLE_ARN=
 VOICE_MAX_MEDIA_BYTES=10485760
 VOICE_DOWNLOAD_TIMEOUT_SECONDS=10
 VOICE_TRANSCRIPTION_TIMEOUT_SECONDS=180
@@ -168,6 +169,16 @@ queue and S3 bucket do not activate voice handling by themselves. Keep
 worker are implemented, and deploy the Phase 7 CloudFormation changes before
 enabling any later voice code.
 
+`VOICE_TRANSCRIBE_ROLE_ARN` is optional, non-secret configuration used only by
+the standalone voice worker. Empty preserves same-account Transcribe. A
+configured ARN must identify an externally created role in the Transcribe
+account that trusts only the primary voice-worker task role. The primary stack
+does not create resources in another AWS account and stores no permanent
+secondary-account credentials. The worker assumes the role through STS once per
+transcription. S3 upload and deletion remain in the primary account; the
+external role receives only List/Get access for `voice-input/*` through its
+identity policy and the primary bucket policy.
+
 ## Disabled voice-worker task configuration
 
 Pass B1 defines a separate ECS service that uses the backend image with the
@@ -176,6 +187,8 @@ to `0`; the web feature flag and worker `WHATSAPP_VOICE_ENABLED` value remain
 `false`. The worker receives the existing application table names, the dedicated
 voice-jobs table, Standard queue URL, temporary S3 bucket, timing limits,
 AgentCore configuration, and Agentflo gateway configuration.
+Only the worker receives `VOICE_TRANSCRIBE_ROLE_ARN`; it is not passed to the
+web/API container, AgentCore runtime, or an ECS execution role.
 
 Only these secrets are eligible for injection into the worker:
 
