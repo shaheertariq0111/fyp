@@ -52,7 +52,16 @@ class WhatsAppVoiceService:
         primary_error: Exception | None = None
         transcript: str | None = None
         try:
-            downloaded_media = self.media_service.download(inbound.media_url)
+            audio_id = (inbound.audio_id or "").strip()
+            if not audio_id:
+                raise WhatsAppVoiceProcessingError(
+                    error_code="AGENTFLO_MEDIA_AUDIO_ID_REQUIRED",
+                    retryable=False,
+                )
+            downloaded_media = self.media_service.download_media(
+                audio_id,
+                request_id=message_id,
+            )
             stored_media = self.storage_service.upload(
                 downloaded_media,
                 message_id=message_id,

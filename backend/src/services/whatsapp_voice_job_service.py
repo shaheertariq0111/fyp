@@ -53,14 +53,15 @@ class WhatsAppVoiceJobService:
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     def submit_audio(self, message: WhatsAppInboundAudioMessage) -> VoiceJobSubmission:
-        if not message.message_id or not message.media_url or not message.customer_number or not message.sender_id:
+        if not message.message_id or not message.audio_id or not message.customer_number or not message.sender_id:
             raise ValueError("VOICE_AUDIO_FIELDS_REQUIRED")
         job_id = voice_job_id(message.message_id)
         now = self._now()
         record = {
             "PK": f"JOB#{job_id}", "SK": "METADATA", "job_id": job_id,
             "state": VoiceJobState.PENDING_ENQUEUE.value, "version": 1,
-            "media_url": message.media_url, "customer_number": message.customer_number,
+            "audio_id": message.audio_id, "media_url": message.media_url or "",
+            "customer_number": message.customer_number,
             "sender_id": message.sender_id,
             "conversation_identity_hash": self._identity_hash(message.customer_number, message.sender_id),
             "attempt_count": 0, "enqueue_attempt_count": 0,

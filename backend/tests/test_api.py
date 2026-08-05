@@ -1663,6 +1663,45 @@ def test_agentflo_whatsapp_enabled_audio_acknowledges_durable_submission(monkeyp
         "success": True, "accepted": True, "queued": False, "message_type": "audio",
     }
     assert captured["audio"].message_id == "provider-private"
+    assert captured["audio"].audio_id == "media-private"
+    assert captured["audio"].media_url == "https://media.example.test/private"
+
+
+@pytest.mark.parametrize("audio_id", [None, "   ", "x" * 513])
+def test_agentflo_whatsapp_enabled_audio_rejects_invalid_audio_id(
+    monkeypatch,
+    audio_id,
+):
+    configured = make_test_settings(
+        whatsapp_voice_enabled=True,
+        voice_media_bucket_name="voice-bucket",
+        voice_job_queue_url="queue-url",
+        whatsapp_voice_jobs_table_name="voice-jobs-test",
+        voice_transcription_language_code="en-US",
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: configured)
+    audio = {"url": "https://media.example.test/private"}
+    if audio_id is not None:
+        audio["id"] = audio_id
+
+    response = client().post("/api/channels/agentflo/whatsapp", json={
+        "entry": [{"changes": [{"value": {
+            "metadata": {"phone_number_id": "sender-private"},
+            "messages": [{
+                "from": "+15550100000",
+                "id": "provider-private",
+                "type": "audio",
+                "audio": audio,
+            }],
+        }}]}],
+    })
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "ignored": True,
+        "reason": "incomplete_audio_message",
+    }
 
 
 @pytest.mark.parametrize(

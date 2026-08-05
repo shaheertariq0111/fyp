@@ -181,7 +181,6 @@ class Settings(BaseSettings):
             raise ValueError("VOICE_SQS_HEARTBEAT_SECONDS must be shorter than lease and visibility")
         if not 0 < self.voice_job_ttl_hours <= 168:
             raise ValueError("VOICE_JOB_TTL_HOURS must be between 1 and 168")
-        allowed_hosts = self.parsed_voice_media_allowed_hosts()
         language_code_configured = bool(
             self.voice_transcription_language_code.strip()
         )
@@ -192,8 +191,6 @@ class Settings(BaseSettings):
                 raise ValueError("VOICE_JOB_QUEUE_URL is required when voice is enabled")
             if not self.whatsapp_voice_jobs_table_name.strip():
                 raise ValueError("WHATSAPP_VOICE_JOBS_TABLE_NAME is required when voice is enabled")
-            if not allowed_hosts:
-                raise ValueError("VOICE_MEDIA_ALLOWED_HOSTS is required when voice is enabled")
             if language_code_configured == self.voice_transcription_identify_language:
                 raise ValueError(
                     "Exactly one voice transcription language mode is required"
@@ -214,8 +211,6 @@ class Settings(BaseSettings):
         missing = [name for name, value in required.items() if not value.strip()]
         if missing:
             raise ValueError("VOICE_WORKER_CONFIGURATION_INCOMPLETE")
-        if not self.parsed_voice_media_allowed_hosts():
-            raise ValueError("VOICE_MEDIA_ALLOWED_HOSTS is required for the worker")
         language_code = bool(self.voice_transcription_language_code.strip())
         if language_code == self.voice_transcription_identify_language:
             raise ValueError("Exactly one voice transcription language mode is required")

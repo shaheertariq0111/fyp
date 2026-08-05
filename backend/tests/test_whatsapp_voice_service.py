@@ -14,10 +14,10 @@ from src.services.whatsapp_voice_service import (
 class FakeMediaService:
     def __init__(self, media):
         self.media = media
-        self.urls = []
+        self.audio_ids = []
 
-    def download(self, url):
-        self.urls.append(url)
+    def download_media(self, audio_id, *, request_id):
+        self.audio_ids.append((audio_id, request_id))
         return self.media
 
 
@@ -64,7 +64,7 @@ def make_inbound():
         customer_name="Private Name",
         sender_id="private-sender",
         message_id="message-123",
-        media_id="private-media-id",
+        audio_id="private-media-id",
         media_url="https://media.example.test/private",
     )
 
@@ -96,7 +96,7 @@ def test_voice_orchestration_downloads_uploads_transcribes_and_cleans_up():
     service, media, media_service, storage, transcription = make_service()
 
     assert service.transcribe(make_inbound()) == "one pizza please"
-    assert media_service.urls == ["https://media.example.test/private"]
+    assert media_service.audio_ids == [("private-media-id", "message-123")]
     assert storage.uploads == [(media, "message-123")]
     assert transcription.calls == [
         {
@@ -152,3 +152,24 @@ def test_voice_orchestration_reports_cleanup_failure_after_success():
 
     assert service.transcribe(make_inbound()) == "one pizza please"
     assert media.file.closed
+
+
+def test_voice_orchestration_requires_audio_id_without_using_media_url():
+    service, _, media_service, storage, transcription = make_service()
+    legacy = WhatsAppInboundAudioMessage(
+        customer_number="private-customer",
+        customer_name=None,
+        sender_id="private-sender",
+        message_id="message-123",
+        audio_id=None,
+        media_url="https://lookaside.example.test/private?mid=forbidden-fallback",
+    )
+
+    with pytest.raises(WhatsAppVoiceProcessingError) as error:
+        service.transcribe(legacy)
+
+    assert error.value.error_code == "AGENTFLO_MEDIA_AUDIO_ID_REQUIRED"
+    assert error.value.retryable is False
+    assert media_service.audio_ids == []
+    assert storage.uploads == []
+    assert transcription.calls == []

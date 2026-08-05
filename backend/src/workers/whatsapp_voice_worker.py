@@ -19,7 +19,6 @@ from src.models.whatsapp_voice_job import VoiceJobState
 from src.repositories.whatsapp_voice_job_repository import WhatsAppVoiceJobRepository, VoiceJobConditionFailed
 from src.services.agent_request_processor import AgentRequestProcessor, build_identity_resolver, build_response_builder
 from src.services.agentflo_gateway_service import AgentfloGatewayService
-from src.services.agentflo_media_service import AgentfloMediaService
 from src.services.transcription_service import TranscriptionService
 from src.services.voice_media_storage_service import VoiceMediaStorageService
 from src.services.voice_queue_service import VoiceQueueError, VoiceQueueService
@@ -162,7 +161,7 @@ class WhatsAppVoiceWorker:
         audio = WhatsAppInboundAudioMessage(
             customer_number=record["customer_number"], customer_name=None,
             sender_id=record["sender_id"], message_id=record["job_id"],
-            media_id=None, media_url=record["media_url"],
+            audio_id=record.get("audio_id"), media_url=record.get("media_url"),
         )
         if transcript is None:
             transcript = self.voice.transcribe(audio)
@@ -268,10 +267,14 @@ def build_worker(settings=None) -> WhatsAppVoiceWorker:
         WhatsAppVoiceJobRepository(dynamodb, settings.whatsapp_voice_jobs_table_name), queue, settings,
     )
     voice = WhatsAppVoiceService(
-        media_service=AgentfloMediaService(
-            allowed_hosts=settings.parsed_voice_media_allowed_hosts(),
-            max_media_bytes=settings.voice_max_media_bytes,
+        media_service=AgentfloGatewayService(
+            base_url=settings.agentflo_gateway_base_url,
+            api_key=settings.agentflo_gateway_api_key,
+            tenant_id=settings.agentflo_gateway_tenant_id,
+            agent_id=settings.agentflo_gateway_agent_id,
+            actor_id=settings.agentflo_gateway_actor_id,
             timeout_seconds=settings.voice_download_timeout_seconds,
+            max_media_bytes=settings.voice_max_media_bytes,
         ),
         storage_service=VoiceMediaStorageService(
             client=get_s3_client(settings), bucket_name=settings.voice_media_bucket_name,

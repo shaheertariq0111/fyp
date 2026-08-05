@@ -3,7 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from src.models.whatsapp_voice_job import VoiceQueueMessage, voice_job_id
-from src.workers.whatsapp_voice_worker import VoiceWorkerHeartbeat
+from src.repositories.base import to_dynamodb
+from src.repositories.whatsapp_voice_job_repository import WhatsAppVoiceJobRepository
+from src.services.whatsapp_voice_service import WhatsAppVoiceProcessingError
+from src.services.whatsapp_voice_service import WhatsAppVoiceService
+from src.workers.whatsapp_voice_worker import VoiceWorkerHeartbeat, WhatsAppVoiceWorker
 
 
 class LeaseJobs:
@@ -50,3 +54,123 @@ def test_worker_module_queue_schema_has_no_sensitive_fields():
     body = VoiceQueueMessage(job_id).serialize()
     assert set(__import__("json").loads(body)) == {"v", "kind", "job_id"}
     assert "raw-provider-id" not in body
+
+
+class ProcessingJobs:
+    def transition(self, record, next_state, **_kwargs):
+        return {**record, "state": next_state, "version": record["version"] + 1}
+
+
+class OwnedHeartbeat:
+    def assert_owned(self):
+        return None
+
+
+class CapturingVoice:
+    def __init__(self):
+        self.messages = []
+
+    def transcribe(self, message):
+        self.messages.append(message)
+        if not message.audio_id:
+            raise WhatsAppVoiceProcessingError(
+                error_code="AGENTFLO_MEDIA_AUDIO_ID_REQUIRED",
+                retryable=False,
+            )
+        raise WhatsAppVoiceProcessingError(
+            error_code="AGENTFLO_MEDIA_NOT_FOUND",
+            retryable=False,
+        )
+
+
+def make_processing_worker(voice):
+    agent_requests = SimpleNamespace(get=lambda _request_id: None)
+    conversations = SimpleNamespace(
+        services_provider=lambda: SimpleNamespace(agent_requests=agent_requests)
+    )
+    return WhatsAppVoiceWorker(
+        settings=SimpleNamespace(),
+        jobs=ProcessingJobs(),
+        queue=SimpleNamespace(),
+        voice=voice,
+        conversations=conversations,
+    )
+
+
+def test_worker_passes_audio_id_and_does_not_use_lookaside_url_as_identifier():
+    voice = CapturingVoice()
+    worker = make_processing_worker(voice)
+    record = {
+        "job_id": voice_job_id("provider-id"),
+        "state": "queued",
+        "version": 1,
+        "customer_number": "private-customer",
+        "sender_id": "private-sender",
+        "audio_id": "agentflo-audio-id",
+        "media_url": "https://lookaside.example.test/private?mid=forbidden",
+    }
+
+    with pytest.raises(WhatsAppVoiceProcessingError) as error:
+        worker._process(record, OwnedHeartbeat())
+
+    assert error.value.error_code == "AGENTFLO_MEDIA_NOT_FOUND"
+    assert voice.messages[0].audio_id == "agentflo-audio-id"
+
+
+def test_worker_legacy_job_without_audio_id_fails_terminally():
+    job_id = voice_job_id("legacy-provider-id")
+    legacy_dynamo_record = {
+        "PK": f"JOB#{job_id}",
+        "SK": "METADATA",
+        "job_id": job_id,
+        "state": "queued",
+        "version": 1,
+        "media_url": "https://lookaside.example.test/private?mid=forbidden",
+        "customer_number": "+15550100000",
+        "sender_id": "sender-private",
+        "conversation_identity_hash": "c" * 64,
+        "attempt_count": 0,
+        "enqueue_attempt_count": 1,
+        "created_at": "2026-08-05T00:00:00+00:00",
+        "updated_at": "2026-08-05T00:00:00+00:00",
+        "expires_at": 1785974400,
+    }
+
+    class LegacyTable:
+        def get_item(self, **kwargs):
+            assert kwargs == {
+                "Key": {"PK": f"JOB#{job_id}", "SK": "METADATA"},
+                "ConsistentRead": True,
+            }
+            return {"Item": to_dynamodb(legacy_dynamo_record)}
+
+    class LegacyDynamo:
+        def Table(self, table_name):
+            assert table_name == "voice-jobs"
+            return LegacyTable()
+
+    repository = WhatsAppVoiceJobRepository(LegacyDynamo(), "voice-jobs")
+    record = repository.get(job_id)
+    assert record is not None
+    assert "audio_id" not in record
+
+    class MustNotDownload:
+        def download_media(self, *_args, **_kwargs):
+            raise AssertionError("legacy media_url must not be used as a fallback")
+
+    voice = WhatsAppVoiceService(
+        media_service=MustNotDownload(),
+        storage_service=SimpleNamespace(),
+        transcription_service=SimpleNamespace(),
+        transcription_job_prefix="fyp-dev-whatsapp-voice-",
+        language_code="en-US",
+        identify_language=False,
+        transcription_timeout_seconds=180,
+    )
+    worker = make_processing_worker(voice)
+
+    with pytest.raises(WhatsAppVoiceProcessingError) as error:
+        worker._process(record, OwnedHeartbeat())
+
+    assert error.value.error_code == "AGENTFLO_MEDIA_AUDIO_ID_REQUIRED"
+    assert error.value.retryable is False

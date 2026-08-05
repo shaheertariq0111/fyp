@@ -1,5 +1,7 @@
 from copy import deepcopy
 
+import pytest
+
 from src.api.whatsapp import WhatsAppInboundAudioMessage
 from src.models.whatsapp_voice_job import VoiceJobState, voice_job_id
 from src.services.whatsapp_voice_job_service import WhatsAppVoiceJobService
@@ -49,7 +51,7 @@ def inbound():
     return WhatsAppInboundAudioMessage(
         customer_number="+15550100000", customer_name="Private Name",
         sender_id="sender-private", message_id="provider-private-message-id",
-        media_id="media-private-id", media_url="https://media.example.test/private",
+        audio_id="media-private-id", media_url="https://media.example.test/private",
     )
 
 
@@ -70,8 +72,28 @@ def test_create_is_deterministic_deduplicated_and_excludes_forbidden_fields():
     assert queue.sent == [first.job_id]
     record = repository.records[first.job_id]
     assert record["state"] == VoiceJobState.QUEUED.value
-    forbidden = {"customer_name", "media_id", "webhook_payload", "provider_message_id", "transcript"}
+    assert record["audio_id"] == "media-private-id"
+    forbidden = {"customer_name", "webhook_payload", "provider_message_id", "transcript"}
     assert forbidden.isdisjoint(record)
+
+
+def test_missing_audio_id_is_rejected_before_persistence():
+    repository, queue = MemoryJobs(), FakeQueue()
+    service = WhatsAppVoiceJobService(repository, queue, settings())
+    message = WhatsAppInboundAudioMessage(
+        customer_number="private-customer",
+        customer_name=None,
+        sender_id="private-sender",
+        message_id="private-message",
+        audio_id=None,
+        media_url="https://media.example.test/private",
+    )
+
+    with pytest.raises(ValueError, match="VOICE_AUDIO_FIELDS_REQUIRED"):
+        service.submit_audio(message)
+
+    assert repository.records == {}
+    assert queue.sent == []
 
 
 def test_enqueue_failure_keeps_durable_retryable_job_and_outbox_recovers():

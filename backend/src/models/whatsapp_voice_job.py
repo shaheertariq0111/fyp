@@ -12,6 +12,7 @@ VOICE_QUEUE_KIND = "agentflo_whatsapp_voice"
 VOICE_QUEUE_VERSION = 1
 VOICE_QUEUE_MAX_BYTES = 512
 VOICE_JOB_ID_PATTERN = re.compile(r"^wv1_[0-9a-f]{64}$")
+VOICE_AUDIO_ID_MAX_LENGTH = 512
 
 
 class VoiceJobState(str, Enum):
@@ -45,6 +46,15 @@ def validate_voice_job_id(value: str) -> str:
     if not VOICE_JOB_ID_PATTERN.fullmatch(value):
         raise ValueError("VOICE_JOB_ID_INVALID")
     return value
+
+
+def validate_voice_audio_id(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("VOICE_AUDIO_ID_INVALID")
+    normalized = value.strip()
+    if not normalized or len(normalized) > VOICE_AUDIO_ID_MAX_LENGTH:
+        raise ValueError("VOICE_AUDIO_ID_INVALID")
+    return normalized
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -93,13 +103,19 @@ class VoiceQueueMessage:
         return cls(v=decoded["v"], kind=decoded["kind"], job_id=decoded["job_id"])
 
 
-def validate_voice_job_record(record: dict[str, Any]) -> None:
+def validate_voice_job_record(
+    record: dict[str, Any],
+    *,
+    require_audio_id: bool = True,
+) -> None:
     required = {
         "PK", "SK", "job_id", "state", "version", "media_url",
         "customer_number", "sender_id", "conversation_identity_hash",
         "attempt_count", "enqueue_attempt_count", "created_at", "updated_at",
         "expires_at",
     }
+    if require_audio_id:
+        required.add("audio_id")
     if not required.issubset(record):
         raise ValueError("VOICE_JOB_RECORD_INVALID")
     job_id = validate_voice_job_id(str(record["job_id"]))
@@ -109,3 +125,7 @@ def validate_voice_job_record(record: dict[str, Any]) -> None:
         raise ValueError("VOICE_JOB_STATE_INVALID")
     if type(record["version"]) is not int or record["version"] < 1:
         raise ValueError("VOICE_JOB_VERSION_INVALID")
+    if require_audio_id:
+        validate_voice_audio_id(record["audio_id"])
+    if not isinstance(record["media_url"], str):
+        raise ValueError("VOICE_MEDIA_URL_INVALID")
