@@ -9,7 +9,16 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 import httpx
-from botocore.exceptions import ClientError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    HTTPClientError,
+    ProxyConnectionError,
+    ReadTimeoutError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -29,17 +38,46 @@ TRANSCRIPTION_ERROR_MESSAGES = {
     "VOICE_TRANSCRIPT_INVALID": "The voice transcript is invalid.",
     "VOICE_TRANSCRIPTION_CLEANUP_FAILED": "Voice transcription cleanup failed.",
 }
+RETRYABLE_TRANSCRIBE_ERROR_CODES = frozenset({
+    "InternalFailure",
+    "InternalFailureException",
+    "LimitExceededException",
+    "RequestTimeout",
+    "RequestTimeoutException",
+    "ServiceUnavailable",
+    "ServiceUnavailableException",
+    "Throttling",
+    "ThrottlingException",
+    "TooManyRequestsException",
+})
+RETRYABLE_BOTOCORE_EXCEPTIONS = (
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    HTTPClientError,
+    ProxyConnectionError,
+    ReadTimeoutError,
+)
 
 
 class VoiceTranscriptionError(Exception):
-    def __init__(self, error_code: str):
+    def __init__(
+        self,
+        error_code: str,
+        *,
+        retryable: bool | None = None,
+    ):
         self.error_code = error_code
-        self.retryable = error_code in {
-            "VOICE_TRANSCRIPTION_START_FAILED",
-            "VOICE_TRANSCRIPTION_TIMEOUT",
-            "VOICE_TRANSCRIPT_DOWNLOAD_FAILED",
-            "VOICE_TRANSCRIPTION_CLEANUP_FAILED",
-        }
+        self.retryable = (
+            retryable
+            if retryable is not None
+            else error_code in {
+                "VOICE_TRANSCRIPTION_START_FAILED",
+                "VOICE_TRANSCRIPTION_TIMEOUT",
+                "VOICE_TRANSCRIPT_DOWNLOAD_FAILED",
+                "VOICE_TRANSCRIPTION_CLEANUP_FAILED",
+            }
+        )
         super().__init__(TRANSCRIPTION_ERROR_MESSAGES[error_code])
 
 
@@ -187,10 +225,25 @@ class TranscriptionService:
         try:
             self.client.start_transcription_job(**parameters)
         except ClientError as exc:
-            error_code = exc.response.get("Error", {}).get("Code")
-            if error_code != "ConflictException":
+            aws_error_code = exc.response.get("Error", {}).get("Code")
+            if aws_error_code != "ConflictException":
+                status_code = exc.response.get("ResponseMetadata", {}).get(
+                    "HTTPStatusCode"
+                )
+                status_code = status_code if isinstance(status_code, int) else None
+                retryable = self._retryable_start_client_error(
+                    aws_error_code,
+                    status_code,
+                )
+                self._log_start_failure(
+                    exc,
+                    aws_error_code=aws_error_code,
+                    status_code=status_code,
+                    retryable=retryable,
+                )
                 raise VoiceTranscriptionError(
-                    "VOICE_TRANSCRIPTION_START_FAILED"
+                    "VOICE_TRANSCRIPTION_START_FAILED",
+                    retryable=retryable,
                 ) from None
             existing_job = self._get_job(job_name, conflict=True)
             existing_media = existing_job.get("Media")
@@ -201,8 +254,58 @@ class TranscriptionService:
             )
             if existing_uri != media_s3_uri:
                 raise VoiceTranscriptionError("VOICE_TRANSCRIPTION_CONFLICT")
-        except Exception:
-            raise VoiceTranscriptionError("VOICE_TRANSCRIPTION_START_FAILED") from None
+        except BotoCoreError as exc:
+            retryable = isinstance(exc, RETRYABLE_BOTOCORE_EXCEPTIONS)
+            self._log_start_failure(exc, retryable=retryable)
+            raise VoiceTranscriptionError(
+                "VOICE_TRANSCRIPTION_START_FAILED",
+                retryable=retryable,
+            ) from None
+        except Exception as exc:
+            self._log_start_failure(exc, retryable=False)
+            raise VoiceTranscriptionError(
+                "VOICE_TRANSCRIPTION_START_FAILED",
+                retryable=False,
+            ) from None
+
+    @staticmethod
+    def _retryable_start_client_error(
+        aws_error_code: object,
+        status_code: int | None,
+    ) -> bool:
+        return bool(
+            status_code == 429
+            or (status_code is not None and status_code >= 500)
+            or (
+                isinstance(aws_error_code, str)
+                and aws_error_code in RETRYABLE_TRANSCRIBE_ERROR_CODES
+            )
+        )
+
+    @staticmethod
+    def _log_start_failure(
+        exc: Exception,
+        *,
+        retryable: bool,
+        aws_error_code: object = None,
+        status_code: int | None = None,
+    ) -> None:
+        logger.warning(
+            "Voice transcription start failed",
+            extra={
+                "event": "voice_transcription_start_failed",
+                "failure_stage": "start_transcription_job",
+                "exception_type": type(exc).__name__,
+                "aws_error_code": (
+                    aws_error_code
+                    if isinstance(aws_error_code, str)
+                    else None
+                ),
+                "status_code": status_code,
+                "retryable": retryable,
+                "error_code": "VOICE_TRANSCRIPTION_START_FAILED",
+            },
+        )
 
     def _wait_for_terminal_job(
         self,

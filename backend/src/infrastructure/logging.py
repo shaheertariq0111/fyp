@@ -26,6 +26,7 @@ SAFE_LOG_FIELDS = (
     "tool_success",
     "is_write",
     "error_code",
+    "aws_error_code",
     "channel",
     "bedrock_response_time_ms",
     "dynamodb_operation",

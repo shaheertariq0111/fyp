@@ -1,9 +1,11 @@
 import json
+import logging
 
 import httpx
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 
+from src.infrastructure.logging import JsonFormatter
 from src.services.transcription_service import (
     TranscriptionService,
     VoiceTranscriptionError,
@@ -146,6 +148,7 @@ def test_transcription_rejects_invalid_configuration(overrides):
         transcribe(make_service(client), **overrides)
 
     assert error.value.error_code == "VOICE_TRANSCRIPTION_CONFIGURATION_INVALID"
+    assert error.value.retryable is False
     assert client.started == []
 
 
@@ -167,6 +170,142 @@ def conflict_error():
         {"Error": {"Code": "ConflictException", "Message": "exists"}},
         "StartTranscriptionJob",
     )
+
+
+def start_client_error(code, status_code, message="private failure detail"):
+    return ClientError(
+        {
+            "Error": {"Code": code, "Message": message},
+            "ResponseMetadata": {"HTTPStatusCode": status_code},
+        },
+        "StartTranscriptionJob",
+    )
+
+
+@pytest.mark.parametrize(
+    ("aws_error_code", "status_code", "retryable"),
+    [
+        ("AccessDeniedException", 403, False),
+        ("BadRequestException", 400, False),
+        ("ValidationException", 400, False),
+        ("ThrottlingException", 400, True),
+        ("LimitExceededException", 400, True),
+        ("InternalFailureException", 500, True),
+        ("UnexpectedServiceFailure", 503, True),
+    ],
+)
+def test_transcription_start_client_error_retry_classification(
+    aws_error_code,
+    status_code,
+    retryable,
+):
+    client = FakeTranscribeClient([completed_job()])
+    client.start_error = start_client_error(
+        aws_error_code,
+        status_code,
+    )
+
+    with pytest.raises(VoiceTranscriptionError) as error:
+        transcribe(make_service(client))
+
+    assert error.value.error_code == "VOICE_TRANSCRIPTION_START_FAILED"
+    assert error.value.retryable is retryable
+    assert str(error.value) == "Voice transcription could not be started."
+
+
+def test_transcription_start_client_error_log_is_sanitized(caplog):
+    sensitive_job_name = "fyp-dev-whatsapp-voice-sensitive-job-name"
+    sensitive_audio_id = "private-audio-id"
+    sensitive_credential = "private-credential"
+    sensitive_message = (
+        f"{MEDIA_URI} {sensitive_job_name} {sensitive_audio_id} "
+        f"{sensitive_credential}"
+    )
+    client = FakeTranscribeClient([completed_job()])
+    client.start_error = start_client_error(
+        "AccessDeniedException",
+        403,
+        sensitive_message,
+    )
+
+    with caplog.at_level(logging.WARNING), pytest.raises(VoiceTranscriptionError):
+        transcribe(make_service(client), job_name=sensitive_job_name)
+
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "voice_transcription_start_failed"
+    )
+    assert record.failure_stage == "start_transcription_job"
+    assert record.exception_type == "ClientError"
+    assert record.aws_error_code == "AccessDeniedException"
+    assert record.status_code == 403
+    assert record.retryable is False
+    assert record.error_code == "VOICE_TRANSCRIPTION_START_FAILED"
+    formatted = JsonFormatter().format(record)
+    for forbidden in (
+        MEDIA_URI,
+        sensitive_job_name,
+        sensitive_audio_id,
+        sensitive_credential,
+        sensitive_message,
+    ):
+        assert forbidden not in caplog.text
+        assert forbidden not in formatted
+
+
+@pytest.mark.parametrize(
+    ("transport_error", "retryable"),
+    [
+        (
+            EndpointConnectionError(
+                endpoint_url="https://private-audio-id.example.test"
+            ),
+            True,
+        ),
+        (NoCredentialsError(), False),
+    ],
+)
+def test_transcription_start_botocore_error_is_sanitized(
+    transport_error,
+    retryable,
+    caplog,
+):
+    client = FakeTranscribeClient([completed_job()])
+    client.start_error = transport_error
+
+    with caplog.at_level(logging.WARNING), pytest.raises(
+        VoiceTranscriptionError
+    ) as error:
+        transcribe(make_service(client))
+
+    assert error.value.error_code == "VOICE_TRANSCRIPTION_START_FAILED"
+    assert error.value.retryable is retryable
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None)
+        == "voice_transcription_start_failed"
+    )
+    assert record.exception_type == type(transport_error).__name__
+    assert record.retryable is retryable
+    assert not hasattr(record, "aws_error_code") or record.aws_error_code is None
+    assert "private-audio-id" not in caplog.text
+
+
+def test_transcription_start_unexpected_programming_error_is_terminal(caplog):
+    client = FakeTranscribeClient([completed_job()])
+    client.start_error = RuntimeError("private request payload")
+
+    with caplog.at_level(logging.WARNING), pytest.raises(
+        VoiceTranscriptionError
+    ) as error:
+        transcribe(make_service(client))
+
+    assert error.value.error_code == "VOICE_TRANSCRIPTION_START_FAILED"
+    assert error.value.retryable is False
+    assert "private request payload" not in caplog.text
 
 
 def test_transcription_recovers_matching_deterministic_conflict():
