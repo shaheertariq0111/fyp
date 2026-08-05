@@ -766,38 +766,56 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: UseVoiceJobsTable
+          - Sid: ReadAndUpdateVoiceJobs
             Effect: Allow
             Action:
-              - dynamodb:DescribeTable
               - dynamodb:GetItem
-              - dynamodb:PutItem
-              - dynamodb:Query
               - dynamodb:UpdateItem
-            Resource:
-              - !GetAtt WhatsAppVoiceJobsTable.Arn
-              - !Sub ${WhatsAppVoiceJobsTable.Arn}/index/*
-          - Sid: UseSharedConversationTables
+            Resource: !GetAtt WhatsAppVoiceJobsTable.Arn
+          - Sid: RecoverVoiceOutbox
             Effect: Allow
             Action:
-              - dynamodb:DescribeTable
+              - dynamodb:Query
+            Resource: !Sub ${WhatsAppVoiceJobsTable.Arn}/index/DueJobsIndex
+          - Sid: PersistAgentRequests
+            Effect: Allow
+            Action:
               - dynamodb:GetItem
               - dynamodb:PutItem
-              - dynamodb:Query
               - dynamodb:UpdateItem
-            Resource:
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentRequestsTableName}
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentRequestsTableName}/index/*
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConversationMessagesTableName}
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConversationMessagesTableName}/index/*
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}/index/*
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}/index/*
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CartsTableName}
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CartsTableName}/index/*
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}
-              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}/index/*
+            Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentRequestsTableName}
+          - Sid: PersistConversationHistory
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+            Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConversationMessagesTableName}
+          - Sid: ResolveAndPersistCustomers
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+            Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}
+          - Sid: ResolveCustomersByPhone
+            Effect: Allow
+            Action:
+              - dynamodb:Query
+            Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomersTableName}/index/GSI1
+          - Sid: ResolveAndPersistAgentSessions
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:Scan
+            Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}
+          - Sid: RefreshCartResponseState
+            Effect: Allow
+            Action:
+              - dynamodb:Query
+            Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CartsTableName}
+          - Sid: RefreshOrderResponseState
+            Effect: Allow
+            Action:
+              - dynamodb:Query
+            Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}
 
   WhatsAppVoiceWorkerAgentCorePolicy:
     Type: AWS::IAM::Policy

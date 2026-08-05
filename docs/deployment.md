@@ -257,6 +257,18 @@ read-only access to `voice-input/*`; primary-account upload and deletion remain
 with the worker task role. The Phase 7 stack does not create cross-account
 resources. Activation remains a separate controlled deployment action.
 
+The standalone worker has a dedicated application-data IAM policy rather than
+sharing the broader backend role. After transcription it may read/update its
+voice-job record, persist and transition the agent request, resolve or create the
+WhatsApp customer and agent session, write inbound/outbound conversation history,
+and query cart/order state when rebuilding the response after a successful tool
+write. Customer phone lookup is limited to `GSI1`, voice outbox recovery is
+limited to `DueJobsIndex`, and session resolution explicitly requires
+`dynamodb:Scan` on the configured `AgentSessionsTableName` table because the
+current repository lookup scans by `agent_session_id`. Restaurant tools run in
+AgentCore under the separate AgentCore execution role, so the ECS worker does not
+receive direct menu, menu-session, audit, or ticket-table permissions.
+
 Keep the current web chat working during this deployment phase.
 
 ## Required work

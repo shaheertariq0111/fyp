@@ -55,6 +55,44 @@ CONVERSATION_INDEX_ARN = {
         "${AWS::AccountId}:table/${ConversationMessagesTableName}/index/*"
     )
 }
+VOICE_WORKER_TABLE_ARNS = {
+    "agent_requests": {
+        "Fn::Sub": (
+            "arn:${AWS::Partition}:dynamodb:${AWS::Region}:"
+            "${AWS::AccountId}:table/${AgentRequestsTableName}"
+        )
+    },
+    "conversation_messages": {
+        "Fn::Sub": (
+            "arn:${AWS::Partition}:dynamodb:${AWS::Region}:"
+            "${AWS::AccountId}:table/${ConversationMessagesTableName}"
+        )
+    },
+    "customers": {
+        "Fn::Sub": (
+            "arn:${AWS::Partition}:dynamodb:${AWS::Region}:"
+            "${AWS::AccountId}:table/${CustomersTableName}"
+        )
+    },
+    "agent_sessions": {
+        "Fn::Sub": (
+            "arn:${AWS::Partition}:dynamodb:${AWS::Region}:"
+            "${AWS::AccountId}:table/${AgentSessionsTableName}"
+        )
+    },
+    "carts": {
+        "Fn::Sub": (
+            "arn:${AWS::Partition}:dynamodb:${AWS::Region}:"
+            "${AWS::AccountId}:table/${CartsTableName}"
+        )
+    },
+    "orders": {
+        "Fn::Sub": (
+            "arn:${AWS::Partition}:dynamodb:${AWS::Region}:"
+            "${AWS::AccountId}:table/${OrdersTableName}"
+        )
+    },
+}
 VOICE_BUCKET_ARN = {"Fn::GetAtt": "VoiceMediaBucket.Arn"}
 VOICE_INPUT_ARN = {"Fn::Sub": "${VoiceMediaBucket.Arn}/voice-input/*"}
 VOICE_QUEUE_ARN = {"Fn::GetAtt": "VoiceProcessingQueue.Arn"}
@@ -618,6 +656,130 @@ def test_voice_iam_is_split_between_web_and_worker_roles():
     serialized_execution_policies = json.dumps(execution_policies)
     for service_prefix in ("s3:", "sqs:", "transcribe:"):
         assert service_prefix not in serialized_execution_policies
+
+
+def test_voice_worker_application_data_iam_is_complete_and_exactly_scoped():
+    template = load_template()
+    policy = template["Resources"]["WhatsAppVoiceWorkerDynamoDbPolicy"]
+
+    assert policy["Properties"]["Roles"] == [
+        {"Ref": "WhatsAppVoiceWorkerTaskRole"}
+    ]
+    assert statement_by_sid(
+        template,
+        "WhatsAppVoiceWorkerDynamoDbPolicy",
+        "ReadAndUpdateVoiceJobs",
+    ) == {
+        "Sid": "ReadAndUpdateVoiceJobs",
+        "Effect": "Allow",
+        "Action": ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+        "Resource": {"Fn::GetAtt": "WhatsAppVoiceJobsTable.Arn"},
+    }
+    assert statement_by_sid(
+        template,
+        "WhatsAppVoiceWorkerDynamoDbPolicy",
+        "RecoverVoiceOutbox",
+    ) == {
+        "Sid": "RecoverVoiceOutbox",
+        "Effect": "Allow",
+        "Action": ["dynamodb:Query"],
+        "Resource": {
+            "Fn::Sub": "${WhatsAppVoiceJobsTable.Arn}/index/DueJobsIndex"
+        },
+    }
+
+    expected = {
+        "PersistAgentRequests": (
+            {"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"},
+            VOICE_WORKER_TABLE_ARNS["agent_requests"],
+        ),
+        "PersistConversationHistory": (
+            {"dynamodb:PutItem"},
+            VOICE_WORKER_TABLE_ARNS["conversation_messages"],
+        ),
+        "ResolveAndPersistCustomers": (
+            {"dynamodb:GetItem", "dynamodb:PutItem"},
+            VOICE_WORKER_TABLE_ARNS["customers"],
+        ),
+        "ResolveCustomersByPhone": (
+            {"dynamodb:Query"},
+            {
+                "Fn::Sub": (
+                    "arn:${AWS::Partition}:dynamodb:${AWS::Region}:"
+                    "${AWS::AccountId}:table/${CustomersTableName}/index/GSI1"
+                )
+            },
+        ),
+        "ResolveAndPersistAgentSessions": (
+            {"dynamodb:PutItem", "dynamodb:Scan"},
+            VOICE_WORKER_TABLE_ARNS["agent_sessions"],
+        ),
+        "RefreshCartResponseState": (
+            {"dynamodb:Query"},
+            VOICE_WORKER_TABLE_ARNS["carts"],
+        ),
+        "RefreshOrderResponseState": (
+            {"dynamodb:Query"},
+            VOICE_WORKER_TABLE_ARNS["orders"],
+        ),
+    }
+    for sid, (actions, resource) in expected.items():
+        statement = statement_by_sid(
+            template,
+            "WhatsAppVoiceWorkerDynamoDbPolicy",
+            sid,
+        )
+        assert statement["Effect"] == "Allow"
+        assert set(statement["Action"]) == actions
+        assert statement["Resource"] == resource
+
+    session_statement = statement_by_sid(
+        template,
+        "WhatsAppVoiceWorkerDynamoDbPolicy",
+        "ResolveAndPersistAgentSessions",
+    )
+    assert "dynamodb:Scan" in session_statement["Action"]
+    assert session_statement["Resource"] == VOICE_WORKER_TABLE_ARNS[
+        "agent_sessions"
+    ]
+
+    serialized = json.dumps(policy)
+    assert "dynamodb:*" not in serialized
+    assert '"Resource": "*"' not in serialized
+    assert ":table/*" not in serialized
+    assert "/index/*" not in serialized
+    for unneeded_table in (
+        "MenuTableName",
+        "MenuSessionsTableName",
+        "AuditTableName",
+        "TicketsTableName",
+    ):
+        assert unneeded_table not in serialized
+
+
+def test_backend_application_data_iam_remains_attached_and_not_weakened():
+    template = load_template()
+    policy = template["Resources"]["EcsTaskDynamoDbPolicy"]
+
+    assert policy["Properties"]["Roles"] == [{"Ref": "EcsTaskRole"}]
+    primary = policy["Properties"]["PolicyDocument"]["Statement"][0]
+    assert {
+        "dynamodb:BatchGetItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:UpdateItem",
+    } == set(primary["Action"])
+    for table_arn in VOICE_WORKER_TABLE_ARNS.values():
+        assert table_arn in primary["Resource"] or table_arn == CONVERSATION_TABLE_ARN
+    assert conversation_statement(template)["Resource"] == [
+        CONVERSATION_TABLE_ARN,
+        CONVERSATION_INDEX_ARN,
+    ]
 
 
 def test_voice_transcribe_wildcard_is_isolated_and_job_access_is_scoped():
