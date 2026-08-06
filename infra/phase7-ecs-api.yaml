@@ -1682,7 +1682,7 @@ Resources:
             - Name: AWS_REGION
               Value: !Ref AWS::Region
             - Name: WHATSAPP_VOICE_ENABLED
-              Value: "false"
+              Value: !Ref WhatsAppVoiceEnabled
             - Name: VOICE_MEDIA_BUCKET_NAME
               Value: !Ref VoiceMediaBucket
             - Name: VOICE_MEDIA_INPUT_PREFIX
