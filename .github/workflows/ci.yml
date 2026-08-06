@@ -248,7 +248,7 @@ jobs:
               )
               expected = {
                   "codec_name": "opus",
-                  "sample_rate": "16000",
+                  "sample_rate": "48000",
                   "channels": 1,
               }
               actual = {key: stream.get(key) for key in expected}
@@ -264,7 +264,7 @@ jobs:
               print(
                   "Voice reply container validation passed: "
                   f"user={username} uid={uid} codec_name=opus "
-                  "sample_rate=16000 channels=1 format_name=ogg"
+                  "sample_rate=48000 channels=1 format_name=ogg"
               )
           PY
 

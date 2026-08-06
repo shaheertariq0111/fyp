@@ -16,6 +16,33 @@ OGG_OPUS = b"OggS" + (b"\x00" * 24) + b"OpusHead" + (b"\x00" * 32)
 
 
 def test_converter_uses_exact_fixed_ffmpeg_pipe_contract_without_shell():
+    assert FFMPEG_OGG_OPUS_ARGUMENTS == (
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-f",
+        "mp3",
+        "-i",
+        "pipe:0",
+        "-vn",
+        "-c:a",
+        "libopus",
+        "-application",
+        "voip",
+        "-b:a",
+        "24k",
+        "-frame_duration",
+        "20",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-f",
+        "ogg",
+        "pipe:1",
+    )
     calls = []
 
     def run(args, **kwargs):

@@ -103,12 +103,16 @@ OGG bytes to Agentflo `/whatsapp/outbound`. No media-upload endpoint or generate
 audio object is created. Polly streams are closed and FFmpeg uses memory pipes, so
 generated audio is discarded after the one outbound attempt.
 
-The required output is OGG/libopus, 16 kHz, mono, 24 kbps, 20 ms frames, with
-`application=voip`. `AgentfloAudioFirestore` and `AgentfloAudioKinesis` default to
-the confirmed sample values of `true` and are worker-only parameters. Polly voice,
-engine, optional language, text/audio limits, and synthesis/conversion timeouts are
-also worker-only. A failed or ambiguous optional audio attempt is logged and saved
-on the voice job but does not undo text success or replay AgentCore.
+The converter explicitly requests a 16 kHz mono input resampling target with
+`-ar 16000 -ac 1`. The required output is OGG/libopus, mono, 24 kbps, 20 ms frames,
+with `application=voip`. Because Opus uses a fixed 48 kHz internal representation,
+`ffprobe` is expected to report the output stream's `sample_rate` as 48000; this
+does not mean the requested 16 kHz input resampling was omitted.
+`AgentfloAudioFirestore` and `AgentfloAudioKinesis` default to the confirmed sample
+values of `true` and are worker-only parameters. Polly voice, engine, optional
+language, text/audio limits, and synthesis/conversion timeouts are also worker-only.
+A failed or ambiguous optional audio attempt is logged and saved on the voice job
+but does not undo text success or replay AgentCore.
 
 Keep `WhatsAppVoiceReplyEnabled=false` during infrastructure and image rollout.
 Before controlled activation, locally validate FFmpeg/ffprobe output and confirm

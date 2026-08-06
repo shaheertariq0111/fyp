@@ -299,9 +299,12 @@ optional secondary-account `VoiceTranscribeRoleArn` AssumeRole flow unchanged.
 Polly produces bounded MP3 input. FFmpeg is installed in the backend image before
 the image switches to its non-root user and converts through process pipes with a
 fixed argument list: libopus, `application=voip`, 24 kbps, 20 ms frames, mono,
-16 kHz, OGG. Audio bytes exist only in bounded memory and Polly's streaming body
-is always closed; no generated-audio files are retained. Synthesis text and audio
-size/time limits are configured by `POLLY_MAX_TEXT_CHARS`,
+and an explicit 16 kHz input resampling target (`-ar 16000 -ac 1`), in an OGG
+container. Opus uses a fixed 48 kHz internal representation, so `ffprobe` is
+expected to report the encoded Opus stream as 48 kHz even though FFmpeg was asked
+to resample the source to 16 kHz mono. Audio bytes exist only in bounded memory and
+Polly's streaming body is always closed; no generated-audio files are retained.
+Synthesis text and audio size/time limits are configured by `POLLY_MAX_TEXT_CHARS`,
 `VOICE_REPLY_MAX_AUDIO_BYTES`, `VOICE_REPLY_SYNTHESIS_TIMEOUT_SECONDS`, and
 `VOICE_REPLY_CONVERSION_TIMEOUT_SECONDS`.
 

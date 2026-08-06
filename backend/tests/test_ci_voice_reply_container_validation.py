@@ -42,7 +42,8 @@ def test_voice_reply_container_validation_is_in_required_backend_gate():
     assert "uid == 0" in validation
     assert "VoiceReplyAudioConverter" in validation
     assert '"codec_name": "opus"' in validation
-    assert '"sample_rate": "16000"' in validation
+    assert '"sample_rate": "48000"' in validation
+    assert '"sample_rate": "16000"' not in validation
     assert '"channels": 1' in validation
     assert '"ogg" not in format_names' in validation
 
