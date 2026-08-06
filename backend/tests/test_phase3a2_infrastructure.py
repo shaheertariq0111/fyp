@@ -857,6 +857,28 @@ def test_polly_permission_is_isolated_to_primary_voice_worker_role():
     assert "polly:" not in json.dumps(backend_policies)
 
 
+def test_inbound_voice_activation_parameter_is_shared_by_backend_and_worker():
+    template = load_template()
+    backend = environment_map(template)
+    worker = voice_worker_environment_map(template)
+    activation_reference = {"Ref": "WhatsAppVoiceEnabled"}
+
+    assert backend["WHATSAPP_VOICE_ENABLED"] == activation_reference
+    assert worker["WHATSAPP_VOICE_ENABLED"] == activation_reference
+    assert backend["WHATSAPP_VOICE_ENABLED"] != "false"
+    assert worker["WHATSAPP_VOICE_ENABLED"] != "false"
+    assert worker["WHATSAPP_VOICE_REPLY_ENABLED"] == {
+        "Ref": "WhatsAppVoiceReplyEnabled"
+    }
+    assert template["Parameters"]["WhatsAppVoiceReplyEnabled"]["Default"] == "false"
+    assert template["Conditions"]["IsWhatsAppVoiceReplyEnabled"] == {
+        "Fn::Equals": [{"Ref": "WhatsAppVoiceReplyEnabled"}, "true"]
+    }
+    assert template["Resources"]["WhatsAppVoiceWorkerPollyPolicy"][
+        "Condition"
+    ] == "IsWhatsAppVoiceReplyEnabled"
+
+
 def test_voice_reply_parameters_default_disabled_and_are_worker_only():
     template = load_template()
     parameters = template["Parameters"]

@@ -183,10 +183,14 @@ identity policy and the primary bucket policy.
 
 Pass B1 defines a separate ECS service that uses the backend image with the
 command `python -m src.workers.whatsapp_voice_worker`. Its desired count defaults
-to `0`; the web feature flag and worker `WHATSAPP_VOICE_ENABLED` value remain
-`false`. The worker receives the existing application table names, the dedicated
-voice-jobs table, Standard queue URL, temporary S3 bucket, timing limits,
-AgentCore configuration, and Agentflo gateway configuration.
+to `0`, and the `WhatsAppVoiceEnabled` parameter defaults to `false`. Both the
+backend and worker task definitions map `WHATSAPP_VOICE_ENABLED` to that parameter,
+so a controlled parameter change enables the inbound gate consistently in both
+tasks. Optional outbound Polly replies remain independently disabled by the
+separate `WhatsAppVoiceReplyEnabled=false` default. The worker receives the
+existing application table names, the dedicated voice-jobs table, Standard queue
+URL, temporary S3 bucket, timing limits, AgentCore configuration, and Agentflo
+gateway configuration.
 Only the worker receives `VOICE_TRANSCRIBE_ROLE_ARN`; it is not passed to the
 web/API container, AgentCore runtime, or an ECS execution role.
 
