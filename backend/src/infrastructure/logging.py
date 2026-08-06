@@ -42,6 +42,12 @@ SAFE_LOG_FIELDS = (
     "receive_count",
     "cleanup_after_valid_transcript",
     "audio_media_hostname",
+    "source_audio_bytes",
+    "generated_audio_bytes",
+    "synthesis_duration_ms",
+    "conversion_duration_ms",
+    "outbound_status",
+    "provider_message_id",
 )
 
 

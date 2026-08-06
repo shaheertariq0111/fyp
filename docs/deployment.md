@@ -269,6 +269,81 @@ current repository lookup scans by `agent_session_id`. Restaurant tools run in
 AgentCore under the separate AgentCore execution role, so the ECS worker does not
 receive direct menu, menu-session, audit, or ticket-table permissions.
 
+### Optional outbound WhatsApp voice replies
+
+Outbound audio is a separately gated extension of the standalone voice worker:
+
+```text
+completed AgentCore reply
+    -> Agentflo text delivery (primary)
+    -> Amazon Polly SynthesizeSpeech in the primary account
+    -> local FFmpeg MP3-to-OGG/Opus conversion
+    -> Agentflo /whatsapp/outbound audio delivery (optional)
+```
+
+`WHATSAPP_VOICE_REPLY_ENABLED` defaults to `false` and does not control inbound
+voice enqueueing or transcription. Text-origin WhatsApp requests continue to use
+text delivery only. For voice-origin requests, text is sent first. Polly,
+conversion, rejected audio, or ambiguous audio failures are recorded separately
+and never fail or retry an already successful text response, reinvoke AgentCore,
+or repeat an order/tool action. Disable outbound audio immediately by setting only
+`WhatsAppVoiceReplyEnabled=false`; inbound voice can remain enabled.
+
+Polly runs directly in the primary account with the standard ECS voice-worker
+task-role credentials. The worker receives only `polly:SynthesizeSpeech`.
+Polly does not support resource-level permissions for this action, so its
+dedicated one-action statement uses `Resource: "*"`. No Polly role ARN, STS flow,
+or permanent credentials exist. Amazon Transcribe retains its independent,
+optional secondary-account `VoiceTranscribeRoleArn` AssumeRole flow unchanged.
+
+Polly produces bounded MP3 input. FFmpeg is installed in the backend image before
+the image switches to its non-root user and converts through process pipes with a
+fixed argument list: libopus, `application=voip`, 24 kbps, 20 ms frames, mono,
+16 kHz, OGG. Audio bytes exist only in bounded memory and Polly's streaming body
+is always closed; no generated-audio files are retained. Synthesis text and audio
+size/time limits are configured by `POLLY_MAX_TEXT_CHARS`,
+`VOICE_REPLY_MAX_AUDIO_BYTES`, `VOICE_REPLY_SYNTHESIS_TIMEOUT_SECONDS`, and
+`VOICE_REPLY_CONVERSION_TIMEOUT_SECONDS`.
+
+Agentflo receives no separate media upload. The worker standard-base64 encodes the
+raw OGG bytes directly into this placeholder-only payload:
+
+```json
+{
+  "tenantId": "<tenant-id>",
+  "agentId": "<agent-id>",
+  "userId": "<phone-without-leading-plus>",
+  "conversationId": "<conversation-id>",
+  "actorId": "<actor-id>",
+  "actorType": "agent",
+  "recipient": {"type": "phone", "value": "<phone-without-leading-plus>"},
+  "sender": {"phoneNumberId": "<meta-phone-number-id>"},
+  "source": "agent",
+  "firestore": true,
+  "kinesis": true,
+  "message": {"type": "audio", "base64": "<standard-base64-ogg>"},
+  "log": {}
+}
+```
+
+The sample's `firestore=true` and `kinesis=true` remain the defaults but are
+independently configurable through `AGENTFLO_AUDIO_FIRESTORE` and
+`AGENTFLO_AUDIO_KINESIS`; changing them requires confirmation with Agentflo.
+Audio adds Polly, conversion, and a second outbound-request latency after text has
+already succeeded. Monitor `voice_reply_synthesis_started`,
+`voice_reply_synthesis_completed`, `voice_reply_conversion_completed`,
+`voice_reply_outbound_completed`, and `voice_reply_failed`. These events contain
+only stable identifiers, stages, durations, byte counts, status, and sanitized
+error codes—not text, transcripts, phone numbers, credentials, base64, payloads,
+temporary paths, AWS messages, or FFmpeg stderr.
+
+Controlled activation keeps `WorkerDesiredCount=0`, `WhatsAppVoiceEnabled=false`,
+and `WhatsAppVoiceReplyEnabled=false` while code and IAM are deployed. Validate
+the selected Polly voice/engine/language combination and Agentflo storage flags,
+then restore the previously approved inbound-worker count before enabling only
+`WhatsAppVoiceReplyEnabled`. Enabling inbound enqueueing remains a separate
+decision through `WhatsAppVoiceEnabled`.
+
 Keep the current web chat working during this deployment phase.
 
 ## Required work

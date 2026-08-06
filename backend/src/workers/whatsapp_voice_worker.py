@@ -14,6 +14,7 @@ from src.api.whatsapp import WhatsAppInboundAudioMessage, WhatsAppInboundMessage
 from src.infrastructure.config import get_settings
 from src.infrastructure.dynamodb import get_dynamodb_resource
 from src.infrastructure.logging import configure_logging
+from src.infrastructure.polly import get_polly_client
 from src.infrastructure.s3 import get_s3_client
 from src.infrastructure.sqs import create_sqs_client
 from src.infrastructure.transcribe import get_transcribe_client_provider
@@ -21,10 +22,16 @@ from src.models.whatsapp_voice_job import VoiceJobState
 from src.repositories.whatsapp_voice_job_repository import WhatsAppVoiceJobRepository, VoiceJobConditionFailed
 from src.services.agent_request_processor import AgentRequestProcessor, build_identity_resolver, build_response_builder
 from src.services.agentflo_gateway_service import AgentfloGatewayService
+from src.services.polly_speech_service import PollySpeechSynthesisService
 from src.services.transcription_service import TranscriptionService
 from src.services.voice_media_storage_service import VoiceMediaStorageService
 from src.services.voice_queue_service import VoiceQueueError, VoiceQueueService
+from src.services.voice_reply_audio_converter import VoiceReplyAudioConverter
 from src.services.whatsapp_conversation_service import WhatsAppConversationReply, WhatsAppConversationService, build_whatsapp_identity
+from src.services.whatsapp_voice_reply_service import (
+    VoiceReplyOutcome,
+    WhatsAppVoiceReplyService,
+)
 from src.services.whatsapp_voice_job_service import WhatsAppVoiceJobService
 from src.services.whatsapp_voice_service import WhatsAppVoiceProcessingError, WhatsAppVoiceService
 
@@ -70,9 +77,19 @@ class VoiceWorkerHeartbeat:
 
 
 class WhatsAppVoiceWorker:
-    def __init__(self, *, settings, jobs, queue, voice, conversations):
+    def __init__(
+        self,
+        *,
+        settings,
+        jobs,
+        queue,
+        voice,
+        conversations,
+        voice_replies=None,
+    ):
         self.settings, self.jobs, self.queue = settings, jobs, queue
         self.voice, self.conversations = voice, conversations
+        self.voice_replies = voice_replies
         self.worker_id = f"voice-worker-{uuid.uuid4()}"
         self.stopping = threading.Event()
 
@@ -245,9 +262,59 @@ class WhatsAppVoiceWorker:
                 return True
             self.jobs.transition(record, VoiceJobState.RESPONSE_READY.value)
             return False
-        record = self.jobs.transition(record, VoiceJobState.COMPLETED.value)
+        voice_reply = self._deliver_optional_voice_reply(
+            record=record,
+            inbound=inbound,
+            reply=reply,
+            text_delivery_status=delivery.status,
+            heartbeat=heartbeat,
+        )
+        record = self.jobs.transition(
+            record,
+            VoiceJobState.COMPLETED.value,
+            values=voice_reply.persistence_values(),
+        )
         logger.info("Voice outbound completed", extra={"event": "voice_outbound_completed", "voice_job_id": record["job_id"]})
         return True
+
+    def _deliver_optional_voice_reply(
+        self,
+        *,
+        record: dict,
+        inbound: WhatsAppInboundMessage,
+        reply: WhatsAppConversationReply,
+        text_delivery_status: str,
+        heartbeat: VoiceWorkerHeartbeat,
+    ) -> VoiceReplyOutcome:
+        if not getattr(self.settings, "whatsapp_voice_reply_enabled", False):
+            return VoiceReplyOutcome("disabled")
+        if text_delivery_status != "sent":
+            return VoiceReplyOutcome("skipped", error_code="VOICE_REPLY_TEXT_NOT_SENT")
+        if self.voice_replies is None:
+            logger.warning(
+                "Optional voice reply is enabled but unavailable",
+                extra={
+                    "event": "voice_reply_failed",
+                    "voice_job_id": record["job_id"],
+                    "request_id": reply.request_id,
+                    "failure_stage": "configuration",
+                    "error_code": "VOICE_REPLY_SERVICE_UNAVAILABLE",
+                    "retryable": False,
+                },
+            )
+            return VoiceReplyOutcome(
+                "failed",
+                error_code="VOICE_REPLY_SERVICE_UNAVAILABLE",
+            )
+        heartbeat.assert_owned()
+        return self.voice_replies.deliver(
+            text=reply.reply,
+            customer_number=inbound.customer_number,
+            conversation_id=reply.session_id,
+            sender_id=inbound.sender_id,
+            request_id=reply.request_id,
+            voice_job_id=record["job_id"],
+        )
 
     def _handle_voice_failure(self, record: dict, exc: WhatsAppVoiceProcessingError, heartbeat: VoiceWorkerHeartbeat) -> bool:
         current = self.jobs.repository.get(record["job_id"]) or record
@@ -322,7 +389,41 @@ def build_worker(settings=None) -> WhatsAppVoiceWorker:
             actor_id=settings.agentflo_gateway_actor_id,
         ),
     )
-    return WhatsAppVoiceWorker(settings=settings, jobs=jobs, queue=queue, voice=voice, conversations=conversations)
+    voice_replies = None
+    if settings.whatsapp_voice_reply_enabled:
+        voice_replies = WhatsAppVoiceReplyService(
+            synthesizer=PollySpeechSynthesisService(
+                client=get_polly_client(settings),
+                voice_id=settings.polly_voice_id,
+                engine=settings.polly_engine,
+                language_code=settings.polly_language_code,
+                max_text_chars=settings.polly_max_text_chars,
+                max_audio_bytes=settings.voice_reply_max_audio_bytes,
+                timeout_seconds=settings.voice_reply_synthesis_timeout_seconds,
+            ),
+            converter=VoiceReplyAudioConverter(
+                timeout_seconds=settings.voice_reply_conversion_timeout_seconds,
+                max_audio_bytes=settings.voice_reply_max_audio_bytes,
+            ),
+            gateway_provider=lambda: AgentfloGatewayService(
+                base_url=settings.agentflo_gateway_base_url,
+                api_key=settings.agentflo_gateway_api_key,
+                tenant_id=settings.agentflo_gateway_tenant_id,
+                agent_id=settings.agentflo_gateway_agent_id,
+                actor_id=settings.agentflo_gateway_actor_id,
+                max_audio_bytes=settings.voice_reply_max_audio_bytes,
+                audio_firestore=settings.agentflo_audio_firestore,
+                audio_kinesis=settings.agentflo_audio_kinesis,
+            ),
+        )
+    return WhatsAppVoiceWorker(
+        settings=settings,
+        jobs=jobs,
+        queue=queue,
+        voice=voice,
+        conversations=conversations,
+        voice_replies=voice_replies,
+    )
 
 
 def main() -> None:

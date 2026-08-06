@@ -15,6 +15,10 @@ VOICE_MEDIA_INPUT_PREFIX = "voice-input/"
 VOICE_MAX_MEDIA_BYTES = 10_485_760
 VOICE_DOWNLOAD_TIMEOUT_SECONDS = 10
 VOICE_TRANSCRIPTION_TIMEOUT_SECONDS = 180
+POLLY_MAX_TEXT_CHARS = 1500
+VOICE_REPLY_MAX_AUDIO_BYTES = 2_097_152
+VOICE_REPLY_SYNTHESIS_TIMEOUT_SECONDS = 20
+VOICE_REPLY_CONVERSION_TIMEOUT_SECONDS = 20
 HOSTNAME_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 VOICE_TRANSCRIPTION_JOB_PREFIX = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,62})-whatsapp-voice-$"
@@ -142,6 +146,20 @@ class Settings(BaseSettings):
     voice_media_allowed_hosts: str = ""
     voice_transcription_language_code: str = ""
     voice_transcription_identify_language: bool = False
+    whatsapp_voice_reply_enabled: bool = False
+    polly_voice_id: str = "Joanna"
+    polly_engine: str = "neural"
+    polly_language_code: str = ""
+    polly_max_text_chars: int = POLLY_MAX_TEXT_CHARS
+    voice_reply_max_audio_bytes: int = VOICE_REPLY_MAX_AUDIO_BYTES
+    voice_reply_synthesis_timeout_seconds: float = (
+        VOICE_REPLY_SYNTHESIS_TIMEOUT_SECONDS
+    )
+    voice_reply_conversion_timeout_seconds: float = (
+        VOICE_REPLY_CONVERSION_TIMEOUT_SECONDS
+    )
+    agentflo_audio_firestore: bool = True
+    agentflo_audio_kinesis: bool = True
 
     menu_site_base_url: HttpUrl
     session_token_secret: str = Field(min_length=16)
@@ -204,6 +222,28 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Exactly one voice transcription language mode is required"
                 )
+        if self.whatsapp_voice_reply_enabled:
+            if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", self.polly_voice_id):
+                raise ValueError("POLLY_VOICE_ID is invalid")
+            if self.polly_engine not in {
+                "standard",
+                "neural",
+                "long-form",
+                "generative",
+            }:
+                raise ValueError("POLLY_ENGINE is invalid")
+            if self.polly_language_code and not re.fullmatch(
+                r"[a-z]{2,3}-[A-Z]{2}", self.polly_language_code
+            ):
+                raise ValueError("POLLY_LANGUAGE_CODE is invalid")
+            if not 1 <= self.polly_max_text_chars <= 3000:
+                raise ValueError("POLLY_MAX_TEXT_CHARS must be between 1 and 3000")
+            if not 1 <= self.voice_reply_max_audio_bytes <= VOICE_MAX_MEDIA_BYTES:
+                raise ValueError("VOICE_REPLY_MAX_AUDIO_BYTES is invalid")
+            if not 0 < self.voice_reply_synthesis_timeout_seconds <= 60:
+                raise ValueError("VOICE_REPLY_SYNTHESIS_TIMEOUT_SECONDS is invalid")
+            if not 0 < self.voice_reply_conversion_timeout_seconds <= 60:
+                raise ValueError("VOICE_REPLY_CONVERSION_TIMEOUT_SECONDS is invalid")
         return self
 
     def validate_voice_worker_settings(self) -> None:

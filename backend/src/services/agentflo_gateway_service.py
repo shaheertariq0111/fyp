@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import tempfile
@@ -18,6 +19,7 @@ from src.services.agentflo_media_service import (
 
 logger = logging.getLogger(__name__)
 OUTBOUND_ERROR_CODE = "AGENTFLO_OUTBOUND_FAILED"
+AUDIO_OUTBOUND_ERROR_CODE = "AGENTFLO_AUDIO_OUTBOUND_FAILED"
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_MEDIA_BYTES = 10 * 1024 * 1024
 
@@ -87,6 +89,9 @@ class AgentfloGatewayService:
         open_media_request: Callable[..., Any] = _open_without_redirects,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES,
+        max_audio_bytes: int = DEFAULT_MAX_MEDIA_BYTES,
+        audio_firestore: bool = True,
+        audio_kinesis: bool = True,
     ):
         self.base_url = base_url.strip().rstrip("/")
         self.api_key = api_key
@@ -97,7 +102,14 @@ class AgentfloGatewayService:
         self.open_media_request = open_media_request
         self.timeout_seconds = timeout_seconds
         self.max_media_bytes = max_media_bytes
-        if self.timeout_seconds <= 0 or self.max_media_bytes <= 0:
+        self.max_audio_bytes = max_audio_bytes
+        self.audio_firestore = audio_firestore
+        self.audio_kinesis = audio_kinesis
+        if (
+            self.timeout_seconds <= 0
+            or self.max_media_bytes <= 0
+            or self.max_audio_bytes <= 0
+        ):
             raise ValueError("Agentflo gateway limits must be positive")
 
     @property
@@ -146,8 +158,9 @@ class AgentfloGatewayService:
             if customer_number.startswith("+")
             else customer_number
         )
-        outbound = self._post_json(
-            path="/whatsapp/outbound",
+        return self._send_outbound(
+            token=token,
+            request_id=request_id,
             payload={
                 "tenantId": self.tenant_id,
                 "agentId": self.agent_id,
@@ -169,12 +182,111 @@ class AgentfloGatewayService:
                 "firestore": False,
                 "kinesis": False,
             },
+            error_code=OUTBOUND_ERROR_CODE,
+        )
+
+    def send_audio(
+        self,
+        *,
+        customer_number: str,
+        conversation_id: str,
+        sender_id: str,
+        audio: bytes,
+        request_id: str,
+    ) -> dict[str, Any]:
+        if not self.configured:
+            return {
+                "sent": False,
+                "skipped": True,
+                "reason": "gateway_not_configured",
+            }
+        if (
+            not customer_number
+            or not conversation_id
+            or not sender_id
+            or not isinstance(audio, bytes)
+            or not audio
+            or len(audio) > self.max_audio_bytes
+        ):
+            self._failure(
+                stage="audio_validation",
+                request_id=request_id,
+                error_code=AUDIO_OUTBOUND_ERROR_CODE,
+            )
+            return self._failure_result(AUDIO_OUTBOUND_ERROR_CODE)
+        encoded = base64.b64encode(audio).decode("ascii")
+        max_encoded_bytes = 4 * ((self.max_audio_bytes + 2) // 3)
+        if len(encoded.encode("ascii")) > max_encoded_bytes:
+            self._failure(
+                stage="audio_encoding",
+                request_id=request_id,
+                error_code=AUDIO_OUTBOUND_ERROR_CODE,
+            )
+            return self._failure_result(AUDIO_OUTBOUND_ERROR_CODE)
+        try:
+            token = self._authenticate()
+        except AgentfloGatewayRequestError as exc:
+            self._failure(
+                stage=exc.stage,
+                request_id=request_id,
+                status_code=exc.status_code,
+                exception_type=exc.exception_type,
+                error_code=AUDIO_OUTBOUND_ERROR_CODE,
+            )
+            return self._failure_result(AUDIO_OUTBOUND_ERROR_CODE)
+
+        gateway_number = (
+            customer_number[1:]
+            if customer_number.startswith("+")
+            else customer_number
+        )
+        return self._send_outbound(
+            token=token,
+            request_id=request_id,
+            payload={
+                "tenantId": self.tenant_id,
+                "agentId": self.agent_id,
+                "userId": gateway_number,
+                "conversationId": conversation_id,
+                "actorId": self.actor_id,
+                "actorType": "agent",
+                "recipient": {
+                    "type": "phone",
+                    "value": gateway_number,
+                },
+                "sender": {
+                    "phoneNumberId": sender_id,
+                },
+                "source": "agent",
+                "firestore": self.audio_firestore,
+                "kinesis": self.audio_kinesis,
+                "message": {
+                    "type": "audio",
+                    "base64": encoded,
+                },
+                "log": {},
+            },
+            error_code=AUDIO_OUTBOUND_ERROR_CODE,
+        )
+
+    def _send_outbound(
+        self,
+        *,
+        token: str,
+        request_id: str,
+        payload: dict[str, Any],
+        error_code: str,
+    ) -> dict[str, Any]:
+        outbound = self._post_json(
+            path="/whatsapp/outbound",
+            payload=payload,
             stage="outbound",
             request_id=request_id,
             token=token,
+            error_code=error_code,
         )
         if outbound is None:
-            return self._failure_result()
+            return self._failure_result(error_code)
 
         downstream = outbound.get("downstream")
         downstream = downstream if isinstance(downstream, dict) else {}
@@ -192,8 +304,12 @@ class AgentfloGatewayService:
             or downstream_accepted is True
         )
         if rejected or not accepted:
-            self._failure(stage="outbound_response", request_id=request_id)
-            return self._failure_result()
+            self._failure(
+                stage="outbound_response",
+                request_id=request_id,
+                error_code=error_code,
+            )
+            return self._failure_result(error_code)
 
         result: dict[str, Any] = {
             "sent": True,
@@ -440,6 +556,7 @@ class AgentfloGatewayService:
         stage: str,
         request_id: str,
         token: str | None = None,
+        error_code: str = OUTBOUND_ERROR_CODE,
     ) -> dict[str, Any] | None:
         try:
             return self._request_json(
@@ -454,6 +571,7 @@ class AgentfloGatewayService:
                 request_id=request_id,
                 status_code=exc.status_code,
                 exception_type=exc.exception_type,
+                error_code=error_code,
             )
             return None
 
@@ -520,6 +638,7 @@ class AgentfloGatewayService:
         request_id: str,
         status_code: int | None = None,
         exception_type: str | None = None,
+        error_code: str = OUTBOUND_ERROR_CODE,
     ) -> dict[str, Any]:
         logger.warning(
             "Agentflo outbound gateway request failed",
@@ -529,14 +648,14 @@ class AgentfloGatewayService:
                 "gateway_stage": stage,
                 "status_code": status_code,
                 "exception_type": exception_type,
-                "error_code": OUTBOUND_ERROR_CODE,
+                "error_code": error_code,
             },
         )
-        return self._failure_result()
+        return self._failure_result(error_code)
 
     @staticmethod
-    def _failure_result() -> dict[str, Any]:
+    def _failure_result(error_code: str = OUTBOUND_ERROR_CODE) -> dict[str, Any]:
         return {
             "sent": False,
-            "error_code": OUTBOUND_ERROR_CODE,
+            "error_code": error_code,
         }

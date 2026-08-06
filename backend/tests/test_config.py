@@ -253,6 +253,16 @@ def test_voice_configuration_has_disabled_safe_defaults():
     assert settings.parsed_voice_media_allowed_hosts() == []
     assert settings.voice_transcription_language_code == ""
     assert settings.voice_transcription_identify_language is False
+    assert settings.whatsapp_voice_reply_enabled is False
+    assert settings.polly_voice_id == "Joanna"
+    assert settings.polly_engine == "neural"
+    assert settings.polly_language_code == ""
+    assert settings.polly_max_text_chars == 1500
+    assert settings.voice_reply_max_audio_bytes == 2_097_152
+    assert settings.voice_reply_synthesis_timeout_seconds == 20
+    assert settings.voice_reply_conversion_timeout_seconds == 20
+    assert settings.agentflo_audio_firestore is True
+    assert settings.agentflo_audio_kinesis is True
 
 
 def test_voice_environment_variables_are_parsed(monkeypatch):
@@ -448,6 +458,72 @@ def test_backend_env_example_documents_voice_configuration():
         "VOICE_MEDIA_ALLOWED_HOSTS=",
         "VOICE_TRANSCRIPTION_LANGUAGE_CODE=",
         "VOICE_TRANSCRIPTION_IDENTIFY_LANGUAGE=false",
+        "WHATSAPP_VOICE_REPLY_ENABLED=false",
+        "POLLY_VOICE_ID=Joanna",
+        "POLLY_ENGINE=neural",
+        "POLLY_LANGUAGE_CODE=",
+        "POLLY_MAX_TEXT_CHARS=1500",
+        "VOICE_REPLY_MAX_AUDIO_BYTES=2097152",
+        "VOICE_REPLY_SYNTHESIS_TIMEOUT_SECONDS=20",
+        "VOICE_REPLY_CONVERSION_TIMEOUT_SECONDS=20",
+        "AGENTFLO_AUDIO_FIRESTORE=true",
+        "AGENTFLO_AUDIO_KINESIS=true",
     }
 
     assert expected.issubset(set(example.splitlines()))
+
+
+def test_voice_reply_validation_is_enabled_only_by_its_separate_flag():
+    disabled = make_test_settings(
+        whatsapp_voice_reply_enabled=False,
+        polly_voice_id="",
+        polly_engine="unsupported",
+        polly_max_text_chars=0,
+        voice_reply_max_audio_bytes=0,
+        voice_reply_synthesis_timeout_seconds=0,
+        voice_reply_conversion_timeout_seconds=0,
+    )
+    assert disabled.whatsapp_voice_reply_enabled is False
+
+    for override in (
+        {"polly_voice_id": ""},
+        {"polly_engine": "unsupported"},
+        {"polly_language_code": "invalid"},
+        {"polly_max_text_chars": 0},
+        {"polly_max_text_chars": 3001},
+        {"voice_reply_max_audio_bytes": 0},
+        {"voice_reply_max_audio_bytes": 10_485_761},
+        {"voice_reply_synthesis_timeout_seconds": 0},
+        {"voice_reply_synthesis_timeout_seconds": 61},
+        {"voice_reply_conversion_timeout_seconds": 0},
+        {"voice_reply_conversion_timeout_seconds": 61},
+    ):
+        with pytest.raises(ValidationError):
+            make_test_settings(
+                whatsapp_voice_reply_enabled=True,
+                **override,
+            )
+
+
+def test_voice_reply_environment_variables_are_parsed(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_VOICE_REPLY_ENABLED", "true")
+    monkeypatch.setenv("POLLY_VOICE_ID", "Matthew")
+    monkeypatch.setenv("POLLY_ENGINE", "standard")
+    monkeypatch.setenv("POLLY_LANGUAGE_CODE", "en-US")
+    monkeypatch.setenv("POLLY_MAX_TEXT_CHARS", "1200")
+    monkeypatch.setenv("VOICE_REPLY_MAX_AUDIO_BYTES", "1048576")
+    monkeypatch.setenv("VOICE_REPLY_SYNTHESIS_TIMEOUT_SECONDS", "15")
+    monkeypatch.setenv("VOICE_REPLY_CONVERSION_TIMEOUT_SECONDS", "12")
+    monkeypatch.setenv("AGENTFLO_AUDIO_FIRESTORE", "false")
+    monkeypatch.setenv("AGENTFLO_AUDIO_KINESIS", "true")
+    settings = Settings(_env_file=None, **BASE)
+    assert settings.whatsapp_voice_reply_enabled is True
+    assert settings.polly_voice_id == "Matthew"
+    assert settings.polly_engine == "standard"
+    assert settings.polly_language_code == "en-US"
+    assert settings.polly_max_text_chars == 1200
+    assert settings.voice_reply_max_audio_bytes == 1_048_576
+    assert settings.voice_reply_synthesis_timeout_seconds == 15
+    assert settings.voice_reply_conversion_timeout_seconds == 12
+    assert settings.agentflo_audio_firestore is False
+    assert settings.agentflo_audio_kinesis is True
