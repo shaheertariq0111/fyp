@@ -75,6 +75,7 @@ The template creates separate role families:
 - ECS application task role: approved DynamoDB tables and optional AgentCore Runtime invocation. Secrets are injected by ECS and are not read directly by the application role. Application metrics are derived from CloudWatch Logs metric filters in the Phase 11 monitoring template, so the task role does not need `cloudwatch:PutMetricData`.
 - Voice-worker execution role: pulls the existing backend image, writes only to the worker log group, and injects only the session-token and Agentflo gateway API-key secrets when configured. It cannot read admin or webhook secrets.
 - Voice-worker application role: consumes and recovers the Standard voice queue, accesses temporary voice input, manages scoped Transcribe jobs, invokes the configured AgentCore runtime, and has a dedicated application-data policy. That policy can read/update the voice-job table and query only its `DueJobsIndex`; get/put/update agent requests; put conversation history; get/put customers and query only the customer `GSI1`; put and scan agent sessions (session lookup currently uses `Scan`); and query carts/orders to refresh response state after successful AgentCore writes. It has no menu, menu-session, audit, ticket, DLQ, wildcard DynamoDB action, or wildcard DynamoDB resource permission. Menu, cart, order, customer, session-state, audit, and support tool operations invoked by the model execute under the separate AgentCore execution role.
+- Optional voice-reply policy: grants only `polly:SynthesizeSpeech` to the voice-worker application role. AWS Polly does not support resource-level scoping for this action, so `Resource: "*"` is isolated in this one-action policy. The backend task role receives no Polly permission.
 
 The worker execution role uses `Resource: "*"` only for the ECR authorization
 token action, which AWS does not support as a repository-scoped permission. The
@@ -91,6 +92,33 @@ remain with the primary worker role. The role is an external prerequisite: this
 stack does not create resources in the secondary account, and no permanent
 secondary-account credentials are stored. Voice remains disabled until a
 separate controlled activation.
+
+## Optional outbound audio replies
+
+`WhatsAppVoiceReplyEnabled` defaults to `false` independently of inbound
+`WhatsAppVoiceEnabled`. When enabled, a voice job sends its normal text reply
+first, synthesizes the same final text with Polly in the primary account, converts
+MP3 to OGG Opus through the image's FFmpeg binary, and posts raw standard-base64
+OGG bytes to Agentflo `/whatsapp/outbound`. No media-upload endpoint or generated
+audio object is created. Polly streams are closed and FFmpeg uses memory pipes, so
+generated audio is discarded after the one outbound attempt.
+
+The converter explicitly requests a 16 kHz mono input resampling target with
+`-ar 16000 -ac 1`. The required output is OGG/libopus, mono, 24 kbps, 20 ms frames,
+with `application=voip`. Because Opus uses a fixed 48 kHz internal representation,
+`ffprobe` is expected to report the output stream's `sample_rate` as 48000; this
+does not mean the requested 16 kHz input resampling was omitted.
+`AgentfloAudioFirestore` and `AgentfloAudioKinesis` default to the confirmed sample
+values of `true` and are worker-only parameters. Polly voice, engine, optional
+language, text/audio limits, and synthesis/conversion timeouts are also worker-only.
+A failed or ambiguous optional audio attempt is logged and saved on the voice job
+but does not undo text success or replay AgentCore.
+
+Keep `WhatsAppVoiceReplyEnabled=false` during infrastructure and image rollout.
+Before controlled activation, locally validate FFmpeg/ffprobe output and confirm
+the selected Polly voice/engine/language and the Agentflo firestore/kinesis
+semantics. Outbound audio can later be disabled without disabling inbound voice by
+changing only `WhatsAppVoiceReplyEnabled` back to `false`.
 - AgentCore execution role: fixed AgentCore service trust with source-account/source-ARN conditions, AgentCore runtime image pull from the agent-runtime ECR repository, Nova Pro inference-profile invocation, optional event-only AgentCore Memory access, approved DynamoDB table access for tools, optional Knowledge Base retrieval, and AgentCore runtime log writes.
 
 The template does not attach `AdministratorAccess`, `AmazonBedrockFullAccess`, or `AmazonDynamoDBFullAccess`.

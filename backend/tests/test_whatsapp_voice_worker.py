@@ -8,6 +8,11 @@ from src.repositories.base import to_dynamodb
 from src.repositories.whatsapp_voice_job_repository import WhatsAppVoiceJobRepository
 from src.services.whatsapp_voice_service import WhatsAppVoiceProcessingError
 from src.services.whatsapp_voice_service import WhatsAppVoiceService
+from src.services.whatsapp_conversation_service import (
+    WhatsAppConversationReply,
+    WhatsAppDeliveryOutcome,
+)
+from src.services.whatsapp_voice_reply_service import VoiceReplyOutcome
 from src.workers.whatsapp_voice_worker import VoiceWorkerHeartbeat, WhatsAppVoiceWorker
 
 
@@ -239,3 +244,156 @@ def test_job_scoped_programming_error_still_terminates_worker_turn():
 
     with pytest.raises(RuntimeError, match="programming defect"):
         worker.handle(received)
+
+
+class RecordingTransitions:
+    def __init__(self):
+        self.calls = []
+
+    def transition(self, record, next_state, **kwargs):
+        self.calls.append((next_state, kwargs))
+        return {
+            **record,
+            **kwargs.get("values", {}),
+            "state": next_state,
+            "version": record["version"] + 1,
+        }
+
+
+class TextDelivery:
+    def __init__(self, events, status="sent"):
+        self.events = events
+        self.status = status
+
+    def deliver(self, *_args, **_kwargs):
+        self.events.append("text")
+        return WhatsAppDeliveryOutcome(self.status, {"sent": self.status == "sent"})
+
+
+class OptionalVoiceDelivery:
+    def __init__(self, events, outcome):
+        self.events = events
+        self.outcome = outcome
+        self.calls = []
+
+    def deliver(self, **kwargs):
+        self.events.append("audio")
+        self.calls.append(kwargs)
+        return self.outcome
+
+
+def _ready_worker(*, enabled, text_status="sent", voice_outcome=None):
+    events = []
+    jobs = RecordingTransitions()
+    voice_replies = OptionalVoiceDelivery(
+        events,
+        voice_outcome or VoiceReplyOutcome("sent", generated_audio_bytes=128),
+    )
+    worker = WhatsAppVoiceWorker(
+        settings=SimpleNamespace(whatsapp_voice_reply_enabled=enabled),
+        jobs=jobs,
+        queue=SimpleNamespace(),
+        voice=SimpleNamespace(),
+        conversations=TextDelivery(events, text_status),
+        voice_replies=voice_replies,
+    )
+    record = {
+        "job_id": voice_job_id("ready-provider-id"),
+        "state": "response_ready",
+        "version": 1,
+        "customer_number": "+10000000000",
+        "sender_id": "sender-safe",
+    }
+    inbound = SimpleNamespace(
+        customer_number=record["customer_number"],
+        sender_id=record["sender_id"],
+        message_id=record["job_id"],
+    )
+    reply = WhatsAppConversationReply(
+        "private final text",
+        "request-safe",
+        "session-safe",
+        "customer-safe",
+    )
+    return worker, jobs, voice_replies, events, record, inbound, reply
+
+
+def test_voice_input_delivers_text_first_then_optional_audio_and_completes():
+    worker, jobs, voice_replies, events, record, inbound, reply = _ready_worker(
+        enabled=True
+    )
+    assert worker._send_ready(
+        record,
+        OwnedHeartbeat(),
+        inbound=inbound,
+        reply=reply,
+    ) is True
+    assert events == ["text", "audio"]
+    assert len(voice_replies.calls) == 1
+    assert [state for state, _kwargs in jobs.calls] == [
+        "outbound_sending",
+        "completed",
+    ]
+    assert jobs.calls[-1][1]["values"] == {
+        "voice_reply_status": "sent",
+        "voice_reply_audio_bytes": 128,
+    }
+
+
+def test_disabled_audio_reply_preserves_text_only_behavior():
+    worker, jobs, voice_replies, events, record, inbound, reply = _ready_worker(
+        enabled=False
+    )
+    assert worker._send_ready(
+        record,
+        OwnedHeartbeat(),
+        inbound=inbound,
+        reply=reply,
+    ) is True
+    assert events == ["text"]
+    assert voice_replies.calls == []
+    assert jobs.calls[-1][1]["values"] == {"voice_reply_status": "disabled"}
+
+
+@pytest.mark.parametrize("audio_status", ["failed", "ambiguous"])
+def test_optional_audio_failure_never_undoes_text_or_replays_agent(audio_status):
+    outcome = VoiceReplyOutcome(
+        audio_status,
+        error_code="VOICE_REPLY_OUTCOME_AMBIGUOUS",
+    )
+    worker, jobs, voice_replies, events, record, inbound, reply = _ready_worker(
+        enabled=True,
+        voice_outcome=outcome,
+    )
+    assert worker._send_ready(
+        record,
+        OwnedHeartbeat(),
+        inbound=inbound,
+        reply=reply,
+    ) is True
+    assert events == ["text", "audio"]
+    assert len(voice_replies.calls) == 1
+    assert jobs.calls[-1][0] == "completed"
+    assert jobs.calls[-1][1]["values"] == {
+        "voice_reply_status": audio_status,
+        "voice_reply_error_code": "VOICE_REPLY_OUTCOME_AMBIGUOUS",
+    }
+
+
+def test_optional_audio_is_not_attempted_until_primary_text_is_sent():
+    worker, jobs, voice_replies, events, record, inbound, reply = _ready_worker(
+        enabled=True,
+        text_status="retryable_failure",
+    )
+    assert worker._send_ready(
+        record,
+        OwnedHeartbeat(),
+        inbound=inbound,
+        reply=reply,
+    ) is False
+    assert events == ["text"]
+    assert voice_replies.calls == []
+    assert [state for state, _kwargs in jobs.calls] == [
+        "outbound_sending",
+        "response_ready",
+    ]

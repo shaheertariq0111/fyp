@@ -828,6 +828,77 @@ def test_voice_transcribe_wildcard_is_isolated_and_job_access_is_scoped():
     assert "transcribe.amazonaws.com" not in serialized_template
 
 
+def test_polly_permission_is_isolated_to_primary_voice_worker_role():
+    template = load_template()
+    policy = template["Resources"]["WhatsAppVoiceWorkerPollyPolicy"]
+
+    assert template["Conditions"]["IsWhatsAppVoiceReplyEnabled"] == {
+        "Fn::Equals": [{"Ref": "WhatsAppVoiceReplyEnabled"}, "true"]
+    }
+    assert policy["Condition"] == "IsWhatsAppVoiceReplyEnabled"
+    assert policy["Properties"]["Roles"] == [
+        {"Ref": "WhatsAppVoiceWorkerTaskRole"}
+    ]
+    assert policy["Properties"]["PolicyDocument"]["Statement"] == [{
+        "Effect": "Allow",
+        "Action": "polly:SynthesizeSpeech",
+        "Resource": "*",
+    }]
+    assert "polly:*" not in json.dumps(policy)
+    assert "sts:AssumeRole" not in json.dumps(policy)
+
+    backend_policies = [
+        resource
+        for resource in template["Resources"].values()
+        if resource.get("Type") == "AWS::IAM::Policy"
+        and {"Ref": "EcsTaskRole"}
+        in resource.get("Properties", {}).get("Roles", [])
+    ]
+    assert "polly:" not in json.dumps(backend_policies)
+
+
+def test_voice_reply_parameters_default_disabled_and_are_worker_only():
+    template = load_template()
+    parameters = template["Parameters"]
+    assert parameters["WhatsAppVoiceReplyEnabled"]["Default"] == "false"
+    assert parameters["PollyVoiceId"]["Default"] == "Joanna"
+    assert parameters["PollyEngine"]["Default"] == "neural"
+    assert parameters["PollyLanguageCode"]["Default"] == ""
+    assert parameters["PollyMaxTextChars"]["Default"] == 1500
+    assert parameters["VoiceReplyMaxAudioBytes"]["Default"] == 2097152
+    assert parameters["VoiceReplySynthesisTimeoutSeconds"]["Default"] == 20
+    assert parameters["VoiceReplyConversionTimeoutSeconds"]["Default"] == 20
+    assert parameters["AgentfloAudioFirestore"]["Default"] == "true"
+    assert parameters["AgentfloAudioKinesis"]["Default"] == "true"
+
+    expected = {
+        "WHATSAPP_VOICE_REPLY_ENABLED": "WhatsAppVoiceReplyEnabled",
+        "POLLY_VOICE_ID": "PollyVoiceId",
+        "POLLY_ENGINE": "PollyEngine",
+        "POLLY_LANGUAGE_CODE": "PollyLanguageCode",
+        "POLLY_MAX_TEXT_CHARS": "PollyMaxTextChars",
+        "VOICE_REPLY_MAX_AUDIO_BYTES": "VoiceReplyMaxAudioBytes",
+        "VOICE_REPLY_SYNTHESIS_TIMEOUT_SECONDS": (
+            "VoiceReplySynthesisTimeoutSeconds"
+        ),
+        "VOICE_REPLY_CONVERSION_TIMEOUT_SECONDS": (
+            "VoiceReplyConversionTimeoutSeconds"
+        ),
+        "AGENTFLO_AUDIO_FIRESTORE": "AgentfloAudioFirestore",
+        "AGENTFLO_AUDIO_KINESIS": "AgentfloAudioKinesis",
+    }
+    worker = voice_worker_environment_map(template)
+    backend = environment_map(template)
+    for environment_name, parameter_name in expected.items():
+        assert worker[environment_name] == {"Ref": parameter_name}
+        assert environment_name not in backend
+
+    example = parameter_map(EXAMPLE_PARAMETERS)
+    assert example["WhatsAppVoiceReplyEnabled"] == "false"
+    assert example["AgentfloAudioFirestore"] == "true"
+    assert example["AgentfloAudioKinesis"] == "true"
+
+
 def test_optional_cross_account_transcribe_role_is_exact_and_worker_only():
     template = load_template()
     parameter = template["Parameters"]["VoiceTranscribeRoleArn"]

@@ -118,6 +118,61 @@ Parameters:
     Default: ""
     AllowedPattern: "^$|^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@*-]+(?:/[A-Za-z0-9+=,.@*-]+)*$"
     Description: Optional cross-account IAM role assumed only by the WhatsApp voice worker for Amazon Transcribe.
+  WhatsAppVoiceReplyEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Independently enables optional Polly audio after successful voice-worker text delivery.
+  PollyVoiceId:
+    Type: String
+    Default: Joanna
+    AllowedPattern: "^[A-Za-z0-9-]{1,64}$"
+  PollyEngine:
+    Type: String
+    Default: neural
+    AllowedValues:
+      - standard
+      - neural
+      - long-form
+      - generative
+  PollyLanguageCode:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z]{2,3}-[A-Z]{2}$"
+  PollyMaxTextChars:
+    Type: Number
+    Default: 1500
+    MinValue: 1
+    MaxValue: 3000
+  VoiceReplyMaxAudioBytes:
+    Type: Number
+    Default: 2097152
+    MinValue: 1
+    MaxValue: 10485760
+  VoiceReplySynthesisTimeoutSeconds:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 60
+  VoiceReplyConversionTimeoutSeconds:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 60
+  AgentfloAudioFirestore:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+  AgentfloAudioKinesis:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
   BackendCpu:
     Type: String
     Default: "512"
@@ -299,6 +354,7 @@ Conditions:
   HasAdminSessionSecret: !Not [!Equals [!Ref AdminSessionSecretArn, ""]]
   HasAgentCoreGuardrailId: !Not [!Equals [!Ref AgentCoreGuardrailId, ""]]
   HasVoiceTranscribeRoleArn: !Not [!Equals [!Ref VoiceTranscribeRoleArn, ""]]
+  IsWhatsAppVoiceReplyEnabled: !Equals [!Ref WhatsAppVoiceReplyEnabled, "true"]
 
 Resources:
   BackendRepository:
@@ -884,6 +940,21 @@ Resources:
                 - sts:AssumeRole
               Resource: !Ref VoiceTranscribeRoleArn
             - !Ref AWS::NoValue
+
+  WhatsAppVoiceWorkerPollyPolicy:
+    Type: AWS::IAM::Policy
+    Condition: IsWhatsAppVoiceReplyEnabled
+    Properties:
+      PolicyName: !Sub ${ProjectName}-voice-worker-polly
+      Roles:
+        - !Ref WhatsAppVoiceWorkerTaskRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # SynthesizeSpeech does not support resource-level IAM permissions.
+          - Effect: Allow
+            Action: polly:SynthesizeSpeech
+            Resource: "*"
 
   EcsTaskRole:
     Type: AWS::IAM::Role
@@ -1646,6 +1717,26 @@ Resources:
               Value: !Ref VoiceTranscriptionJobPrefix
             - Name: VOICE_TRANSCRIBE_ROLE_ARN
               Value: !Ref VoiceTranscribeRoleArn
+            - Name: WHATSAPP_VOICE_REPLY_ENABLED
+              Value: !Ref WhatsAppVoiceReplyEnabled
+            - Name: POLLY_VOICE_ID
+              Value: !Ref PollyVoiceId
+            - Name: POLLY_ENGINE
+              Value: !Ref PollyEngine
+            - Name: POLLY_LANGUAGE_CODE
+              Value: !Ref PollyLanguageCode
+            - Name: POLLY_MAX_TEXT_CHARS
+              Value: !Ref PollyMaxTextChars
+            - Name: VOICE_REPLY_MAX_AUDIO_BYTES
+              Value: !Ref VoiceReplyMaxAudioBytes
+            - Name: VOICE_REPLY_SYNTHESIS_TIMEOUT_SECONDS
+              Value: !Ref VoiceReplySynthesisTimeoutSeconds
+            - Name: VOICE_REPLY_CONVERSION_TIMEOUT_SECONDS
+              Value: !Ref VoiceReplyConversionTimeoutSeconds
+            - Name: AGENTFLO_AUDIO_FIRESTORE
+              Value: !Ref AgentfloAudioFirestore
+            - Name: AGENTFLO_AUDIO_KINESIS
+              Value: !Ref AgentfloAudioKinesis
             - Name: BEDROCK_MODEL_ID
               Value: !Ref BedrockModelId
             - Name: BEDROCK_GUARDRAIL_ID

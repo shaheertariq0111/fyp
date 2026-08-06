@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from io import BytesIO
@@ -181,6 +182,136 @@ def test_gateway_auth_and_outbound_requests_use_exact_contract():
         "firestore": False,
         "kinesis": False,
     }
+
+
+def test_gateway_audio_uses_exact_confirmed_contract_and_standard_base64():
+    calls = []
+    responses = iter([
+        FakeResponse({"success": True, "token": "synthetic-jwt"}),
+        FakeResponse({
+            "status": "accepted",
+            "downstream": {
+                "accepted": True,
+                "providerMessageId": "provider-audio-safe",
+            },
+        }),
+    ])
+
+    def open_request(request, timeout):
+        calls.append((request, timeout))
+        return next(responses)
+
+    audio = b"OggS\x00OpusHead\xfb\xff"
+    service = AgentfloGatewayService(
+        base_url="https://communicationgateway.agentflo.com",
+        api_key="synthetic-api-key",
+        tenant_id="tenant-safe",
+        agent_id="agent-safe",
+        actor_id="actor-safe",
+        open_request=open_request,
+        max_audio_bytes=1024,
+        audio_firestore=False,
+        audio_kinesis=True,
+    )
+    result = service.send_audio(
+        customer_number="+10000000000",
+        conversation_id="conversation-safe",
+        sender_id="phone-number-id-safe",
+        audio=audio,
+        request_id="request-safe",
+    )
+
+    assert result == {
+        "sent": True,
+        "status": "accepted",
+        "providerMessageId": "provider-audio-safe",
+    }
+    payload = json.loads(calls[1][0].data)
+    assert payload == {
+        "tenantId": "tenant-safe",
+        "agentId": "agent-safe",
+        "userId": "10000000000",
+        "conversationId": "conversation-safe",
+        "actorId": "actor-safe",
+        "actorType": "agent",
+        "recipient": {"type": "phone", "value": "10000000000"},
+        "sender": {"phoneNumberId": "phone-number-id-safe"},
+        "source": "agent",
+        "firestore": False,
+        "kinesis": True,
+        "message": {
+            "type": "audio",
+            "base64": base64.b64encode(audio).decode("ascii"),
+        },
+        "log": {},
+    }
+
+
+def test_gateway_audio_rejection_and_size_validation_are_sanitized(caplog):
+    private_audio = b"private-audio"
+    service = AgentfloGatewayService(
+        base_url="https://communicationgateway.agentflo.com",
+        api_key="private-key",
+        tenant_id="tenant-safe",
+        agent_id="agent-safe",
+        actor_id="actor-safe",
+        max_audio_bytes=4,
+    )
+    with caplog.at_level(logging.WARNING):
+        result = service.send_audio(
+            customer_number="+10000000000",
+            conversation_id="conversation-safe",
+            sender_id="sender-safe",
+            audio=private_audio,
+            request_id="request-safe",
+        )
+    assert result == {
+        "sent": False,
+        "error_code": "AGENTFLO_AUDIO_OUTBOUND_FAILED",
+    }
+    assert base64.b64encode(private_audio).decode("ascii") not in caplog.text
+    assert private_audio.decode() not in caplog.text
+    assert "+10000000000" not in caplog.text
+
+
+def test_gateway_audio_http_accepted_and_rejected_responses_match_text_parser():
+    for response, expected in (
+        (
+            {"downstream": {"accepted": True, "providerMessageId": "safe-id"}},
+            {
+                "sent": True,
+                "status": "accepted",
+                "providerMessageId": "safe-id",
+            },
+        ),
+        (
+            {"status": "rejected", "downstream": {"accepted": False}},
+            {
+                "sent": False,
+                "error_code": "AGENTFLO_AUDIO_OUTBOUND_FAILED",
+            },
+        ),
+    ):
+        responses = iter([
+            FakeResponse({"success": True, "token": "safe-token"}),
+            FakeResponse(response),
+        ])
+        service = AgentfloGatewayService(
+            base_url="https://communicationgateway.agentflo.com",
+            api_key="safe-key",
+            tenant_id="tenant-safe",
+            agent_id="agent-safe",
+            actor_id="actor-safe",
+            open_request=lambda _request, timeout: next(responses),
+            max_audio_bytes=1024,
+        )
+        assert service.send_audio(
+            customer_number="10000000000",
+            conversation_id="conversation-safe",
+            sender_id="sender-safe",
+            audio=OGG_OPUS,
+            request_id="request-safe",
+        ) == expected
 
 
 def test_gateway_auth_failure_is_safe_and_does_not_call_outbound():

@@ -80,6 +80,46 @@
     "ParameterValue": ""
   },
   {
+    "ParameterKey": "WhatsAppVoiceReplyEnabled",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "PollyVoiceId",
+    "ParameterValue": "Joanna"
+  },
+  {
+    "ParameterKey": "PollyEngine",
+    "ParameterValue": "neural"
+  },
+  {
+    "ParameterKey": "PollyLanguageCode",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "PollyMaxTextChars",
+    "ParameterValue": "1500"
+  },
+  {
+    "ParameterKey": "VoiceReplyMaxAudioBytes",
+    "ParameterValue": "2097152"
+  },
+  {
+    "ParameterKey": "VoiceReplySynthesisTimeoutSeconds",
+    "ParameterValue": "20"
+  },
+  {
+    "ParameterKey": "VoiceReplyConversionTimeoutSeconds",
+    "ParameterValue": "20"
+  },
+  {
+    "ParameterKey": "AgentfloAudioFirestore",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "AgentfloAudioKinesis",
+    "ParameterValue": "true"
+  },
+  {
     "ParameterKey": "AgentCoreRuntimeArn",
     "ParameterValue": ""
   },
