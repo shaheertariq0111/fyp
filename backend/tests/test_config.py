@@ -131,6 +131,65 @@ def test_agentflo_gateway_settings_are_optional_and_configurable(monkeypatch):
     assert configured.agentflo_gateway_actor_id == "actor-synthetic"
 
 
+def test_receipt_activation_disabled_requires_no_receipt_configuration():
+    settings = make_test_settings()
+
+    settings.validate_receipt_activation_settings()
+
+    assert settings.receipt_activation_enabled is False
+    assert settings.receipt_job_ttl_hours == 336
+    assert settings.receipt_enqueue_retry_seconds == 60
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error_code"),
+    [
+        (
+            {
+                "receipt_activation_enabled": True,
+                "receipt_job_queue_url": "receipt-queue",
+            },
+            "RECEIPT_ACTIVATION_CONFIGURATION_INCOMPLETE",
+        ),
+        (
+            {
+                "receipt_activation_enabled": True,
+                "receipt_jobs_table_name": "receipt-jobs",
+            },
+            "RECEIPT_ACTIVATION_CONFIGURATION_INCOMPLETE",
+        ),
+    ],
+)
+def test_receipt_activation_validation_requires_job_dependencies(
+    overrides,
+    error_code,
+):
+    with pytest.raises(ValueError, match=error_code):
+        make_test_settings(**overrides).validate_receipt_activation_settings()
+
+
+def test_valid_receipt_activation_configuration_passes():
+    make_test_settings(
+        receipt_activation_enabled=True,
+        receipt_jobs_table_name="receipt-jobs",
+        receipt_job_queue_url="receipt-queue",
+    ).validate_receipt_activation_settings()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("receipt_job_ttl_hours", 0),
+        ("receipt_job_ttl_hours", 337),
+        ("receipt_enqueue_retry_seconds", 0),
+        ("receipt_enqueue_retry_seconds", 3601),
+    ],
+)
+def test_receipt_numeric_settings_reject_unsafe_values(field, value):
+    with pytest.raises(ValidationError):
+        make_test_settings(**{field: value})
+
+
 def test_support_phone_has_no_invented_default():
     values = dict(BASE)
     values.pop("support_phone_number")
