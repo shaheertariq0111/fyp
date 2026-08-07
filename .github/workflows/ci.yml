@@ -154,6 +154,54 @@ jobs:
         working-directory: backend
         run: python -m pytest
 
+      - name: Build receipt Lambda Docker image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --file backend/Dockerfile.receipt-lambda \
+            --tag fyp-receipt-lambda-ci:${{ github.sha }} \
+            backend
+
+      - name: Validate receipt Lambda container runtime
+        run: |
+          image_os="$(docker image inspect --format '{{.Os}}' fyp-receipt-lambda-ci:${{ github.sha }})"
+          image_arch="$(docker image inspect --format '{{.Architecture}}' fyp-receipt-lambda-ci:${{ github.sha }})"
+          if [ "$image_os" != "linux" ] || [ "$image_arch" != "amd64" ]; then
+            echo "Receipt Lambda image platform mismatch: os=$image_os architecture=$image_arch" >&2
+            exit 1
+          fi
+
+          docker run --rm -i \
+            --platform linux/amd64 \
+            --entrypoint python \
+            fyp-receipt-lambda-ci:${{ github.sha }} - <<'PY'
+          import platform
+
+          import reportlab
+          from src.lambda_handlers.receipt_outbox_recovery import (
+              handler as receipt_outbox_recovery_handler,
+          )
+          from src.lambda_handlers.receipt_processing import (
+              handler as receipt_processing_handler,
+          )
+
+          machine = platform.machine().lower()
+          if machine not in {"x86_64", "amd64"}:
+              raise SystemExit(
+                  f"Receipt Lambda runtime architecture mismatch: {machine}"
+              )
+          if not callable(receipt_processing_handler):
+              raise SystemExit("Receipt processing Lambda handler is not callable")
+          if not callable(receipt_outbox_recovery_handler):
+              raise SystemExit("Receipt recovery Lambda handler is not callable")
+
+          print(
+              "Receipt Lambda container validation passed: "
+              f"image_os=linux image_arch=amd64 runtime_machine={machine} "
+              f"reportlab_version={reportlab.Version}"
+          )
+          PY
+
       - name: Build backend Docker image
         run: docker build --platform linux/amd64 -t fyp-backend-ci:${{ github.sha }} backend
 
