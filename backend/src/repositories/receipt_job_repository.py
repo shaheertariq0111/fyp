@@ -305,10 +305,13 @@ class ReceiptJobRepository:
     def query_due(
         self,
         *,
+        due_partition: str = "RECEIPT_OUTBOX",
         now_epoch: int,
         limit: int = 25,
         index_name: str = "DueJobsIndex",
     ) -> list[dict]:
+        if due_partition != "RECEIPT_OUTBOX":
+            raise ValueError("RECEIPT_JOB_OUTBOX_INVALID")
         if type(now_epoch) is not int or now_epoch < 0:
             raise ValueError("RECEIPT_JOB_DUE_TIME_INVALID")
         if type(limit) is not int or limit < 1:
@@ -316,7 +319,7 @@ class ReceiptJobRepository:
         response = self.table.query(
             IndexName=index_name,
             KeyConditionExpression=(
-                Key("GSI1PK").eq("RECEIPT_OUTBOX")
+                Key("GSI1PK").eq(due_partition)
                 & Key("GSI1SK").lte(now_epoch)
             ),
             Limit=limit,
