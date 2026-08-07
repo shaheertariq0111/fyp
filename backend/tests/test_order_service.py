@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from src.services.order_service import OrderService
@@ -652,6 +654,8 @@ def test_price_change_requires_customer_reconfirmation_before_submission():
     assert "Should I confirm this order?" in changed_price.user_message
     assert repository.get_by_order_id(order_id)["status"] == "pending_confirmation"
     assert repository.get_by_order_id(order_id)["idempotency_keys"] == []
+    assert "submitted_at" not in repository.get_by_order_id(order_id)
+    assert "receipt_snapshot" not in repository.get_by_order_id(order_id)
 
     submitted = service.update_order_flow(
         "user",
@@ -664,6 +668,279 @@ def test_price_change_requires_customer_reconfirmation_before_submission():
     assert submitted.data["status"] == "submitted_to_restaurant"
     assert submitted.data["total"] == 1200
     assert repository.get_by_order_id(order_id)["status"] == "submitted_to_restaurant"
+
+
+def _build_receipt_snapshot_order(*, fulfillment_method="takeaway"):
+    menu = MemoryMenuRepository(
+        [
+            {
+                "product_id": "pizza",
+                "name": "Garden Pizza",
+                "available": True,
+                "starting_price": 1000,
+                "base_prices": {"large": 1500},
+                "customization_group_ids": ["pizza-size", "extra-toppings"],
+            }
+        ],
+        [
+            {
+                "option_group_id": "pizza-size",
+                "name": "Pizza Size",
+                "question": "Which pizza size would you like?",
+                "type": "single_select",
+                "required": True,
+                "options": [
+                    {"option_id": "small", "name": "Small", "price_key": "small"},
+                    {"option_id": "large", "name": "Large", "price_key": "large"},
+                ],
+            },
+            {
+                "option_group_id": "extra-toppings",
+                "name": "Extra Toppings",
+                "question": "Add any extra toppings?",
+                "type": "multi_select",
+                "required": False,
+                "max_selections": 3,
+                "options": [
+                    {"option_id": "cheese", "name": "Extra Cheese", "price_delta": 180},
+                    {"option_id": "olives", "label": "Black Olives", "price_delta": 120},
+                    {"option_id": "jalapenos", "name": "Jalapenos", "price_delta": 100},
+                ],
+            },
+        ],
+    )
+    repository = MemoryOrderRepository()
+    service = OrderService(repository, menu)
+    pending = service.create_pending_from_cart({
+        "user_id": "receipt-user",
+        "customer_id": "receipt-customer",
+        "customer_name": "Ava Khan",
+        "customer_phone": "+923001234567",
+        "agent_session_id": "receipt-session",
+        "restaurant_id": "restaurant",
+        "branch_id": "branch",
+        "cart_id": f"receipt-cart-{fulfillment_method}",
+        "subtotal": 1,
+        "currency": "PKR",
+        "items": [{
+            "item_id": "pizza",
+            "name": "Garden Pizza",
+            "quantity": 2,
+            "selected_options": {
+                "pizza-size": "large",
+                "extra-toppings": ["jalapenos", "cheese", "olives"],
+            },
+            "current_price": 1,
+        }],
+    })
+    order_id = pending.data["order_id"]
+    if fulfillment_method == "delivery":
+        service.update_order_flow("receipt-user", order_id, "set_delivery")
+        ready = service.update_order_flow(
+            "receipt-user",
+            order_id,
+            "save_address",
+            "42 Receipt Street",
+        )
+    else:
+        ready = service.update_order_flow("receipt-user", order_id, "set_takeaway")
+    return service, repository, menu, order_id, ready
+
+
+def test_successful_confirmation_persists_authoritative_receipt_snapshot():
+    service, repository, _, order_id, ready = _build_receipt_snapshot_order()
+    raw_customizations = {
+        "pizza-size": "large",
+        "extra-toppings": ["jalapenos", "cheese", "olives"],
+    }
+
+    assert ready.data["status"] == "pending_confirmation"
+    assert "submitted_at" not in repository.get_by_order_id(order_id)
+    assert "receipt_snapshot" not in repository.get_by_order_id(order_id)
+
+    response = service.update_order_flow(
+        "receipt-user",
+        order_id,
+        "confirm",
+        idempotency_key="receipt-confirm",
+    )
+    persisted = repository.get_by_order_id(order_id)
+    snapshot = persisted["receipt_snapshot"]
+
+    assert response.success
+    assert persisted["status"] == "submitted_to_restaurant"
+    assert persisted["submitted_at"] == snapshot["submitted_at"]
+    assert snapshot == {
+        "schema_version": 1,
+        "order_id": order_id,
+        "submitted_at": persisted["submitted_at"],
+        "status": "submitted_to_restaurant",
+        "customer_name": "Ava Khan",
+        "fulfillment_method": "takeaway",
+        "delivery_address": None,
+        "items": [{
+            "item_id": "pizza",
+            "name": "Garden Pizza",
+            "quantity": 2,
+            "unit_price": 1900,
+            "line_total": 3800,
+            "display_customizations": [
+                {"group": "Pizza Size", "options": ["Large"]},
+                {
+                    "group": "Extra Toppings",
+                    "options": ["Extra Cheese", "Black Olives", "Jalapenos"],
+                },
+            ],
+        }],
+        "subtotal": 3800,
+        "delivery_fee": None,
+        "total": 3800,
+        "currency": "PKR",
+    }
+    assert persisted["items"][0]["customizations"] == raw_customizations
+    assert "customer_phone" not in snapshot
+    forbidden_fields = {
+        "tax", "gst", "payment_method", "payment_status",
+        "transaction_reference", "discount", "receipt_number",
+    }
+    assert forbidden_fields.isdisjoint(snapshot)
+
+
+def test_receipt_customization_enrichment_failure_does_not_block_submission(caplog):
+    service, repository, menu, order_id, _ = _build_receipt_snapshot_order()
+    raw_customizations = {
+        "pizza-size": "large",
+        "extra-toppings": ["jalapenos", "cheese", "olives"],
+    }
+    original_get_item = menu.get_item
+    lookup_count = 0
+
+    def fail_snapshot_lookup(item_id):
+        nonlocal lookup_count
+        lookup_count += 1
+        if lookup_count == 2:
+            raise RuntimeError(
+                "private backend payload Ava Khan +923001234567 jalapenos"
+            )
+        return original_get_item(item_id)
+
+    menu.get_item = fail_snapshot_lookup
+
+    with caplog.at_level(logging.WARNING):
+        response = service.update_order_flow(
+            "receipt-user",
+            order_id,
+            "confirm",
+            idempotency_key="receipt-confirm",
+        )
+
+    persisted = repository.get_by_order_id(order_id)
+    snapshot = persisted["receipt_snapshot"]
+    warning = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "receipt_customization_snapshot_failed"
+    )
+
+    assert lookup_count == 2
+    assert response.success
+    assert persisted["status"] == "submitted_to_restaurant"
+    assert persisted["submitted_at"] == snapshot["submitted_at"]
+    assert snapshot["items"] == [{
+        "item_id": "pizza",
+        "name": "Garden Pizza",
+        "quantity": 2,
+        "unit_price": 1900,
+        "line_total": 3800,
+        "display_customizations": [],
+    }]
+    assert snapshot["subtotal"] == 3800
+    assert snapshot["total"] == 3800
+    assert persisted["items"][0]["customizations"] == raw_customizations
+    assert warning.item_id == "pizza"
+    assert warning.exception_type == "RuntimeError"
+    assert "Ava Khan" not in caplog.text
+    assert "+923001234567" not in caplog.text
+    assert "jalapenos" not in caplog.text
+    assert "cheese" not in caplog.text
+    assert "olives" not in caplog.text
+    assert "private backend payload" not in caplog.text
+
+
+def test_delivery_receipt_snapshot_contains_confirmed_address():
+    service, repository, _, order_id, _ = _build_receipt_snapshot_order(
+        fulfillment_method="delivery"
+    )
+
+    service.update_order_flow("receipt-user", order_id, "confirm")
+
+    snapshot = repository.get_by_order_id(order_id)["receipt_snapshot"]
+    assert snapshot["fulfillment_method"] == "delivery"
+    assert snapshot["delivery_address"] == "42 Receipt Street"
+
+
+def test_failed_submission_validation_does_not_create_receipt_snapshot():
+    service, repository, _, order_id, _ = _build_receipt_snapshot_order(
+        fulfillment_method="delivery"
+    )
+    repository.data[order_id]["delivery_address"] = "No"
+
+    response = service.update_order_flow("receipt-user", order_id, "confirm")
+    persisted = repository.get_by_order_id(order_id)
+
+    assert not response.success
+    assert response.error_code == "INVALID_DELIVERY_ADDRESS"
+    assert persisted["status"] == "pending_confirmation"
+    assert "submitted_at" not in persisted
+    assert "receipt_snapshot" not in persisted
+
+
+def test_duplicate_confirmation_and_admin_update_preserve_receipt_snapshot():
+    service, repository, menu, order_id, _ = _build_receipt_snapshot_order()
+
+    service.update_order_flow(
+        "receipt-user",
+        order_id,
+        "confirm",
+        idempotency_key="receipt-confirm",
+    )
+    submitted = repository.get_by_order_id(order_id)
+    original_submitted_at = submitted["submitted_at"]
+    original_snapshot = submitted["receipt_snapshot"]
+
+    menu.groups["pizza-size"]["name"] = "Changed Menu Group"
+    duplicate = service.update_order_flow(
+        "receipt-user",
+        order_id,
+        "confirm",
+        idempotency_key="receipt-confirm",
+    )
+    after_duplicate = repository.get_by_order_id(order_id)
+    service.admin_update_status(order_id, "accept")
+    after_admin_update = repository.get_by_order_id(order_id)
+
+    assert duplicate.success
+    assert after_duplicate["submitted_at"] == original_submitted_at
+    assert after_duplicate["receipt_snapshot"] == original_snapshot
+    assert after_admin_update["submitted_at"] == original_submitted_at
+    assert after_admin_update["receipt_snapshot"] == original_snapshot
+
+
+def test_legacy_order_without_receipt_snapshot_remains_readable():
+    service, repository, create_order = _build_customer_tracking_service()
+    order_id = create_order()
+    legacy = repository.get_by_order_id(order_id)
+
+    assert "submitted_at" not in legacy
+    assert "receipt_snapshot" not in legacy
+
+    response = service.get_order_status("user", order_id)
+
+    assert response.success
+    assert response.data["order"]["order_id"] == order_id
+    assert response.data["order"]["status"] == "awaiting_fulfillment_method"
+
+
 def _build_customer_tracking_service():
     menu = MemoryMenuRepository(
         [
