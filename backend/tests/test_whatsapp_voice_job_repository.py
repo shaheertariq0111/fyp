@@ -18,6 +18,7 @@ class Table:
     def __init__(self):
         self.calls = []
         self.fail = False
+        self.error = None
 
     def put_item(self, **kwargs):
         self.calls.append(("put", kwargs))
@@ -26,6 +27,8 @@ class Table:
 
     def update_item(self, **kwargs):
         self.calls.append(("update", kwargs))
+        if self.error is not None:
+            raise self.error
         if self.fail:
             raise condition_failure()
         return {"Attributes": {
@@ -162,3 +165,113 @@ def test_live_lease_is_rejected_and_stale_lease_condition_is_explicit():
             "wv1_" + "0" * 64, owner="other", now_epoch=100,
             lease_expires_at=200, updated_at="timestamp",
         )
+
+
+def test_receipt_pending_checkpoint_is_one_conditional_update_without_read():
+    table = Table()
+    repository = WhatsAppVoiceJobRepository(Dynamo(table), "jobs")
+
+    repository.checkpoint_receipt_pending(
+        "wv1_" + "0" * 64,
+        expected_version=7,
+        updated_at="2026-08-08T01:00:00+00:00",
+    )
+
+    assert [operation for operation, _ in table.calls] == ["update"]
+    call = table.calls[0][1]
+    condition = call["ConditionExpression"]
+    assert "#state = :outbound_sending" in condition
+    assert "#version = :version" in condition
+    assert "attribute_exists(#submitted_order_id)" in condition
+    assert "attribute_not_exists(#receipt_state)" in condition
+    assert call["ExpressionAttributeValues"][":version"] == 7
+    assert call["ExpressionAttributeValues"][":pending"] == "pending"
+    assert "#state" not in call["UpdateExpression"]
+    assert "#version = #version + :one" in call["UpdateExpression"]
+    assert call["ReturnValues"] == "ALL_NEW"
+
+
+@pytest.mark.parametrize("next_state", ["completed", "manual_review"])
+def test_receipt_activation_transition_requires_pending_outbound_and_version(
+    next_state,
+):
+    table = Table()
+    repository = WhatsAppVoiceJobRepository(Dynamo(table), "jobs")
+
+    repository.transition_receipt_activation(
+        "wv1_" + "0" * 64,
+        expected_version=8,
+        next_state=next_state,
+        updated_at="2026-08-08T01:01:00+00:00",
+    )
+
+    call = table.calls[0][1]
+    condition = call["ConditionExpression"]
+    assert "#state = :outbound_sending" in condition
+    assert "#receipt_state = :pending" in condition
+    assert "#version = :version" in condition
+    assert call["ExpressionAttributeValues"][":next"] == next_state
+    assert "#state" not in call["UpdateExpression"]
+    assert "#version = #version + :one" in call["UpdateExpression"]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["checkpoint", "complete", "manual_review"],
+)
+def test_receipt_conditional_conflicts_raise_voice_job_condition_failed(operation):
+    table = Table()
+    table.fail = True
+    repository = WhatsAppVoiceJobRepository(Dynamo(table), "jobs")
+
+    with pytest.raises(VoiceJobConditionFailed):
+        if operation == "checkpoint":
+            repository.checkpoint_receipt_pending(
+                "wv1_" + "0" * 64,
+                expected_version=7,
+                updated_at="timestamp",
+            )
+        else:
+            repository.transition_receipt_activation(
+                "wv1_" + "0" * 64,
+                expected_version=7,
+                next_state=(
+                    "completed" if operation == "complete" else "manual_review"
+                ),
+                updated_at="timestamp",
+            )
+
+
+def test_receipt_update_unrelated_aws_error_propagates():
+    error = ClientError(
+        {"Error": {"Code": "InternalError", "Message": "private"}},
+        "UpdateItem",
+    )
+    table = Table()
+    table.error = error
+    repository = WhatsAppVoiceJobRepository(Dynamo(table), "jobs")
+
+    with pytest.raises(ClientError) as raised:
+        repository.checkpoint_receipt_pending(
+            "wv1_" + "0" * 64,
+            expected_version=7,
+            updated_at="timestamp",
+        )
+
+    assert raised.value is error
+
+
+@pytest.mark.parametrize("next_state", ["pending", "queued", "retryable_failure"])
+def test_unsupported_receipt_activation_transition_fails_locally(next_state):
+    table = Table()
+    repository = WhatsAppVoiceJobRepository(Dynamo(table), "jobs")
+
+    with pytest.raises(ValueError, match="VOICE_RECEIPT_TRANSITION_INVALID"):
+        repository.transition_receipt_activation(
+            "wv1_" + "0" * 64,
+            expected_version=7,
+            next_state=next_state,
+            updated_at="timestamp",
+        )
+
+    assert table.calls == []

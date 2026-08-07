@@ -13,6 +13,11 @@ VOICE_QUEUE_VERSION = 1
 VOICE_QUEUE_MAX_BYTES = 512
 VOICE_JOB_ID_PATTERN = re.compile(r"^wv1_[0-9a-f]{64}$")
 VOICE_AUDIO_ID_MAX_LENGTH = 512
+VOICE_RECEIPT_ACTIVATION_STATES = frozenset({
+    "pending",
+    "completed",
+    "manual_review",
+})
 
 
 class VoiceJobState(str, Enum):
@@ -129,3 +134,20 @@ def validate_voice_job_record(
         validate_voice_audio_id(record["audio_id"])
     if not isinstance(record["media_url"], str):
         raise ValueError("VOICE_MEDIA_URL_INVALID")
+    if "submitted_order_id" in record:
+        submitted_order_id = record["submitted_order_id"]
+        if (
+            not isinstance(submitted_order_id, str)
+            or not submitted_order_id
+            or submitted_order_id != submitted_order_id.strip()
+        ):
+            raise ValueError("VOICE_SUBMITTED_ORDER_ID_INVALID")
+    if "receipt_activation_state" in record:
+        if "submitted_order_id" not in record:
+            raise ValueError("VOICE_RECEIPT_ACTIVATION_INVALID")
+        if (
+            not isinstance(record["receipt_activation_state"], str)
+            or record["receipt_activation_state"]
+            not in VOICE_RECEIPT_ACTIVATION_STATES
+        ):
+            raise ValueError("VOICE_RECEIPT_ACTIVATION_INVALID")
