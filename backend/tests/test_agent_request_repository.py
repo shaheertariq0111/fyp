@@ -178,3 +178,131 @@ def test_transition_idempotency_delivery_state_reports_lost_claim():
         next_state="outbound_sending",
         updated_at="2026-08-02T10:00:00+00:00",
     )
+
+
+def test_complete_delivery_with_receipt_pending_is_one_conditional_update():
+    dynamo = FakeDynamo()
+    repository = AgentRequestRepository(dynamo, "agent-requests")
+
+    assert repository.complete_delivery_with_receipt_pending(
+        "wamid.synthetic-1",
+        updated_at="2026-08-07T10:00:00+00:00",
+    )
+
+    assert dynamo.table.get_calls == []
+    assert dynamo.table.put_calls == []
+    assert dynamo.table.update_calls == [{
+        "Key": {
+            "PK": "agentflo-whatsapp-message:wamid.synthetic-1",
+            "SK": "IDEMPOTENCY",
+        },
+        "UpdateExpression": (
+            "SET #delivery_state = :completed, "
+            "#receipt_activation_state = :pending, "
+            "#updated_at = :updated_at"
+        ),
+        "ConditionExpression": (
+            "#delivery_state = :outbound_sending AND "
+            "attribute_exists(#submitted_order_id)"
+        ),
+        "ExpressionAttributeNames": {
+            "#delivery_state": "delivery_state",
+            "#receipt_activation_state": "receipt_activation_state",
+            "#submitted_order_id": "submitted_order_id",
+            "#updated_at": "updated_at",
+        },
+        "ExpressionAttributeValues": {
+            ":outbound_sending": "outbound_sending",
+            ":completed": "completed",
+            ":pending": "pending",
+            ":updated_at": "2026-08-07T10:00:00+00:00",
+        },
+    }]
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["complete_delivery_with_receipt_pending", "transition_receipt_activation_state"],
+)
+def test_receipt_marker_conditional_conflicts_return_false(method):
+    dynamo = FakeDynamo()
+    dynamo.table.update_error = client_error("ConditionalCheckFailedException")
+    repository = AgentRequestRepository(dynamo, "agent-requests")
+    if method == "complete_delivery_with_receipt_pending":
+        result = repository.complete_delivery_with_receipt_pending(
+            "wamid.synthetic-1",
+            updated_at="timestamp",
+        )
+    else:
+        result = repository.transition_receipt_activation_state(
+            "wamid.synthetic-1",
+            expected_state="pending",
+            next_state="completed",
+            updated_at="timestamp",
+        )
+    assert result is False
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["complete_delivery_with_receipt_pending", "transition_receipt_activation_state"],
+)
+def test_receipt_marker_operations_propagate_unrelated_aws_errors(method):
+    dynamo = FakeDynamo()
+    dynamo.table.update_error = client_error("AccessDeniedException")
+    repository = AgentRequestRepository(dynamo, "agent-requests")
+    with pytest.raises(ClientError):
+        if method == "complete_delivery_with_receipt_pending":
+            repository.complete_delivery_with_receipt_pending(
+                "wamid.synthetic-1",
+                updated_at="timestamp",
+            )
+        else:
+            repository.transition_receipt_activation_state(
+                "wamid.synthetic-1",
+                expected_state="pending",
+                next_state="completed",
+                updated_at="timestamp",
+            )
+
+
+@pytest.mark.parametrize("next_state", ["completed", "manual_review"])
+def test_receipt_activation_transition_requires_completed_delivery(next_state):
+    dynamo = FakeDynamo()
+    repository = AgentRequestRepository(dynamo, "agent-requests")
+
+    assert repository.transition_receipt_activation_state(
+        "wamid.synthetic-1",
+        expected_state="pending",
+        next_state=next_state,
+        updated_at="timestamp",
+    )
+
+    call = dynamo.table.update_calls[0]
+    assert call["ConditionExpression"] == (
+        "#delivery_state = :completed AND "
+        "#receipt_activation_state = :expected_state"
+    )
+    assert call["ExpressionAttributeValues"][":completed"] == "completed"
+    assert call["ExpressionAttributeValues"][":expected_state"] == "pending"
+    assert call["ExpressionAttributeValues"][":next_state"] == next_state
+
+
+@pytest.mark.parametrize(
+    ("expected_state", "next_state"),
+    [("completed", "pending"), ("pending", "pending"), ("completed", "manual_review")],
+)
+def test_receipt_activation_rejects_unsupported_transitions(
+    expected_state,
+    next_state,
+):
+    dynamo = FakeDynamo()
+    repository = AgentRequestRepository(dynamo, "agent-requests")
+    with pytest.raises(ValueError, match="RECEIPT_ACTIVATION_TRANSITION_INVALID"):
+        repository.transition_receipt_activation_state(
+            "wamid.synthetic-1",
+            expected_state=expected_state,
+            next_state=next_state,
+            updated_at="timestamp",
+        )
+    assert dynamo.table.update_calls == []

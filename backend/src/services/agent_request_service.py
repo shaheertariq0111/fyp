@@ -132,7 +132,14 @@ class AgentRequestService:
         session_id: str,
         customer_id: str,
         reply: str,
+        submitted_order_id: str | None = None,
     ) -> None:
+        if submitted_order_id is not None and (
+            not isinstance(submitted_order_id, str)
+            or not submitted_order_id
+            or submitted_order_id != submitted_order_id.strip()
+        ):
+            raise ValueError("AGENTFLO_SUBMITTED_ORDER_ID_INVALID")
         marker = self.repository.get_idempotency_key(message_id)
         if marker is None:
             raise ValueError("AGENTFLO_WHATSAPP_MARKER_NOT_FOUND")
@@ -144,6 +151,8 @@ class AgentRequestService:
             "reply": reply,
             "updated_at": self._now().isoformat(),
         })
+        if submitted_order_id is not None:
+            marker["submitted_order_id"] = submitted_order_id
         self.repository.save_idempotency_key(marker)
 
     def complete_agentflo_whatsapp_message(self, message_id: str) -> bool:
@@ -151,6 +160,37 @@ class AgentRequestService:
             message_id,
             expected_state="outbound_sending",
             next_state="completed",
+            updated_at=self._now().isoformat(),
+        )
+
+    def complete_agentflo_whatsapp_with_receipt_pending(
+        self,
+        message_id: str,
+    ) -> bool:
+        return self.repository.complete_delivery_with_receipt_pending(
+            message_id,
+            updated_at=self._now().isoformat(),
+        )
+
+    def complete_agentflo_whatsapp_receipt_activation(
+        self,
+        message_id: str,
+    ) -> bool:
+        return self.repository.transition_receipt_activation_state(
+            message_id,
+            expected_state="pending",
+            next_state="completed",
+            updated_at=self._now().isoformat(),
+        )
+
+    def mark_agentflo_whatsapp_receipt_manual_review(
+        self,
+        message_id: str,
+    ) -> bool:
+        return self.repository.transition_receipt_activation_state(
+            message_id,
+            expected_state="pending",
+            next_state="manual_review",
             updated_at=self._now().isoformat(),
         )
 
