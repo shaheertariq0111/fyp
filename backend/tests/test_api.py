@@ -25,6 +25,13 @@ from src.services.ticket_service import AdminTicketError
 from fakes import MemoryCartRepository, MemoryMenuRepository, MemoryOrderRepository
 from test_config import make_test_settings
 from src.services.whatsapp_voice_job_service import VoiceJobSubmission
+from src.services.whatsapp_conversation_service import (
+    WhatsAppConversationReply,
+    WhatsAppDeliveryOutcome,
+)
+from src.services.whatsapp_receipt_activation_service import (
+    WhatsAppReceiptActivationResult,
+)
 
 
 CUSTOMER_TICKET_KEYS = {
@@ -61,6 +68,8 @@ class MemoryAgentRequestService:
         self.agentflo_message_ids = set()
         self.agentflo_claims = []
         self.agentflo_markers = {}
+        self.agentflo_marker_gets = []
+        self.receipt_events = []
 
     def claim_agentflo_whatsapp_message(self, message_id):
         self.agentflo_claims.append(message_id)
@@ -71,25 +80,73 @@ class MemoryAgentRequestService:
         return True
 
     def get_agentflo_whatsapp_message(self, message_id):
+        self.agentflo_marker_gets.append(message_id)
         marker = self.agentflo_markers.get(message_id)
         return deepcopy(marker) if marker else None
 
     def cache_agentflo_whatsapp_response(
-        self, message_id, *, request_id, session_id, customer_id, reply
+        self,
+        message_id,
+        *,
+        request_id,
+        session_id,
+        customer_id,
+        reply,
+        submitted_order_id=None,
     ):
-        self.agentflo_markers[message_id] = {
+        marker = {
             "delivery_state": "response_ready",
             "request_id": request_id,
             "session_id": session_id,
             "customer_id": customer_id,
             "reply": reply,
         }
+        if submitted_order_id is not None:
+            marker["submitted_order_id"] = submitted_order_id
+        self.agentflo_markers[message_id] = marker
+        self.receipt_events.append("cache")
 
     def complete_agentflo_whatsapp_message(self, message_id):
         marker = self.agentflo_markers.get(message_id)
         if marker is None or marker.get("delivery_state") != "outbound_sending":
             return False
         marker["delivery_state"] = "completed"
+        self.receipt_events.append("complete")
+        return True
+
+    def complete_agentflo_whatsapp_with_receipt_pending(self, message_id):
+        marker = self.agentflo_markers.get(message_id)
+        if (
+            marker is None
+            or marker.get("delivery_state") != "outbound_sending"
+            or "submitted_order_id" not in marker
+        ):
+            return False
+        marker["delivery_state"] = "completed"
+        marker["receipt_activation_state"] = "pending"
+        self.receipt_events.append("receipt_pending")
+        return True
+
+    def complete_agentflo_whatsapp_receipt_activation(self, message_id):
+        marker = self.agentflo_markers.get(message_id)
+        if (
+            marker is None
+            or marker.get("delivery_state") != "completed"
+            or marker.get("receipt_activation_state") != "pending"
+        ):
+            return False
+        marker["receipt_activation_state"] = "completed"
+        return True
+
+    def mark_agentflo_whatsapp_receipt_manual_review(self, message_id):
+        marker = self.agentflo_markers.get(message_id)
+        if (
+            marker is None
+            or marker.get("delivery_state") != "completed"
+            or marker.get("receipt_activation_state") != "pending"
+        ):
+            return False
+        marker["receipt_activation_state"] = "manual_review"
         return True
 
     def claim_agentflo_whatsapp_outbound(self, message_id):
@@ -209,6 +266,7 @@ class IdentityServices:
         self.agent_sessions = SimpleNamespace(resolve=self.resolve)
         self.agent_requests = MemoryAgentRequestService()
         self.conversation_history = MemoryConversationHistoryService()
+        self.whatsapp_receipt_activation = None
 
     def resolve(self, **kwargs):
         return {
@@ -1414,6 +1472,459 @@ def test_agentflo_whatsapp_unexpected_gateway_error_is_sanitized(monkeypatch):
     assert response.json()["error_code"] == "AGENTFLO_OUTBOUND_FAILED"
     assert response.json()["reply"] == "Generated reply."
     assert "private gateway failure" not in response.text
+
+
+class ReceiptConversationStub:
+    def __init__(self, reply, delivery, events=None):
+        self.reply = reply
+        self.delivery = delivery
+        self.events = events if events is not None else []
+        self.process_calls = []
+        self.deliver_calls = []
+
+    def process_text(self, inbound, *, http_request_id=None):
+        self.process_calls.append((inbound, http_request_id))
+        self.events.append("process")
+        return self.reply
+
+    def deliver(self, inbound, reply):
+        self.deliver_calls.append((inbound, reply))
+        self.events.append("deliver")
+        return self.delivery
+
+
+class ReceiptActivationStub:
+    def __init__(self, agent_requests, *, status="activated", retryable=False, events=None):
+        self.agent_requests = agent_requests
+        self.status = status
+        self.retryable = retryable
+        self.events = events if events is not None else []
+        self.calls = []
+
+    def activate_pending(self, **kwargs):
+        self.calls.append(deepcopy(kwargs))
+        self.events.append("activate")
+        if self.status == "activated":
+            self.agent_requests.complete_agentflo_whatsapp_receipt_activation(
+                kwargs["message_id"]
+            )
+        elif self.status == "manual_review":
+            self.agent_requests.mark_agentflo_whatsapp_receipt_manual_review(
+                kwargs["message_id"]
+            )
+        return WhatsAppReceiptActivationResult(self.status, self.retryable)
+
+
+def receipt_settings(enabled=True):
+    return make_test_settings(
+        receipt_activation_enabled=enabled,
+        receipt_jobs_table_name="receipt-jobs-test" if enabled else "",
+        receipt_job_queue_url=(
+            "https://sqs.example.test/receipt" if enabled else ""
+        ),
+    )
+
+
+def configure_receipt_text_flow(
+    monkeypatch,
+    *,
+    submitted_order_id="ORD-private-123",
+    delivery=None,
+    activation_status="activated",
+    activation_retryable=False,
+    enabled=True,
+):
+    services = WhatsAppIdentityServices()
+    events = []
+    services.agent_requests.receipt_events = events
+    reply = WhatsAppConversationReply(
+        "Private confirmation reply.",
+        "request-private-1",
+        "session-private-1",
+        "customer-private-1",
+        submitted_order_id=submitted_order_id,
+    )
+    delivery = delivery or WhatsAppDeliveryOutcome(
+        "sent",
+        {
+            "sent": True,
+            "status": "accepted",
+            "providerMessageId": "provider-private-1",
+        },
+    )
+    conversation = ReceiptConversationStub(reply, delivery, events)
+    activation = ReceiptActivationStub(
+        services.agent_requests,
+        status=activation_status,
+        retryable=activation_retryable,
+        events=events,
+    )
+    services.whatsapp_receipt_activation = activation
+    monkeypatch.setattr(main, "get_services", lambda: services)
+    monkeypatch.setattr(main, "get_settings", lambda: receipt_settings(enabled))
+    monkeypatch.setattr(
+        main,
+        "_whatsapp_conversation_service",
+        lambda: conversation,
+    )
+    return services, conversation, activation, events
+
+
+def receipt_payload(message_id="wamid.receipt-live-1"):
+    payload = {
+        "message": "Private inbound confirmation request",
+        "from": "+923001234567",
+        "sender_id": "sender-private-1",
+    }
+    if message_id is not None:
+        payload["message_id"] = message_id
+    return payload
+
+
+def test_receipt_disabled_preserves_old_marker_shape_and_completion(monkeypatch):
+    services, conversation, activation, events = configure_receipt_text_flow(
+        monkeypatch,
+        enabled=False,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=receipt_payload(),
+    )
+
+    marker = services.agent_requests.agentflo_markers["wamid.receipt-live-1"]
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert marker["delivery_state"] == "completed"
+    assert "submitted_order_id" not in marker
+    assert "receipt_activation_state" not in marker
+    assert activation.calls == []
+    assert events == ["process", "cache", "deliver", "complete"]
+    assert len(conversation.deliver_calls) == 1
+
+
+def test_definite_text_send_precedes_atomic_receipt_handoff(monkeypatch):
+    services, conversation, activation, events = configure_receipt_text_flow(
+        monkeypatch,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=receipt_payload(),
+    )
+
+    marker = services.agent_requests.agentflo_markers["wamid.receipt-live-1"]
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert events == ["process", "cache", "deliver", "receipt_pending", "activate"]
+    assert marker["submitted_order_id"] == "ORD-private-123"
+    assert marker["delivery_state"] == "completed"
+    assert marker["receipt_activation_state"] == "completed"
+    assert len(conversation.process_calls) == 1
+    assert len(conversation.deliver_calls) == 1
+    assert len(activation.calls) == 1
+    call = activation.calls[0]
+    assert call["message_id"] == "wamid.receipt-live-1"
+    assert call["customer_number"] == "+923001234567"
+    assert call["sender_id"] == "sender-private-1"
+    assert call["marker"]["submitted_order_id"] == "ORD-private-123"
+    assert services.agent_requests.agentflo_marker_gets == [
+        "wamid.receipt-live-1"
+    ]
+
+
+@pytest.mark.parametrize(
+    "reply_kind",
+    ["normal_chat", "menu", "status", "pending_confirmation", "failed_confirmation"],
+)
+def test_non_submission_replies_follow_old_completion_without_receipt(
+    monkeypatch,
+    reply_kind,
+):
+    services, _conversation, activation, _events = configure_receipt_text_flow(
+        monkeypatch,
+        submitted_order_id=None,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json={**receipt_payload(), "message": reply_kind},
+    )
+
+    marker = services.agent_requests.agentflo_markers["wamid.receipt-live-1"]
+    assert response.json()["success"] is True
+    assert marker["delivery_state"] == "completed"
+    assert "submitted_order_id" not in marker
+    assert "receipt_activation_state" not in marker
+    assert activation.calls == []
+
+
+@pytest.mark.parametrize(
+    "delivery",
+    [
+        WhatsAppDeliveryOutcome("skipped", {"sent": False, "skipped": True}),
+        WhatsAppDeliveryOutcome("sent", {"sent": False}),
+        WhatsAppDeliveryOutcome("retryable_failure", {"sent": False}),
+        WhatsAppDeliveryOutcome("permanent_failure", {"sent": False}),
+        WhatsAppDeliveryOutcome("ambiguous", {"sent": False}),
+        WhatsAppDeliveryOutcome("ambiguous", {"sent": True}),
+        WhatsAppDeliveryOutcome("skipped", {"sent": True, "skipped": True}),
+        WhatsAppDeliveryOutcome("sent", {}),
+    ],
+)
+def test_receipt_never_activates_without_definite_send(monkeypatch, delivery):
+    services, _conversation, activation, _events = configure_receipt_text_flow(
+        monkeypatch,
+        delivery=delivery,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=receipt_payload(),
+    )
+
+    marker = services.agent_requests.agentflo_markers["wamid.receipt-live-1"]
+    assert response.status_code == 200
+    assert "receipt_activation_state" not in marker
+    assert activation.calls == []
+
+
+@pytest.mark.parametrize(
+    ("activation_state", "expected_calls"),
+    [("pending", 1), ("completed", 0), ("manual_review", 0)],
+)
+def test_duplicate_completed_receipt_state_recovers_only_pending(
+    monkeypatch,
+    activation_state,
+    expected_calls,
+):
+    services, conversation, activation, _events = configure_receipt_text_flow(
+        monkeypatch,
+    )
+    message_id = "wamid.receipt-duplicate"
+    services.agent_requests.agentflo_message_ids.add(message_id)
+    services.agent_requests.agentflo_markers[message_id] = {
+        "delivery_state": "completed",
+        "receipt_activation_state": activation_state,
+        "submitted_order_id": "ORD-private-duplicate",
+        "request_id": "request-private-duplicate",
+        "session_id": "session-private-duplicate",
+        "reply": "Private cached reply.",
+    }
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=receipt_payload(message_id),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["duplicate"] is True
+    assert len(activation.calls) == expected_calls
+    assert conversation.process_calls == []
+    assert conversation.deliver_calls == []
+    if activation_state == "pending":
+        assert services.agent_requests.agentflo_markers[message_id][
+            "receipt_activation_state"
+        ] == "completed"
+
+
+def test_duplicate_outbound_sending_never_activates_even_with_order_signal(monkeypatch):
+    services, conversation, activation, _events = configure_receipt_text_flow(
+        monkeypatch,
+    )
+    message_id = "wamid.receipt-ambiguous"
+    services.agent_requests.agentflo_message_ids.add(message_id)
+    services.agent_requests.agentflo_markers[message_id] = {
+        "delivery_state": "outbound_sending",
+        "submitted_order_id": "ORD-private-ambiguous",
+        "request_id": "request-private-ambiguous",
+        "session_id": "session-private-ambiguous",
+        "reply": "Private cached reply.",
+    }
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=receipt_payload(message_id),
+    )
+
+    assert response.json()["duplicate"] is True
+    assert activation.calls == []
+    assert conversation.process_calls == []
+    assert conversation.deliver_calls == []
+    assert services.agent_requests.agentflo_markers[message_id][
+        "delivery_state"
+    ] == "outbound_sending"
+
+
+@pytest.mark.parametrize("sent", [True, False])
+def test_response_ready_duplicate_activates_only_after_definite_retry(
+    monkeypatch,
+    sent,
+):
+    services, conversation, activation, _events = configure_receipt_text_flow(
+        monkeypatch,
+    )
+    gateway = StubAgentfloGateway(
+        configured=True,
+        result={
+            "sent": sent,
+            "status": "accepted" if sent else "failed",
+        },
+    )
+    monkeypatch.setattr(main, "AgentfloGatewayService", lambda **kwargs: gateway)
+    message_id = "wamid.receipt-cached-retry"
+    services.agent_requests.agentflo_message_ids.add(message_id)
+    services.agent_requests.agentflo_markers[message_id] = {
+        "delivery_state": "response_ready",
+        "submitted_order_id": "ORD-private-retry",
+        "request_id": "request-private-retry",
+        "session_id": "session-private-retry",
+        "customer_id": "customer-private-retry",
+        "reply": "Private cached confirmation.",
+    }
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=receipt_payload(message_id),
+    )
+
+    marker = services.agent_requests.agentflo_markers[message_id]
+    assert response.status_code == 200
+    assert len(gateway.calls) == 1
+    assert conversation.process_calls == []
+    assert conversation.deliver_calls == []
+    assert len(activation.calls) == (1 if sent else 0)
+    assert marker["delivery_state"] == ("completed" if sent else "response_ready")
+    if sent:
+        assert marker["receipt_activation_state"] == "completed"
+    else:
+        assert "receipt_activation_state" not in marker
+
+
+@pytest.mark.parametrize(
+    ("reloaded_state", "activation_state", "expected_calls"),
+    [
+        ("completed", "pending", 1),
+        ("completed", "completed", 0),
+        ("completed", "manual_review", 0),
+        ("outbound_sending", None, 0),
+    ],
+)
+def test_receipt_checkpoint_conflict_uses_only_reloaded_durable_state(
+    monkeypatch,
+    reloaded_state,
+    activation_state,
+    expected_calls,
+):
+    services, _conversation, activation, _events = configure_receipt_text_flow(
+        monkeypatch,
+    )
+    message_id = "wamid.receipt-conflict"
+
+    def conflict(_message_id):
+        marker = services.agent_requests.agentflo_markers[message_id]
+        marker["delivery_state"] = reloaded_state
+        if activation_state is not None:
+            marker["receipt_activation_state"] = activation_state
+        return False
+
+    services.agent_requests.complete_agentflo_whatsapp_with_receipt_pending = conflict
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=receipt_payload(message_id),
+    )
+
+    assert response.json()["success"] is True
+    assert len(activation.calls) == expected_calls
+    marker = services.agent_requests.agentflo_markers[message_id]
+    if reloaded_state == "outbound_sending":
+        assert "receipt_activation_state" not in marker
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable", "expected_state"),
+    [
+        ("retryable_failure", True, "pending"),
+        ("manual_review", False, "manual_review"),
+    ],
+)
+def test_activation_failure_never_changes_successful_text_response_or_resends(
+    monkeypatch,
+    status,
+    retryable,
+    expected_state,
+):
+    services, conversation, activation, _events = configure_receipt_text_flow(
+        monkeypatch,
+        activation_status=status,
+        activation_retryable=retryable,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=receipt_payload(),
+    )
+
+    marker = services.agent_requests.agentflo_markers["wamid.receipt-live-1"]
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert marker["delivery_state"] == "completed"
+    assert marker["receipt_activation_state"] == expected_state
+    assert len(conversation.deliver_calls) == 1
+    assert len(activation.calls) == 1
+
+
+def test_missing_message_id_prefers_no_receipt_over_unsafe_activation(monkeypatch):
+    services, conversation, activation, _events = configure_receipt_text_flow(
+        monkeypatch,
+    )
+
+    response = client().post(
+        "/api/channels/agentflo/whatsapp",
+        json=receipt_payload(None),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert services.agent_requests.agentflo_markers == {}
+    assert len(conversation.deliver_calls) == 1
+    assert activation.calls == []
+
+
+def test_receipt_specific_logs_exclude_private_values(monkeypatch, caplog):
+    private_values = {
+        "ORD-private-123",
+        "wamid.receipt-live-1",
+        "+923001234567",
+        "sender-private-1",
+        "request-private-1",
+        "session-private-1",
+        "Private confirmation reply.",
+    }
+    configure_receipt_text_flow(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger="src.api.main"):
+        response = client().post(
+            "/api/channels/agentflo/whatsapp",
+            json=receipt_payload(),
+        )
+
+    assert response.status_code == 200
+    receipt_logs = [
+        vars(record)
+        for record in caplog.records
+        if getattr(record, "event", None)
+        in {
+            "agentflo_whatsapp_receipt_activation",
+            "agentflo_whatsapp_receipt_handoff",
+            "agentflo_whatsapp_receipt_handoff_failed",
+        }
+    ]
+    serialized = repr(receipt_logs)
+    assert receipt_logs
+    for private in private_values:
+        assert private not in serialized
 
 
 def test_agentflo_whatsapp_simple_payload_extracts_aliases(monkeypatch):
