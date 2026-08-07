@@ -98,7 +98,7 @@ class ReceiptPdfRenderer:
             raise ReceiptPdfRenderError("RECEIPT_PDF_TOO_LARGE")
         return RenderedReceiptPdf(
             content=content,
-            filename=self._filename(receipt["order_id"]),
+            filename=self.filename_for_order_id(receipt["order_id"]),
         )
 
     def _story(self, receipt: dict[str, Any]) -> list[Any]:
@@ -436,7 +436,7 @@ class ReceiptPdfRenderer:
         return parsed
 
     @staticmethod
-    def _filename(order_id: str) -> str:
+    def filename_for_order_id(order_id: str) -> str:
         safe = re.sub(r"[^A-Za-z0-9._-]+", "-", order_id).strip("._-")
         if not safe:
             safe = hashlib.sha256(order_id.encode("utf-8")).hexdigest()[:16]

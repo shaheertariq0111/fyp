@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from src.models.receipt_job import (
+    TERMINAL_RECEIPT_JOB_STATES,
     ReceiptJobState,
     receipt_job_id,
     validate_receipt_job_record,
@@ -17,6 +18,44 @@ ENQUEUE_STATES = frozenset({
     ReceiptJobState.PENDING_ENQUEUE.value,
     ReceiptJobState.RETRYABLE_FAILURE.value,
 })
+
+LEGAL_TRANSITIONS = {
+    ReceiptJobState.PENDING_ENQUEUE.value: {
+        ReceiptJobState.QUEUED.value,
+        ReceiptJobState.PROCESSING.value,
+        ReceiptJobState.RETRYABLE_FAILURE.value,
+    },
+    ReceiptJobState.QUEUED.value: {
+        ReceiptJobState.PROCESSING.value,
+        ReceiptJobState.RETRYABLE_FAILURE.value,
+        ReceiptJobState.PERMANENT_FAILURE.value,
+    },
+    ReceiptJobState.PROCESSING.value: {
+        ReceiptJobState.GENERATED.value,
+        ReceiptJobState.RETRYABLE_FAILURE.value,
+        ReceiptJobState.PERMANENT_FAILURE.value,
+    },
+    ReceiptJobState.GENERATED.value: {
+        ReceiptJobState.OUTBOUND_SENDING.value,
+        ReceiptJobState.RETRYABLE_FAILURE.value,
+        ReceiptJobState.PERMANENT_FAILURE.value,
+    },
+    ReceiptJobState.OUTBOUND_SENDING.value: {
+        ReceiptJobState.SENT.value,
+        ReceiptJobState.GENERATED.value,
+        ReceiptJobState.PERMANENT_FAILURE.value,
+        ReceiptJobState.MANUAL_REVIEW.value,
+    },
+    ReceiptJobState.RETRYABLE_FAILURE.value: {
+        ReceiptJobState.QUEUED.value,
+        ReceiptJobState.PROCESSING.value,
+        ReceiptJobState.GENERATED.value,
+        ReceiptJobState.PERMANENT_FAILURE.value,
+    },
+    ReceiptJobState.SENT.value: set(),
+    ReceiptJobState.PERMANENT_FAILURE.value: set(),
+    ReceiptJobState.MANUAL_REVIEW.value: set(),
+}
 
 
 class ReceiptJobServiceError(RuntimeError):
@@ -253,6 +292,102 @@ class ReceiptJobService:
             },
         )
         return recovered
+
+    def get(self, job_id: str) -> dict | None:
+        return self.repository.get(job_id)
+
+    def transition(
+        self,
+        record: dict,
+        next_state: str,
+        *,
+        values: dict | None = None,
+        remove: tuple[str, ...] = (),
+        lease_owner: str | None = None,
+    ) -> dict:
+        current_state = record.get("state")
+        if next_state not in LEGAL_TRANSITIONS.get(current_state, set()):
+            raise ValueError("RECEIPT_JOB_TRANSITION_INVALID")
+        if lease_owner is not None:
+            lease_owner = self._required_string(
+                lease_owner,
+                "RECEIPT_JOB_LEASE_INVALID",
+            )
+        return self.repository.transition(
+            record["job_id"],
+            expected_states={current_state},
+            expected_version=record["version"],
+            next_state=next_state,
+            updated_at=self._now().isoformat(),
+            values=values,
+            remove=remove,
+            expected_lease_owner=lease_owner,
+        )
+
+    def acquire_lease(
+        self,
+        job_id: str,
+        owner: str,
+        *,
+        lease_seconds: int,
+    ) -> dict:
+        normalized_owner = self._required_string(
+            owner,
+            "RECEIPT_JOB_LEASE_INVALID",
+        )
+        self._validate_lease_seconds(lease_seconds)
+        now = self._now()
+        return self.repository.acquire_lease(
+            job_id,
+            owner=normalized_owner,
+            now_epoch=int(now.timestamp()),
+            lease_expires_at=int(
+                (now + timedelta(seconds=lease_seconds)).timestamp()
+            ),
+            updated_at=now.isoformat(),
+        )
+
+    def extend_lease(
+        self,
+        job_id: str,
+        owner: str,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        normalized_owner = self._required_string(
+            owner,
+            "RECEIPT_JOB_LEASE_INVALID",
+        )
+        self._validate_lease_seconds(lease_seconds)
+        now = self._now()
+        return self.repository.extend_lease(
+            job_id,
+            owner=normalized_owner,
+            lease_expires_at=int(
+                (now + timedelta(seconds=lease_seconds)).timestamp()
+            ),
+            updated_at=now.isoformat(),
+        )
+
+    def release_lease(self, job_id: str, owner: str) -> bool:
+        normalized_owner = self._required_string(
+            owner,
+            "RECEIPT_JOB_LEASE_INVALID",
+        )
+        return self.repository.release_lease(
+            job_id,
+            owner=normalized_owner,
+            updated_at=self._now().isoformat(),
+        )
+
+    @staticmethod
+    def is_terminal(record: dict) -> bool:
+        return record.get("state") in TERMINAL_RECEIPT_JOB_STATES
+
+    @staticmethod
+    def _validate_lease_seconds(value: int) -> None:
+        if type(value) is not int or value < 1:
+            raise ValueError("RECEIPT_JOB_LEASE_INVALID")
 
     def _load_existing(self, job_id: str) -> dict:
         existing = self.repository.get(job_id)

@@ -69,6 +69,7 @@ class ReceiptJobRepository:
         updated_at: str,
         values: dict | None = None,
         remove: tuple[str, ...] = (),
+        expected_lease_owner: str | None = None,
     ) -> dict:
         valid_states = {state.value for state in ReceiptJobState}
         if not expected_states or not expected_states.issubset(valid_states):
@@ -79,6 +80,11 @@ class ReceiptJobRepository:
             raise ValueError("RECEIPT_JOB_VERSION_INVALID")
         if not isinstance(updated_at, str) or not updated_at.strip():
             raise ValueError("RECEIPT_JOB_TIMESTAMP_INVALID")
+        if expected_lease_owner is not None and (
+            not isinstance(expected_lease_owner, str)
+            or not expected_lease_owner.strip()
+        ):
+            raise ValueError("RECEIPT_JOB_LEASE_INVALID")
 
         checkpoint_values = {} if values is None else values
         validate_receipt_job_checkpoint_values(checkpoint_values)
@@ -113,6 +119,14 @@ class ReceiptJobRepository:
             state_tokens.append(token)
             expression_values[token] = state
 
+        condition_expression = (
+            f"#version = :version AND #state IN ({', '.join(state_tokens)})"
+        )
+        if expected_lease_owner is not None:
+            names["#lease_owner"] = "lease_owner"
+            expression_values[":lease_owner"] = expected_lease_owner.strip()
+            condition_expression += " AND #lease_owner = :lease_owner"
+
         assignments = [
             "#state = :next",
             "#version = #version + :one",
@@ -138,9 +152,7 @@ class ReceiptJobRepository:
             response = self.table.update_item(
                 Key=self._key(job_id),
                 UpdateExpression=update_expression,
-                ConditionExpression=(
-                    f"#version = :version AND #state IN ({', '.join(state_tokens)})"
-                ),
+                ConditionExpression=condition_expression,
                 ExpressionAttributeNames=names,
                 ExpressionAttributeValues=to_dynamodb(expression_values),
                 ReturnValues="ALL_NEW",

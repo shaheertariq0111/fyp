@@ -415,3 +415,14 @@ def test_filename_is_safe_and_uses_no_customer_data():
     assert "/" not in result.filename
     assert "Sample Customer" not in result.filename
     assert "42 Sample Street" not in result.filename
+
+
+def test_public_filename_helper_matches_rendered_filename():
+    renderer = ReceiptPdfRenderer(merchant_name="Burger O'Clock")
+    order_id = "ORD / unsafe .. 123"
+    snapshot = receipt_snapshot()
+    snapshot["order_id"] = order_id
+
+    assert renderer.render(snapshot).filename == (
+        renderer.filename_for_order_id(order_id)
+    )

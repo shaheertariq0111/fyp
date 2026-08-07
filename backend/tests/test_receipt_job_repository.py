@@ -61,6 +61,10 @@ class ReceiptJobTable:
             if (
                 current["version"] != values[":version"]
                 or current["state"] not in expected_states
+                or (
+                    ":lease_owner" in values
+                    and current.get("lease_owner") != values[":lease_owner"]
+                )
             ):
                 raise client_error()
             updated = deepcopy(current)
@@ -192,6 +196,55 @@ def test_transition_requires_state_and_version_and_updates_atomically():
     assert updated["provider_message_id"] == "provider-safe"
     assert "GSI1PK" not in updated
     assert "GSI1SK" not in updated
+
+
+def test_transition_can_condition_on_current_lease_owner():
+    repository, table, record = repository_with_record()
+    leased = repository.acquire_lease(
+        record["job_id"],
+        owner="worker-a",
+        now_epoch=100,
+        lease_expires_at=200,
+        updated_at="lease-time",
+    )
+
+    updated = repository.transition(
+        record["job_id"],
+        expected_states={leased["state"]},
+        expected_version=leased["version"],
+        expected_lease_owner="worker-a",
+        next_state="queued",
+        updated_at="transition-time",
+        remove=("GSI1PK", "GSI1SK"),
+    )
+
+    call = table.calls[-1][1]
+    assert "#lease_owner = :lease_owner" in call["ConditionExpression"]
+    assert call["ExpressionAttributeNames"]["#lease_owner"] == "lease_owner"
+    assert call["ExpressionAttributeValues"][":lease_owner"] == "worker-a"
+    assert updated["state"] == "queued"
+
+
+def test_transition_rejects_stale_lease_owner():
+    repository, _, record = repository_with_record()
+    leased = repository.acquire_lease(
+        record["job_id"],
+        owner="worker-current",
+        now_epoch=100,
+        lease_expires_at=200,
+        updated_at="lease-time",
+    )
+
+    with pytest.raises(ReceiptJobConditionFailed):
+        repository.transition(
+            record["job_id"],
+            expected_states={leased["state"]},
+            expected_version=leased["version"],
+            expected_lease_owner="worker-stale",
+            next_state="queued",
+            updated_at="transition-time",
+            remove=("GSI1PK", "GSI1SK"),
+        )
 
 
 @pytest.mark.parametrize(

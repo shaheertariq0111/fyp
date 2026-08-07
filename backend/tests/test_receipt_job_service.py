@@ -52,6 +52,7 @@ class MemoryReceiptJobs:
         updated_at,
         values=None,
         remove=(),
+        expected_lease_owner=None,
     ):
         self.calls.append(("transition", next_state))
         record = self.records[job_id]
@@ -68,6 +69,10 @@ class MemoryReceiptJobs:
         if (
             record["state"] not in expected_states
             or record["version"] != expected_version
+            or (
+                expected_lease_owner is not None
+                and record.get("lease_owner") != expected_lease_owner
+            )
         ):
             raise ReceiptJobConditionFailed("RECEIPT_JOB_CONDITION_FAILED")
         updated = deepcopy(record)
@@ -80,6 +85,44 @@ class MemoryReceiptJobs:
         validate_receipt_job_record(updated)
         self.records[job_id] = updated
         return deepcopy(updated)
+
+    def acquire_lease(
+        self,
+        job_id,
+        *,
+        owner,
+        now_epoch,
+        lease_expires_at,
+        updated_at,
+    ):
+        record = self.records[job_id]
+        if (
+            record.get("lease_owner") not in {None, owner}
+            and record.get("lease_expires_at", 0) > now_epoch
+        ):
+            raise ReceiptJobConditionFailed("RECEIPT_JOB_LEASE_HELD")
+        record["lease_owner"] = owner
+        record["lease_expires_at"] = lease_expires_at
+        record["updated_at"] = updated_at
+        record["attempt_count"] += 1
+        return deepcopy(record)
+
+    def extend_lease(self, job_id, *, owner, lease_expires_at, updated_at):
+        record = self.records[job_id]
+        if record.get("lease_owner") != owner:
+            return False
+        record["lease_expires_at"] = lease_expires_at
+        record["updated_at"] = updated_at
+        return True
+
+    def release_lease(self, job_id, *, owner, updated_at):
+        record = self.records[job_id]
+        if record.get("lease_owner") != owner:
+            return False
+        record.pop("lease_owner")
+        record.pop("lease_expires_at")
+        record["updated_at"] = updated_at
+        return True
 
     def query_due(self, **kwargs):
         self.calls.append(("query_due", deepcopy(kwargs)))
@@ -473,3 +516,48 @@ def test_submission_rejects_invalid_inputs_before_persistence(field, value):
 
     assert repository.calls == []
     assert queue.sent == []
+
+
+def test_worker_lifecycle_helpers_use_explicit_lease_owner_and_duration():
+    service, repository, _, _ = make_service()
+    record = pending_record("ORD-WORKER", state="queued")
+    repository.records[record["job_id"]] = deepcopy(record)
+
+    leased = service.acquire_lease(
+        record["job_id"],
+        " worker-a ",
+        lease_seconds=60,
+    )
+    processing = service.transition(
+        leased,
+        "processing",
+        lease_owner="worker-a",
+        remove=("GSI1PK", "GSI1SK"),
+    )
+
+    assert processing["state"] == "processing"
+    assert processing["lease_owner"] == "worker-a"
+    assert service.extend_lease(
+        record["job_id"],
+        "worker-a",
+        lease_seconds=60,
+    ) is True
+    assert service.release_lease(record["job_id"], "worker-a") is True
+
+
+@pytest.mark.parametrize("value", [0, -1, True, False, 1.5, None])
+def test_worker_lease_helpers_reject_invalid_duration(value):
+    service, _, _, _ = make_service()
+    with pytest.raises(ValueError, match="RECEIPT_JOB_LEASE_INVALID"):
+        service.acquire_lease("unused", "worker", lease_seconds=value)
+
+
+def test_terminal_jobs_have_no_legal_worker_transition():
+    service, _, _, _ = make_service()
+    for state in ("sent", "permanent_failure", "manual_review"):
+        with pytest.raises(ValueError, match="RECEIPT_JOB_TRANSITION_INVALID"):
+            service.transition(
+                {"job_id": "unused", "state": state, "version": 1},
+                "processing",
+                lease_owner="worker",
+            )
