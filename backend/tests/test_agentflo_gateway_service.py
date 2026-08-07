@@ -314,6 +314,196 @@ def test_gateway_audio_http_accepted_and_rejected_responses_match_text_parser():
         ) == expected
 
 
+def test_gateway_document_uses_exact_confirmed_contract_and_standard_base64():
+    calls = []
+    responses = iter([
+        FakeResponse({"success": True, "token": "synthetic-jwt"}),
+        FakeResponse({
+            "status": "accepted",
+            "downstream": {
+                "accepted": True,
+                "providerMessageId": "provider-document-safe",
+            },
+        }),
+    ])
+
+    def open_request(request, timeout):
+        calls.append((request, timeout))
+        return next(responses)
+
+    document = b"%PDF-1.7\x00\xfb\xff"
+    service = AgentfloGatewayService(
+        base_url="https://communicationgateway.agentflo.com",
+        api_key="synthetic-api-key",
+        tenant_id="tenant-safe",
+        agent_id="agent-safe",
+        actor_id="actor-safe",
+        open_request=open_request,
+        max_media_bytes=1024,
+    )
+    result = service.send_document(
+        customer_number="+10000000000",
+        conversation_id="conversation-safe",
+        sender_id="phone-number-id-safe",
+        document=document,
+        filename="  Order-Receipt-ORD-123.pdf  ",
+        caption="  Order receipt - ORD-123  ",
+        request_id="request-safe",
+    )
+
+    assert result == {
+        "sent": True,
+        "status": "accepted",
+        "providerMessageId": "provider-document-safe",
+    }
+    assert len(calls) == 2
+    outbound_request, outbound_timeout = calls[1]
+    assert outbound_request.full_url.endswith("/whatsapp/outbound")
+    assert outbound_request.get_header("Authorization") == "Bearer synthetic-jwt"
+    assert outbound_timeout == 10
+    assert json.loads(outbound_request.data) == {
+        "tenantId": "tenant-safe",
+        "agentId": "agent-safe",
+        "userId": "10000000000",
+        "conversationId": "conversation-safe",
+        "actorId": "actor-safe",
+        "actorType": "agent",
+        "recipient": {"type": "phone", "value": "10000000000"},
+        "sender": {"phoneNumberId": "phone-number-id-safe"},
+        "source": "agent",
+        "firestore": False,
+        "kinesis": False,
+        "message": {
+            "type": "document",
+            "base64": base64.b64encode(document).decode("ascii"),
+            "filename": "Order-Receipt-ORD-123.pdf",
+            "caption": "Order receipt - ORD-123",
+        },
+    }
+    assert not json.loads(outbound_request.data)["message"]["base64"].startswith(
+        "data:"
+    )
+
+
+def test_gateway_document_omits_blank_caption():
+    calls = []
+    responses = iter([
+        FakeResponse({"success": True, "token": "safe-token"}),
+        FakeResponse({"status": "accepted"}),
+    ])
+
+    def open_request(request, timeout):
+        calls.append(request)
+        return next(responses)
+
+    service = AgentfloGatewayService(
+        base_url="https://communicationgateway.agentflo.com",
+        api_key="safe-key",
+        tenant_id="tenant-safe",
+        agent_id="agent-safe",
+        actor_id="actor-safe",
+        open_request=open_request,
+    )
+
+    assert service.send_document(
+        customer_number="10000000000",
+        conversation_id="conversation-safe",
+        sender_id="sender-safe",
+        document=b"safe-document",
+        filename="receipt.pdf",
+        caption="  \t ",
+        request_id="request-safe",
+    ) == {"sent": True, "status": "accepted"}
+    assert "caption" not in json.loads(calls[1].data)["message"]
+
+
+@pytest.mark.parametrize(
+    ("document", "filename", "caption", "max_media_bytes"),
+    [
+        (b"", "receipt.pdf", None, 1024),
+        (b"oversized", "receipt.pdf", None, 4),
+        (b"safe", "", None, 1024),
+        (b"safe", "  ", None, 1024),
+        (b"safe", None, None, 1024),
+        (b"safe", "receipt.pdf", 123, 1024),
+    ],
+)
+def test_gateway_document_rejects_invalid_content_filename_and_caption(
+    document,
+    filename,
+    caption,
+    max_media_bytes,
+):
+    calls = []
+    service = AgentfloGatewayService(
+        base_url="https://communicationgateway.agentflo.com",
+        api_key="safe-key",
+        tenant_id="tenant-safe",
+        agent_id="agent-safe",
+        actor_id="actor-safe",
+        open_request=lambda request, timeout: calls.append(request),
+        max_media_bytes=max_media_bytes,
+    )
+
+    assert service.send_document(
+        customer_number="10000000000",
+        conversation_id="conversation-safe",
+        sender_id="sender-safe",
+        document=document,
+        filename=filename,
+        caption=caption,
+        request_id="request-safe",
+    ) == {
+        "sent": False,
+        "error_code": "AGENTFLO_DOCUMENT_OUTBOUND_FAILED",
+    }
+    assert calls == []
+
+
+def test_gateway_document_rejection_and_failure_logs_are_sanitized(caplog):
+    api_key = "private-document-api-key"
+    token = "private-document-jwt"
+    phone = "+19999999999"
+    caption = "Private document caption"
+    document = b"private-pdf-document-content"
+    encoded = base64.b64encode(document).decode("ascii")
+    responses = iter([
+        FakeResponse({"success": True, "token": token}),
+        FakeResponse({"status": "rejected", "downstream": {"accepted": False}}),
+    ])
+    service = AgentfloGatewayService(
+        base_url="https://communicationgateway.agentflo.com",
+        api_key=api_key,
+        tenant_id="tenant-safe",
+        agent_id="agent-safe",
+        actor_id="actor-safe",
+        open_request=lambda request, timeout: next(responses),
+        max_media_bytes=1024,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = service.send_document(
+            customer_number=phone,
+            conversation_id="conversation-safe",
+            sender_id="sender-safe",
+            document=document,
+            filename="receipt.pdf",
+            caption=caption,
+            request_id="request-safe",
+        )
+
+    assert result == {
+        "sent": False,
+        "error_code": "AGENTFLO_DOCUMENT_OUTBOUND_FAILED",
+    }
+    assert document.decode() not in caplog.text
+    assert encoded not in caplog.text
+    assert phone not in caplog.text
+    assert caption not in caplog.text
+    assert api_key not in caplog.text
+    assert token not in caplog.text
+
+
 def test_gateway_auth_failure_is_safe_and_does_not_call_outbound():
     calls = []
 
