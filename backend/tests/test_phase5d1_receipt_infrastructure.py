@@ -73,6 +73,15 @@ def test_receipt_parameters_are_safe_and_independently_disabled():
             "recovery are controlled independently."
         ),
     }
+    assert parameters["ReceiptSubmissionPermissionsEnabled"] == {
+        "Type": "String",
+        "Default": "false",
+        "AllowedValues": ["true", "false"],
+        "Description": (
+            "Prepares receipt submission IAM permissions independently of "
+            "runtime receipt activation."
+        ),
+    }
     assert parameters["ReceiptJobsTableName"]["Default"] == "fyp-dev-ReceiptJobs"
     assert parameters["ReceiptJobTtlHours"] == {
         "Type": "Number",
@@ -102,8 +111,11 @@ def test_receipt_parameters_are_safe_and_independently_disabled():
     }
 
     conditions = data["Conditions"]
-    assert conditions["IsReceiptActivationEnabled"] == {
-        "Fn::Equals": [{"Ref": "ReceiptActivationEnabled"}, "true"]
+    assert conditions["IsReceiptSubmissionPermissionsEnabled"] == {
+        "Fn::Equals": [
+            {"Ref": "ReceiptSubmissionPermissionsEnabled"},
+            "true",
+        ]
     }
     processing = json.dumps(conditions["ShouldCreateReceiptProcessingEventSource"])
     recovery = json.dumps(conditions["ShouldCreateReceiptRecoverySchedule"])
@@ -111,6 +123,8 @@ def test_receipt_parameters_are_safe_and_independently_disabled():
     assert "IsReceiptRecoveryEnabled" in recovery
     assert "ReceiptActivation" not in processing
     assert "ReceiptActivation" not in recovery
+    assert "ReceiptSubmissionPermissionsEnabled" not in processing
+    assert "ReceiptSubmissionPermissionsEnabled" not in recovery
 
 
 def test_receipt_jobs_table_matches_durable_outbox_schema_and_retention():
@@ -479,6 +493,9 @@ def test_ecs_receipt_environment_is_submission_only_for_backend_and_voice():
     ):
         environment = container_environment(data, logical_id)
         assert {name: environment[name] for name in expected} == expected
+        assert "ReceiptSubmissionPermissionsEnabled" not in json.dumps(
+            data["Resources"][logical_id]
+        )
         for forbidden in (
             "RECEIPT_BUCKET_NAME",
             "RECEIPT_MERCHANT_NAME",
@@ -498,7 +515,8 @@ def test_ecs_receipt_submission_iam_is_conditional_and_narrow():
         ),
     ):
         policy = data["Resources"][logical_id]
-        assert policy["Condition"] == "IsReceiptActivationEnabled"
+        assert policy["Condition"] == "IsReceiptSubmissionPermissionsEnabled"
+        assert "ReceiptActivationEnabled" not in json.dumps(policy)
         assert policy["Properties"]["Roles"] == [{"Ref": role}]
         assert statement_by_sid(policy, "SubmitReceiptJobState")["Action"] == [
             "dynamodb:GetItem",

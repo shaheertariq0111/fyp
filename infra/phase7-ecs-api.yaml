@@ -180,6 +180,13 @@ Parameters:
       - "true"
       - "false"
     Description: Enables creation of new receipt jobs only; processing and recovery are controlled independently.
+  ReceiptSubmissionPermissionsEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Prepares receipt submission IAM permissions independently of runtime receipt activation.
   ReceiptJobsTableName:
     Type: String
     Default: fyp-dev-ReceiptJobs
@@ -404,7 +411,7 @@ Conditions:
   HasAgentCoreGuardrailId: !Not [!Equals [!Ref AgentCoreGuardrailId, ""]]
   HasVoiceTranscribeRoleArn: !Not [!Equals [!Ref VoiceTranscribeRoleArn, ""]]
   IsWhatsAppVoiceReplyEnabled: !Equals [!Ref WhatsAppVoiceReplyEnabled, "true"]
-  IsReceiptActivationEnabled: !Equals [!Ref ReceiptActivationEnabled, "true"]
+  IsReceiptSubmissionPermissionsEnabled: !Equals [!Ref ReceiptSubmissionPermissionsEnabled, "true"]
   HasReceiptLambdaImageUri: !Not [!Equals [!Ref ReceiptLambdaImageUri, ""]]
   IsReceiptProcessingEnabled: !Equals [!Ref ReceiptProcessingEnabled, "true"]
   IsReceiptRecoveryEnabled: !Equals [!Ref ReceiptRecoveryEnabled, "true"]
@@ -1137,7 +1144,7 @@ Resources:
 
   WhatsAppVoiceWorkerReceiptSubmissionPolicy:
     Type: AWS::IAM::Policy
-    Condition: IsReceiptActivationEnabled
+    Condition: IsReceiptSubmissionPermissionsEnabled
     Properties:
       PolicyName: !Sub ${ProjectName}-voice-worker-receipt-submission
       Roles:
@@ -1277,7 +1284,7 @@ Resources:
 
   EcsTaskReceiptSubmissionPolicy:
     Type: AWS::IAM::Policy
-    Condition: IsReceiptActivationEnabled
+    Condition: IsReceiptSubmissionPermissionsEnabled
     Properties:
       PolicyName: !Sub ${ProjectName}-ecs-app-receipt-submission
       Roles:
