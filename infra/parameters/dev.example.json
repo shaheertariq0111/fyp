@@ -120,6 +120,42 @@
     "ParameterValue": "true"
   },
   {
+    "ParameterKey": "ReceiptActivationEnabled",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "ReceiptJobsTableName",
+    "ParameterValue": "fyp-dev-ReceiptJobs"
+  },
+  {
+    "ParameterKey": "ReceiptJobTtlHours",
+    "ParameterValue": "336"
+  },
+  {
+    "ParameterKey": "ReceiptEnqueueRetrySeconds",
+    "ParameterValue": "60"
+  },
+  {
+    "ParameterKey": "ReceiptLambdaImageUri",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "ReceiptProcessingEnabled",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "ReceiptRecoveryEnabled",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "ReceiptMerchantName",
+    "ParameterValue": "Restaurant"
+  },
+  {
+    "ParameterKey": "ReceiptWorkerLeaseSeconds",
+    "ParameterValue": "120"
+  },
+  {
     "ParameterKey": "AgentCoreRuntimeArn",
     "ParameterValue": ""
   },

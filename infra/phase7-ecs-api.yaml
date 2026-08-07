@@ -173,6 +173,55 @@ Parameters:
     AllowedValues:
       - "true"
       - "false"
+  ReceiptActivationEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enables creation of new receipt jobs only; processing and recovery are controlled independently.
+  ReceiptJobsTableName:
+    Type: String
+    Default: fyp-dev-ReceiptJobs
+    AllowedPattern: "^[A-Za-z0-9_.-]{3,255}$"
+  ReceiptJobTtlHours:
+    Type: Number
+    Default: 336
+    MinValue: 1
+    MaxValue: 336
+  ReceiptEnqueueRetrySeconds:
+    Type: Number
+    Default: 60
+    MinValue: 1
+    MaxValue: 3600
+  ReceiptLambdaImageUri:
+    Type: String
+    Default: ""
+    Description: Full receipt Lambda container image URI; leave empty during initial infrastructure bootstrap.
+  ReceiptProcessingEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Independently enables consumption of existing receipt queue work.
+  ReceiptRecoveryEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Independently enables scheduled receipt outbox recovery.
+  ReceiptMerchantName:
+    Type: String
+    Default: Restaurant
+    MinLength: 1
+    MaxLength: 128
+  ReceiptWorkerLeaseSeconds:
+    Type: Number
+    Default: 120
+    MinValue: 61
+    MaxValue: 3600
   BackendCpu:
     Type: String
     Default: "512"
@@ -355,6 +404,19 @@ Conditions:
   HasAgentCoreGuardrailId: !Not [!Equals [!Ref AgentCoreGuardrailId, ""]]
   HasVoiceTranscribeRoleArn: !Not [!Equals [!Ref VoiceTranscribeRoleArn, ""]]
   IsWhatsAppVoiceReplyEnabled: !Equals [!Ref WhatsAppVoiceReplyEnabled, "true"]
+  IsReceiptActivationEnabled: !Equals [!Ref ReceiptActivationEnabled, "true"]
+  HasReceiptLambdaImageUri: !Not [!Equals [!Ref ReceiptLambdaImageUri, ""]]
+  IsReceiptProcessingEnabled: !Equals [!Ref ReceiptProcessingEnabled, "true"]
+  IsReceiptRecoveryEnabled: !Equals [!Ref ReceiptRecoveryEnabled, "true"]
+  ShouldCreateReceiptProcessingLambda: !And
+    - !Condition HasReceiptLambdaImageUri
+    - !Condition HasAgentfloGatewayApiKeySecret
+  ShouldCreateReceiptProcessingEventSource: !And
+    - !Condition ShouldCreateReceiptProcessingLambda
+    - !Condition IsReceiptProcessingEnabled
+  ShouldCreateReceiptRecoverySchedule: !And
+    - !Condition HasReceiptLambdaImageUri
+    - !Condition IsReceiptRecoveryEnabled
 
 Resources:
   BackendRepository:
@@ -383,6 +445,29 @@ Resources:
         - Key: Project
           Value: !Ref ProjectName
 
+  ReceiptLambdaRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${ProjectName}-receipt-lambda
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowReceiptLambdaImageRetrieval
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
   BackendLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -405,6 +490,24 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub /aws/apigateway/${ProjectName}/backend-http-api
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ReceiptProcessingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ProjectName}-receipt-processing
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ReceiptRecoveryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ProjectName}-receipt-recovery
       RetentionInDays: !Ref LogRetentionDays
       Tags:
         - Key: Project
@@ -483,6 +586,58 @@ Resources:
               Resource: !Sub ${VoiceMediaBucket.Arn}/voice-input/*
             - !Ref AWS::NoValue
 
+  ReceiptBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${ProjectName}-r-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireReceiptArtifacts
+            Status: Enabled
+            Prefix: receipts/
+            ExpirationInDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: DataClassification
+          Value: temporary-receipt-pdf
+
+  ReceiptBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref ReceiptBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt ReceiptBucket.Arn
+              - !Sub ${ReceiptBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
   VoiceProcessingDeadLetterQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -503,6 +658,30 @@ Resources:
       ReceiveMessageWaitTimeSeconds: 20
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt VoiceProcessingDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ReceiptProcessingDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${ProjectName}-receipt-processing-dlq
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ReceiptProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${ProjectName}-receipt-processing
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 360
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ReceiptProcessingDeadLetterQueue.Arn
         maxReceiveCount: 3
       Tags:
         - Key: Project
@@ -956,6 +1135,29 @@ Resources:
             Action: polly:SynthesizeSpeech
             Resource: "*"
 
+  WhatsAppVoiceWorkerReceiptSubmissionPolicy:
+    Type: AWS::IAM::Policy
+    Condition: IsReceiptActivationEnabled
+    Properties:
+      PolicyName: !Sub ${ProjectName}-voice-worker-receipt-submission
+      Roles:
+        - !Ref WhatsAppVoiceWorkerTaskRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SubmitReceiptJobState
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource: !GetAtt ReceiptJobsTable.Arn
+          - Sid: SubmitReceiptQueueMessage
+            Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt ReceiptProcessingQueue.Arn
+
   EcsTaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1072,6 +1274,147 @@ Resources:
             Action:
               - sqs:SendMessage
             Resource: !GetAtt VoiceProcessingQueue.Arn
+
+  EcsTaskReceiptSubmissionPolicy:
+    Type: AWS::IAM::Policy
+    Condition: IsReceiptActivationEnabled
+    Properties:
+      PolicyName: !Sub ${ProjectName}-ecs-app-receipt-submission
+      Roles:
+        - !Ref EcsTaskRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SubmitReceiptJobState
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource: !GetAtt ReceiptJobsTable.Arn
+          - Sid: SubmitReceiptQueueMessage
+            Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt ReceiptProcessingQueue.Arn
+
+  ReceiptProcessingLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-receipt-processing-lambda
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ReceiptProcessingLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-receipt-processing-lambda
+      Roles:
+        - !Ref ReceiptProcessingLambdaRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: WriteReceiptProcessingLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-receipt-processing:log-stream:*
+          - Sid: ProcessReceiptJobState
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:UpdateItem
+            Resource: !GetAtt ReceiptJobsTable.Arn
+          - Sid: QueryOrderReceiptSnapshot
+            Effect: Allow
+            Action:
+              - dynamodb:Query
+            Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}/index/GSI1
+          - Sid: ManageReceiptArtifacts
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub ${ReceiptBucket.Arn}/receipts/*
+          - Sid: ConsumeReceiptQueue
+            Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt ReceiptProcessingQueue.Arn
+
+  ReceiptProcessingLambdaSecretPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasAgentfloGatewayApiKeySecret
+    Properties:
+      PolicyName: !Sub ${ProjectName}-receipt-processing-secret
+      Roles:
+        - !Ref ReceiptProcessingLambdaRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadAgentfloGatewayApiKey
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref AgentfloGatewayApiKeySecretArn
+
+  ReceiptRecoveryLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-receipt-recovery-lambda
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ReceiptRecoveryLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ProjectName}-receipt-recovery-lambda
+      Roles:
+        - !Ref ReceiptRecoveryLambdaRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: WriteReceiptRecoveryLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-receipt-recovery:log-stream:*
+          - Sid: RecoverReceiptJobState
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:UpdateItem
+            Resource: !GetAtt ReceiptJobsTable.Arn
+          - Sid: QueryReceiptOutbox
+            Effect: Allow
+            Action:
+              - dynamodb:Query
+            Resource: !Sub ${ReceiptJobsTable.Arn}/index/DueJobsIndex
+          - Sid: ResubmitReceiptQueueMessage
+            Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt ReceiptProcessingQueue.Arn
 
   AgentCoreExecutionRole:
     Type: AWS::IAM::Role
@@ -1365,6 +1708,49 @@ Resources:
         - Key: DataClassification
           Value: temporary-voice-job-state
 
+  ReceiptJobsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref ReceiptJobsTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: N
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: DueJobsIndex
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: DataClassification
+          Value: temporary-receipt-job-state
+
   AgentRequestsTable:
     Type: AWS::DynamoDB::Table
     Condition: ShouldCreateAgentRequestsTable
@@ -1490,6 +1876,103 @@ Resources:
         - Key: Project
           Value: !Ref ProjectName
 
+  ReceiptProcessingFunction:
+    Type: AWS::Lambda::Function
+    Condition: ShouldCreateReceiptProcessingLambda
+    DependsOn:
+      - ReceiptProcessingLogGroup
+      - ReceiptProcessingLambdaPolicy
+      - ReceiptProcessingLambdaSecretPolicy
+    Properties:
+      FunctionName: !Sub ${ProjectName}-receipt-processing
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ReceiptLambdaImageUri
+      Architectures:
+        - x86_64
+      Role: !GetAtt ReceiptProcessingLambdaRole.Arn
+      MemorySize: 512
+      Timeout: 60
+      Environment:
+        Variables:
+          ORDERS_TABLE_NAME: !Ref OrdersTableName
+          RECEIPT_JOBS_TABLE_NAME: !Ref ReceiptJobsTableName
+          RECEIPT_JOB_QUEUE_URL: !Ref ReceiptProcessingQueue
+          RECEIPT_JOB_TTL_HOURS: !Ref ReceiptJobTtlHours
+          RECEIPT_ENQUEUE_RETRY_SECONDS: !Ref ReceiptEnqueueRetrySeconds
+          RECEIPT_BUCKET_NAME: !Ref ReceiptBucket
+          RECEIPT_MERCHANT_NAME: !Ref ReceiptMerchantName
+          RECEIPT_WORKER_LEASE_SECONDS: !Ref ReceiptWorkerLeaseSeconds
+          AGENTFLO_GATEWAY_BASE_URL: !Ref AgentfloGatewayBaseUrl
+          AGENTFLO_GATEWAY_TENANT_ID: !Ref AgentfloGatewayTenantId
+          AGENTFLO_GATEWAY_AGENT_ID: !Ref AgentfloGatewayAgentId
+          AGENTFLO_GATEWAY_ACTOR_ID: !Ref AgentfloGatewayActorId
+          AGENTFLO_GATEWAY_API_KEY_SECRET_ARN: !Ref AgentfloGatewayApiKeySecretArn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ReceiptProcessingEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Condition: ShouldCreateReceiptProcessingEventSource
+    Properties:
+      EventSourceArn: !GetAtt ReceiptProcessingQueue.Arn
+      FunctionName: !Ref ReceiptProcessingFunction
+      BatchSize: 5
+      MaximumBatchingWindowInSeconds: 0
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  ReceiptRecoveryFunction:
+    Type: AWS::Lambda::Function
+    Condition: HasReceiptLambdaImageUri
+    DependsOn:
+      - ReceiptRecoveryLogGroup
+      - ReceiptRecoveryLambdaPolicy
+    Properties:
+      FunctionName: !Sub ${ProjectName}-receipt-recovery
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ReceiptLambdaImageUri
+      ImageConfig:
+        Command:
+          - src.lambda_handlers.receipt_outbox_recovery.handler
+      Architectures:
+        - x86_64
+      Role: !GetAtt ReceiptRecoveryLambdaRole.Arn
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          RECEIPT_JOBS_TABLE_NAME: !Ref ReceiptJobsTableName
+          RECEIPT_JOB_QUEUE_URL: !Ref ReceiptProcessingQueue
+          RECEIPT_JOB_TTL_HOURS: !Ref ReceiptJobTtlHours
+          RECEIPT_ENQUEUE_RETRY_SECONDS: !Ref ReceiptEnqueueRetrySeconds
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ReceiptRecoverySchedule:
+    Type: AWS::Events::Rule
+    Condition: ShouldCreateReceiptRecoverySchedule
+    Properties:
+      Name: !Sub ${ProjectName}-receipt-recovery
+      Description: Recover durable receipt outbox records without enabling new receipt creation.
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ReceiptRecoveryFunction.Arn
+          Id: ReceiptRecoveryLambda
+
+  ReceiptRecoverySchedulePermission:
+    Type: AWS::Lambda::Permission
+    Condition: ShouldCreateReceiptRecoverySchedule
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ReceiptRecoveryFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ReceiptRecoverySchedule.Arn
+
   BackendTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Condition: HasBackendImageUri
@@ -1520,6 +2003,16 @@ Resources:
               Value: !Ref AWS::Region
             - Name: WHATSAPP_VOICE_ENABLED
               Value: !Ref WhatsAppVoiceEnabled
+            - Name: RECEIPT_ACTIVATION_ENABLED
+              Value: !Ref ReceiptActivationEnabled
+            - Name: RECEIPT_JOBS_TABLE_NAME
+              Value: !Ref ReceiptJobsTableName
+            - Name: RECEIPT_JOB_QUEUE_URL
+              Value: !Ref ReceiptProcessingQueue
+            - Name: RECEIPT_JOB_TTL_HOURS
+              Value: !Ref ReceiptJobTtlHours
+            - Name: RECEIPT_ENQUEUE_RETRY_SECONDS
+              Value: !Ref ReceiptEnqueueRetrySeconds
             - Name: VOICE_MEDIA_BUCKET_NAME
               Value: !Ref VoiceMediaBucket
             - Name: VOICE_MEDIA_INPUT_PREFIX
@@ -1683,6 +2176,16 @@ Resources:
               Value: !Ref AWS::Region
             - Name: WHATSAPP_VOICE_ENABLED
               Value: !Ref WhatsAppVoiceEnabled
+            - Name: RECEIPT_ACTIVATION_ENABLED
+              Value: !Ref ReceiptActivationEnabled
+            - Name: RECEIPT_JOBS_TABLE_NAME
+              Value: !Ref ReceiptJobsTableName
+            - Name: RECEIPT_JOB_QUEUE_URL
+              Value: !Ref ReceiptProcessingQueue
+            - Name: RECEIPT_JOB_TTL_HOURS
+              Value: !Ref ReceiptJobTtlHours
+            - Name: RECEIPT_ENQUEUE_RETRY_SECONDS
+              Value: !Ref ReceiptEnqueueRetrySeconds
             - Name: VOICE_MEDIA_BUCKET_NAME
               Value: !Ref VoiceMediaBucket
             - Name: VOICE_MEDIA_INPUT_PREFIX
@@ -1947,6 +2450,9 @@ Outputs:
   AgentRuntimeRepositoryUri:
     Description: AgentCore Runtime ECR repository URI.
     Value: !GetAtt AgentRuntimeRepository.RepositoryUri
+  ReceiptLambdaRepositoryUri:
+    Description: Receipt Lambda ECR repository URI for bootstrap image publishing.
+    Value: !GetAtt ReceiptLambdaRepository.RepositoryUri
   EcsClusterName:
     Value: !Ref EcsCluster
   BackendServiceName:
@@ -1996,6 +2502,21 @@ Outputs:
   VoiceProcessingDeadLetterQueueArn:
     Description: Dead-letter queue ARN for failed inbound WhatsApp voice jobs.
     Value: !GetAtt VoiceProcessingDeadLetterQueue.Arn
+  ReceiptJobsTableName:
+    Description: Durable receipt processing and outbox table name.
+    Value: !Ref ReceiptJobsTable
+  ReceiptProcessingQueueUrl:
+    Description: Encrypted receipt processing queue URL.
+    Value: !Ref ReceiptProcessingQueue
+  ReceiptProcessingQueueArn:
+    Description: Encrypted receipt processing queue ARN.
+    Value: !GetAtt ReceiptProcessingQueue.Arn
+  ReceiptProcessingDeadLetterQueueUrl:
+    Description: Dead-letter queue URL for failed receipt processing jobs.
+    Value: !Ref ReceiptProcessingDeadLetterQueue
+  ReceiptBucketName:
+    Description: Private temporary receipt artifact bucket name.
+    Value: !Ref ReceiptBucket
   AgentRequestsTableName:
     Value: !Ref AgentRequestsTableName
   ConversationMessagesTableName:
