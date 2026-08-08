@@ -263,9 +263,10 @@ voice-job record, persist and transition the agent request, resolve or create th
 WhatsApp customer and agent session, write inbound/outbound conversation history,
 and query cart/order state when rebuilding the response after a successful tool
 write. Customer phone lookup is limited to `GSI1`, voice outbox recovery is
-limited to `DueJobsIndex`, and session resolution explicitly requires
-`dynamodb:Scan` on the configured `AgentSessionsTableName` table because the
-current repository lookup scans by `agent_session_id`. Restaurant tools run in
+limited to `DueJobsIndex`, and voice session resolution uses `dynamodb:GetItem`
+for deterministic customer-owned lookup plus `dynamodb:PutItem` for session
+creation and persistence on the configured `AgentSessionsTableName` table.
+Restaurant tools run in
 AgentCore under the separate AgentCore execution role, so the ECS worker does not
 receive direct menu, menu-session, audit, or ticket-table permissions.
 

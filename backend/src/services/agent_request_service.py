@@ -101,6 +101,30 @@ class AgentRequestService:
         self.repository.save(request)
         return request
 
+    def fail_before_invocation(
+        self,
+        request_id: str,
+        *,
+        error_code: str,
+        message: str,
+    ) -> dict[str, Any]:
+        request = self._get_required(request_id)
+        if (
+            request.get("status") != "processing"
+            or request.get("invocation_state") != "invoking"
+        ):
+            raise ValueError("AGENT_REQUEST_PRE_INVOCATION_STATE_INVALID")
+        now = self._now()
+        request.update({
+            "status": "failed",
+            "invocation_state": "failed",
+            "error_code": error_code,
+            "failure_message": message,
+            "updated_at": now.isoformat(),
+        })
+        self.repository.save(request)
+        return request
+
     def get(self, request_id: str) -> dict[str, Any] | None:
         return self.repository.get(request_id)
 

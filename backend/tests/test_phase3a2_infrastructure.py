@@ -711,7 +711,7 @@ def test_voice_worker_application_data_iam_is_complete_and_exactly_scoped():
             },
         ),
         "ResolveAndPersistAgentSessions": (
-            {"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Scan"},
+            {"dynamodb:GetItem", "dynamodb:PutItem"},
             VOICE_WORKER_TABLE_ARNS["agent_sessions"],
         ),
         "RefreshCartResponseState": (
@@ -738,7 +738,7 @@ def test_voice_worker_application_data_iam_is_complete_and_exactly_scoped():
         "WhatsAppVoiceWorkerDynamoDbPolicy",
         "ResolveAndPersistAgentSessions",
     )
-    assert "dynamodb:Scan" in session_statement["Action"]
+    assert "dynamodb:Scan" not in session_statement["Action"]
     assert session_statement["Resource"] == VOICE_WORKER_TABLE_ARNS[
         "agent_sessions"
     ]

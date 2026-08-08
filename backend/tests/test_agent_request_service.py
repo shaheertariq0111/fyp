@@ -151,6 +151,33 @@ def test_agent_request_service_fails_with_safe_error_payload():
     assert failed["failure_message"] == "The request could not be completed."
 
 
+def test_known_pre_invocation_failure_clears_invoking_state_and_resumes_failed():
+    requests = service()
+    arguments = {
+        "actor_id": "opaque-customer",
+        "session_id": "opaque-session",
+        "message": "private transcript",
+        "channel": "whatsapp",
+        "request_payload": {"message": "private transcript"},
+        "request_id": "req-voice-" + "b" * 64,
+    }
+    processing, created = requests.start_or_resume_processing(**arguments)
+    assert created is True
+    assert requests.claim_invocation(processing["request_id"])
+
+    failed = requests.fail_before_invocation(
+        processing["request_id"],
+        error_code="AGENT_SESSION_STATE_LOAD_FAILED",
+        message="The request could not be completed.",
+    )
+    resumed, created = requests.start_or_resume_processing(**arguments)
+
+    assert failed["status"] == "failed"
+    assert failed["invocation_state"] == "failed"
+    assert resumed == failed
+    assert created is False
+
+
 def test_agent_request_service_missing_request_raises_structured_code():
     with pytest.raises(ValueError, match="AGENT_REQUEST_NOT_FOUND"):
         service().complete("missing", {"text": "hi"})

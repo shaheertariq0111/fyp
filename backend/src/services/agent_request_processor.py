@@ -78,8 +78,10 @@ class AgentRequestProcessor:
         payload, record = prepared.payload, prepared.record
         context, identity_state = prepared.context, prepared.identity_state
         requests = self.services_provider().agent_requests
-        if record.get("status") == "completed":
-            return AgentProcessingResult(record, context, identity_state, "completed")
+        if record.get("status") in {"completed", "failed"}:
+            return AgentProcessingResult(
+                record, context, identity_state, record["status"]
+            )
         if hasattr(requests, "claim_invocation") and not requests.claim_invocation(record["request_id"]):
             latest = requests.get(record["request_id"]) or record
             state = latest.get("invocation_state")
@@ -100,7 +102,7 @@ class AgentRequestProcessor:
                 "error_code": "AGENT_SESSION_STATE_LOAD_FAILED",
                 "exception_type": type(exc).__name__,
             })
-            record = requests.fail(
+            record = requests.fail_before_invocation(
                 record["request_id"],
                 error_code="AGENT_SESSION_STATE_LOAD_FAILED",
                 message="The request could not be completed.",
@@ -142,11 +144,12 @@ class AgentRequestProcessor:
                 },
             )
             return AgentProcessingResult(record, context, identity_state, "completed")
-        except Exception:
-            self.logger.exception("Agent request failed", extra={
+        except Exception as exc:
+            self.logger.error("Agent request failed", extra={
                 "event": "agentcore_invocation_failed", "http_request_id": http_request_id,
                 "request_id": record["request_id"], "channel": context.channel,
                 "error_code": "AGENT_INVOCATION_FAILED",
+                "exception_type": type(exc).__name__,
             })
             if ambiguous_on_invocation_failure:
                 requests.mark_invocation_ambiguous(record["request_id"])
