@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from functools import lru_cache
 
+from src.composition.receipt_dependencies import build_receipt_submission_runtime
 from src.infrastructure.bedrock import get_bedrock_agent_runtime_client
 from src.infrastructure.config import get_settings
 from src.infrastructure.dynamodb import get_dynamodb_resource
@@ -26,6 +27,9 @@ from src.services.menu_session_service import MenuSessionService
 from src.services.order_service import OrderService
 from src.services.support_flow_service import SupportFlowService
 from src.services.ticket_service import TicketService
+from src.services.whatsapp_receipt_activation_service import (
+    WhatsAppReceiptActivationService,
+)
 
 
 @dataclass
@@ -42,6 +46,7 @@ class ServiceContainer:
     support_flow: SupportFlowService
     knowledge: KnowledgeService
     audit: AuditService
+    whatsapp_receipt_activation: WhatsAppReceiptActivationService | None = None
 
 
 @lru_cache
@@ -75,6 +80,20 @@ def get_services() -> ServiceContainer:
         ticket_service,
         order_repository,
     )
+    agent_request_service = AgentRequestService(
+        AgentRequestRepository(dynamodb, settings.agent_requests_table_name),
+        settings,
+    )
+    whatsapp_receipt_activation = None
+    if settings.receipt_activation_enabled:
+        receipt_runtime = build_receipt_submission_runtime(
+            settings,
+            dynamodb=dynamodb,
+        )
+        whatsapp_receipt_activation = WhatsAppReceiptActivationService(
+            agent_requests=agent_request_service,
+            receipt_jobs=receipt_runtime.jobs,
+        )
     return ServiceContainer(
         menu=menu_service,
         menu_sessions=MenuSessionService(
@@ -84,10 +103,7 @@ def get_services() -> ServiceContainer:
         orders=order_service,
         customers=customer_service,
         agent_sessions=agent_session_service,
-        agent_requests=AgentRequestService(
-            AgentRequestRepository(dynamodb, settings.agent_requests_table_name),
-            settings,
-        ),
+        agent_requests=agent_request_service,
         conversation_history=ConversationHistoryService(
             ConversationMessageRepository(
                 dynamodb,
@@ -102,4 +118,5 @@ def get_services() -> ServiceContainer:
             settings.knowledge_base_max_results,
         ),
         audit=AuditService(AuditRepository(dynamodb, settings.audit_table_name)),
+        whatsapp_receipt_activation=whatsapp_receipt_activation,
     )

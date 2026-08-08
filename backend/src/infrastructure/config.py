@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     agentflo_gateway_tenant_id: str = "fyp-dev"
     agentflo_gateway_agent_id: str = "restaurant-agent"
     agentflo_gateway_actor_id: str = ""
+    receipt_activation_enabled: bool = False
+    receipt_jobs_table_name: str = ""
+    receipt_job_queue_url: str = ""
+    receipt_job_ttl_hours: int = Field(default=336, ge=1, le=336)
+    receipt_enqueue_retry_seconds: int = Field(default=60, ge=1, le=3600)
     whatsapp_voice_enabled: bool = False
     voice_media_bucket_name: str = ""
     voice_media_input_prefix: str = VOICE_MEDIA_INPUT_PREFIX
@@ -265,6 +270,26 @@ class Settings(BaseSettings):
             raise ValueError("Exactly one voice transcription language mode is required")
         if not VOICE_TRANSCRIPTION_JOB_PREFIX.fullmatch(self.voice_transcription_job_prefix):
             raise ValueError("VOICE_TRANSCRIPTION_JOB_PREFIX does not match the deployed IAM scope")
+
+    def validate_receipt_activation_settings(self) -> None:
+        """Validate only the dependencies used to create new receipt jobs."""
+        if not self.receipt_activation_enabled:
+            return
+        self._require_receipt_settings({
+            "RECEIPT_JOBS_TABLE_NAME": self.receipt_jobs_table_name,
+            "RECEIPT_JOB_QUEUE_URL": self.receipt_job_queue_url,
+        }, "RECEIPT_ACTIVATION_CONFIGURATION_INCOMPLETE")
+
+    @staticmethod
+    def _require_receipt_settings(
+        required: dict[str, str],
+        error_code: str,
+    ) -> None:
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in required.values()
+        ):
+            raise ValueError(error_code)
 
     def parsed_frontend_cors_origins(self) -> list[str]:
         return parse_frontend_cors_origins(self.frontend_cors_origins, self.environment)

@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError
 from src.agent.dependencies import get_services
 from src.agent_client.factory import get_agent_runtime_client
 from src.api.whatsapp import WhatsAppInboundAudioMessage, WhatsAppInboundMessage
+from src.composition.receipt_dependencies import build_receipt_submission_runtime
 from src.infrastructure.config import get_settings
 from src.infrastructure.dynamodb import get_dynamodb_resource
 from src.infrastructure.logging import configure_logging
@@ -33,6 +34,9 @@ from src.services.whatsapp_voice_reply_service import (
     WhatsAppVoiceReplyService,
 )
 from src.services.whatsapp_voice_job_service import WhatsAppVoiceJobService
+from src.services.whatsapp_voice_receipt_activation_service import (
+    WhatsAppVoiceReceiptActivationService,
+)
 from src.services.whatsapp_voice_service import WhatsAppVoiceProcessingError, WhatsAppVoiceService
 
 
@@ -86,10 +90,12 @@ class WhatsAppVoiceWorker:
         voice,
         conversations,
         voice_replies=None,
+        receipt_activation=None,
     ):
         self.settings, self.jobs, self.queue = settings, jobs, queue
         self.voice, self.conversations = voice, conversations
         self.voice_replies = voice_replies
+        self.receipt_activation = receipt_activation
         self.worker_id = f"voice-worker-{uuid.uuid4()}"
         self.stopping = threading.Event()
 
@@ -178,6 +184,16 @@ class WhatsAppVoiceWorker:
             return self._send_ready(record, heartbeat, inbound=identity_message)
         if state == VoiceJobState.RESPONSE_READY.value:
             return self._send_ready(record, heartbeat)
+        if (
+            state == VoiceJobState.OUTBOUND_SENDING.value
+            and self._receipt_activation_enabled()
+            and record.get("receipt_activation_state") in {
+                "pending",
+                "completed",
+                "manual_review",
+            }
+        ):
+            return self._recover_receipt_outbound(record, heartbeat)
         if state == VoiceJobState.OUTBOUND_SENDING.value or state == VoiceJobState.AGENT_INVOKING.value:
             record = self.jobs.transition(record, VoiceJobState.MANUAL_REVIEW.value, values={"generic_failure_code": "VOICE_OPERATION_OUTCOME_AMBIGUOUS"})
             logger.error("Voice job requires manual review", extra={"event": "voice_manual_review", "voice_job_id": record["job_id"], "failure_stage": state})
@@ -225,7 +241,23 @@ class WhatsAppVoiceWorker:
             self.jobs.transition(record, VoiceJobState.MANUAL_REVIEW.value, values={"generic_failure_code": "VOICE_AGENT_OUTCOME_AMBIGUOUS"})
             logger.error("Voice agent outcome ambiguous", extra={"event": "voice_manual_review", "voice_job_id": record["job_id"], "failure_stage": "agent_invoking"})
             return True
-        record = self.jobs.transition(record, VoiceJobState.RESPONSE_READY.value)
+        response_values = None
+        if (
+            getattr(self.settings, "receipt_activation_enabled", False)
+            and reply.submitted_order_id is not None
+        ):
+            response_values = {"submitted_order_id": reply.submitted_order_id}
+        if response_values is None:
+            record = self.jobs.transition(
+                record,
+                VoiceJobState.RESPONSE_READY.value,
+            )
+        else:
+            record = self.jobs.transition(
+                record,
+                VoiceJobState.RESPONSE_READY.value,
+                values=response_values,
+            )
         return self._send_ready(record, heartbeat, inbound=inbound, reply=reply)
 
     def _send_ready(self, record: dict, heartbeat: VoiceWorkerHeartbeat, *, inbound=None, reply=None) -> bool:
@@ -262,6 +294,74 @@ class WhatsAppVoiceWorker:
                 return True
             self.jobs.transition(record, VoiceJobState.RESPONSE_READY.value)
             return False
+
+        receipt_recovery = False
+        receipt_required = (
+            self._receipt_activation_enabled()
+            and "submitted_order_id" in record
+            and delivery.status == "sent"
+            and delivery.outbound.get("sent") is True
+        )
+        if receipt_required:
+            heartbeat.assert_owned()
+            try:
+                record = self.jobs.checkpoint_receipt_pending(record)
+            except VoiceJobConditionFailed:
+                heartbeat.assert_owned()
+                latest = self.jobs.repository.get(record["job_id"])
+                if latest is None:
+                    return False
+                if latest.get("state") != VoiceJobState.OUTBOUND_SENDING.value:
+                    return self.jobs.is_terminal(latest)
+                receipt_state = latest.get("receipt_activation_state")
+                if receipt_state not in {
+                    "pending",
+                    "completed",
+                    "manual_review",
+                }:
+                    heartbeat.assert_owned()
+                    self.jobs.transition(
+                        latest,
+                        VoiceJobState.MANUAL_REVIEW.value,
+                        values={
+                            "generic_failure_code": (
+                                "VOICE_RECEIPT_CHECKPOINT_AMBIGUOUS"
+                            )
+                        },
+                    )
+                    return True
+                record = latest
+                receipt_recovery = True
+
+            if record.get("receipt_activation_state") == "pending":
+                heartbeat.assert_owned()
+                activation = self.receipt_activation.activate_pending(record)
+                heartbeat.assert_owned()
+                latest = self.jobs.repository.get(record["job_id"])
+                if latest is None:
+                    return False
+                record = latest
+                if activation.retryable or record.get(
+                    "receipt_activation_state"
+                ) == "pending":
+                    if not receipt_recovery:
+                        self._deliver_optional_voice_reply(
+                            record=record,
+                            inbound=inbound,
+                            reply=reply,
+                            text_delivery_status=delivery.status,
+                            heartbeat=heartbeat,
+                        )
+                    return False
+
+            if record.get("receipt_activation_state") not in {
+                "completed",
+                "manual_review",
+            }:
+                return False
+
+        if receipt_recovery:
+            return self._complete_receipt_recovery(record, heartbeat)
         voice_reply = self._deliver_optional_voice_reply(
             record=record,
             inbound=inbound,
@@ -269,6 +369,7 @@ class WhatsAppVoiceWorker:
             text_delivery_status=delivery.status,
             heartbeat=heartbeat,
         )
+        heartbeat.assert_owned()
         record = self.jobs.transition(
             record,
             VoiceJobState.COMPLETED.value,
@@ -276,6 +377,61 @@ class WhatsAppVoiceWorker:
         )
         logger.info("Voice outbound completed", extra={"event": "voice_outbound_completed", "voice_job_id": record["job_id"]})
         return True
+
+    def _recover_receipt_outbound(
+        self,
+        record: dict,
+        heartbeat: VoiceWorkerHeartbeat,
+    ) -> bool:
+        if record.get("receipt_activation_state") == "pending":
+            heartbeat.assert_owned()
+            activation = self.receipt_activation.activate_pending(record)
+            heartbeat.assert_owned()
+            latest = self.jobs.repository.get(record["job_id"])
+            if latest is None:
+                return False
+            record = latest
+            if activation.retryable or record.get(
+                "receipt_activation_state"
+            ) == "pending":
+                return False
+        if record.get("receipt_activation_state") not in {
+            "completed",
+            "manual_review",
+        }:
+            return False
+        return self._complete_receipt_recovery(record, heartbeat)
+
+    def _complete_receipt_recovery(
+        self,
+        record: dict,
+        heartbeat: VoiceWorkerHeartbeat,
+    ) -> bool:
+        heartbeat.assert_owned()
+        record = self.jobs.transition(
+            record,
+            VoiceJobState.COMPLETED.value,
+            values=VoiceReplyOutcome(
+                "skipped",
+                error_code="VOICE_REPLY_RECOVERY_NOT_REPLAYED",
+            ).persistence_values(),
+        )
+        logger.info(
+            "Voice outbound recovery completed",
+            extra={
+                "event": "voice_outbound_recovery_completed",
+                "voice_job_id": record["job_id"],
+                "voice_job_state": record["state"],
+                "recovery": True,
+            },
+        )
+        return True
+
+    def _receipt_activation_enabled(self) -> bool:
+        return bool(
+            getattr(self.settings, "receipt_activation_enabled", False)
+            and self.receipt_activation is not None
+        )
 
     def _deliver_optional_voice_reply(
         self,
@@ -416,6 +572,16 @@ def build_worker(settings=None) -> WhatsAppVoiceWorker:
                 audio_kinesis=settings.agentflo_audio_kinesis,
             ),
         )
+    receipt_activation = None
+    if settings.receipt_activation_enabled:
+        receipt_runtime = build_receipt_submission_runtime(
+            settings,
+            dynamodb=dynamodb,
+        )
+        receipt_activation = WhatsAppVoiceReceiptActivationService(
+            voice_jobs=jobs,
+            receipt_jobs=receipt_runtime.jobs,
+        )
     return WhatsAppVoiceWorker(
         settings=settings,
         jobs=jobs,
@@ -423,6 +589,7 @@ def build_worker(settings=None) -> WhatsAppVoiceWorker:
         voice=voice,
         conversations=conversations,
         voice_replies=voice_replies,
+        receipt_activation=receipt_activation,
     )
 
 

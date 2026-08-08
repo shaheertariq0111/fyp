@@ -120,6 +120,97 @@ class AgentRequestRepository:
             raise
         return True
 
+    def complete_delivery_with_receipt_pending(
+        self,
+        message_id: str,
+        *,
+        updated_at: str,
+    ) -> bool:
+        try:
+            self.table.update_item(
+                Key={
+                    "PK": f"agentflo-whatsapp-message:{message_id}",
+                    "SK": "IDEMPOTENCY",
+                },
+                UpdateExpression=(
+                    "SET #delivery_state = :completed, "
+                    "#receipt_activation_state = :pending, "
+                    "#updated_at = :updated_at"
+                ),
+                ConditionExpression=(
+                    "#delivery_state = :outbound_sending AND "
+                    "attribute_exists(#submitted_order_id)"
+                ),
+                ExpressionAttributeNames={
+                    "#delivery_state": "delivery_state",
+                    "#receipt_activation_state": "receipt_activation_state",
+                    "#submitted_order_id": "submitted_order_id",
+                    "#updated_at": "updated_at",
+                },
+                ExpressionAttributeValues={
+                    ":outbound_sending": "outbound_sending",
+                    ":completed": "completed",
+                    ":pending": "pending",
+                    ":updated_at": updated_at,
+                },
+            )
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return False
+            raise
+        return True
+
+    def transition_receipt_activation_state(
+        self,
+        message_id: str,
+        *,
+        expected_state: str,
+        next_state: str,
+        updated_at: str,
+    ) -> bool:
+        if (expected_state, next_state) not in {
+            ("pending", "completed"),
+            ("pending", "manual_review"),
+        }:
+            raise ValueError("RECEIPT_ACTIVATION_TRANSITION_INVALID")
+        try:
+            self.table.update_item(
+                Key={
+                    "PK": f"agentflo-whatsapp-message:{message_id}",
+                    "SK": "IDEMPOTENCY",
+                },
+                UpdateExpression=(
+                    "SET #receipt_activation_state = :next_state, "
+                    "#updated_at = :updated_at"
+                ),
+                ConditionExpression=(
+                    "#delivery_state = :completed AND "
+                    "#receipt_activation_state = :expected_state"
+                ),
+                ExpressionAttributeNames={
+                    "#delivery_state": "delivery_state",
+                    "#receipt_activation_state": "receipt_activation_state",
+                    "#updated_at": "updated_at",
+                },
+                ExpressionAttributeValues={
+                    ":completed": "completed",
+                    ":expected_state": expected_state,
+                    ":next_state": next_state,
+                    ":updated_at": updated_at,
+                },
+            )
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return False
+            raise
+        return True
+
     def delete_idempotency_key(self, message_id: str) -> None:
         self.table.delete_item(
             Key={

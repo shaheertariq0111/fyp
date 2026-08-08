@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 
 from src.models.tool_responses import ToolResponse
+
+
+logger = logging.getLogger(__name__)
 
 
 ORDER_TRANSITIONS = {
@@ -261,6 +265,13 @@ class OrderService:
                         ),
                     ),
                 )
+        if next_status == "submitted_to_restaurant":
+            submitted_at = self._now()
+            order["submitted_at"] = submitted_at
+            order["receipt_snapshot"] = self._receipt_snapshot(
+                order,
+                submitted_at=submitted_at,
+            )
         order["status"] = next_status
         order["updated_at"] = self._now()
         if idempotency_key:
@@ -595,6 +606,87 @@ class OrderService:
             total += line_total
         order["subtotal"] = total
         order["total"] = total + (order.get("delivery_fee") or 0)
+        return None
+
+    def _receipt_snapshot(self, order: dict, *, submitted_at: str) -> dict:
+        return {
+            "schema_version": 1,
+            "order_id": order["order_id"],
+            "submitted_at": submitted_at,
+            "status": "submitted_to_restaurant",
+            "customer_name": order.get("customer_name"),
+            "fulfillment_method": order.get("fulfillment_method"),
+            "delivery_address": (
+                order.get("delivery_address")
+                if order.get("fulfillment_method") == "delivery"
+                else None
+            ),
+            "items": [
+                {
+                    "item_id": item.get("item_id"),
+                    "name": item.get("name"),
+                    "quantity": item.get("quantity"),
+                    "unit_price": item.get("unit_price"),
+                    "line_total": item.get("line_total"),
+                    "display_customizations": self._display_customizations(item),
+                }
+                for item in order.get("items", [])
+            ],
+            "subtotal": order.get("subtotal"),
+            "delivery_fee": order.get("delivery_fee"),
+            "total": order.get("total"),
+            "currency": order.get("currency"),
+        }
+
+    def _display_customizations(self, item: dict) -> list[dict]:
+        item_id = item.get("item_id")
+        try:
+            source = self.menu.get_item(item_id)
+            selected_by_group = item.get("customizations")
+            if not source or not isinstance(selected_by_group, dict):
+                return []
+
+            display = []
+            for group_id in source.get("customization_group_ids", []):
+                group = self.menu.get_option_group(group_id)
+                if not group:
+                    continue
+                selected = selected_by_group.get(group_id)
+                selected_ids = selected if isinstance(selected, list) else [selected]
+                selected_ids = [value for value in selected_ids if value]
+                group_name = self._display_name(group, "name", "question")
+                if not group_name or not selected_ids:
+                    continue
+                option_names = []
+                for option in group.get("options", []):
+                    if option.get("option_id") not in selected_ids:
+                        continue
+                    option_name = self._display_name(option, "name", "label")
+                    if option_name:
+                        option_names.append(option_name)
+                if option_names:
+                    display.append({
+                        "group": group_name,
+                        "options": option_names,
+                    })
+            return display
+        except Exception as exc:
+            logger.warning(
+                "Receipt customization snapshot enrichment failed",
+                extra={
+                    "event": "receipt_customization_snapshot_failed",
+                    "item_id": item_id,
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            return []
+
+    @staticmethod
+    def _display_name(record: dict, *fields: str) -> str | None:
+        for field in fields:
+            value = record.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
         return None
 
     @staticmethod

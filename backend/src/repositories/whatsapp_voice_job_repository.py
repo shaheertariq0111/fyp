@@ -95,6 +95,94 @@ class WhatsAppVoiceJobRepository:
             values={"request_id": request_id, "customer_id": customer_id, "session_id": session_id},
         )
 
+    def checkpoint_receipt_pending(
+        self,
+        job_id: str,
+        *,
+        expected_version: int,
+        updated_at: str,
+    ) -> dict:
+        try:
+            response = self.table.update_item(
+                Key=self._key(job_id),
+                UpdateExpression=(
+                    "SET #receipt_state = :pending, "
+                    "#version = #version + :one, #updated = :updated"
+                ),
+                ConditionExpression=(
+                    "#state = :outbound_sending AND #version = :version AND "
+                    "attribute_exists(#submitted_order_id) AND "
+                    "attribute_not_exists(#receipt_state)"
+                ),
+                ExpressionAttributeNames={
+                    "#state": "state",
+                    "#version": "version",
+                    "#updated": "updated_at",
+                    "#submitted_order_id": "submitted_order_id",
+                    "#receipt_state": "receipt_activation_state",
+                },
+                ExpressionAttributeValues=to_dynamodb({
+                    ":outbound_sending": "outbound_sending",
+                    ":version": expected_version,
+                    ":pending": "pending",
+                    ":one": 1,
+                    ":updated": updated_at,
+                }),
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as exc:
+            if self._conditional(exc):
+                raise VoiceJobConditionFailed(
+                    "VOICE_JOB_CONDITION_FAILED"
+                ) from exc
+            raise
+        return from_dynamodb(response["Attributes"])
+
+    def transition_receipt_activation(
+        self,
+        job_id: str,
+        *,
+        expected_version: int,
+        next_state: str,
+        updated_at: str,
+    ) -> dict:
+        if next_state not in {"completed", "manual_review"}:
+            raise ValueError("VOICE_RECEIPT_TRANSITION_INVALID")
+        try:
+            response = self.table.update_item(
+                Key=self._key(job_id),
+                UpdateExpression=(
+                    "SET #receipt_state = :next, "
+                    "#version = #version + :one, #updated = :updated"
+                ),
+                ConditionExpression=(
+                    "#state = :outbound_sending AND "
+                    "#receipt_state = :pending AND #version = :version"
+                ),
+                ExpressionAttributeNames={
+                    "#state": "state",
+                    "#receipt_state": "receipt_activation_state",
+                    "#version": "version",
+                    "#updated": "updated_at",
+                },
+                ExpressionAttributeValues=to_dynamodb({
+                    ":outbound_sending": "outbound_sending",
+                    ":pending": "pending",
+                    ":version": expected_version,
+                    ":next": next_state,
+                    ":one": 1,
+                    ":updated": updated_at,
+                }),
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as exc:
+            if self._conditional(exc):
+                raise VoiceJobConditionFailed(
+                    "VOICE_JOB_CONDITION_FAILED"
+                ) from exc
+            raise
+        return from_dynamodb(response["Attributes"])
+
     def mark_retryable_failure(self, job_id: str, **kwargs) -> dict:
         return self.transition(job_id, next_state="retryable_failure", **kwargs)
 

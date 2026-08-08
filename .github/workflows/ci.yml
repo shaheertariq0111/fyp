@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   changes:
@@ -153,6 +153,54 @@ jobs:
       - name: Run backend tests
         working-directory: backend
         run: python -m pytest
+
+      - name: Build receipt Lambda Docker image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --file backend/Dockerfile.receipt-lambda \
+            --tag fyp-receipt-lambda-ci:${{ github.sha }} \
+            backend
+
+      - name: Validate receipt Lambda container runtime
+        run: |
+          image_os="$(docker image inspect --format '{{.Os}}' fyp-receipt-lambda-ci:${{ github.sha }})"
+          image_arch="$(docker image inspect --format '{{.Architecture}}' fyp-receipt-lambda-ci:${{ github.sha }})"
+          if [ "$image_os" != "linux" ] || [ "$image_arch" != "amd64" ]; then
+            echo "Receipt Lambda image platform mismatch: os=$image_os architecture=$image_arch" >&2
+            exit 1
+          fi
+
+          docker run --rm -i \
+            --platform linux/amd64 \
+            --entrypoint python \
+            fyp-receipt-lambda-ci:${{ github.sha }} - <<'PY'
+          import platform
+
+          import reportlab
+          from src.lambda_handlers.receipt_outbox_recovery import (
+              handler as receipt_outbox_recovery_handler,
+          )
+          from src.lambda_handlers.receipt_processing import (
+              handler as receipt_processing_handler,
+          )
+
+          machine = platform.machine().lower()
+          if machine not in {"x86_64", "amd64"}:
+              raise SystemExit(
+                  f"Receipt Lambda runtime architecture mismatch: {machine}"
+              )
+          if not callable(receipt_processing_handler):
+              raise SystemExit("Receipt processing Lambda handler is not callable")
+          if not callable(receipt_outbox_recovery_handler):
+              raise SystemExit("Receipt recovery Lambda handler is not callable")
+
+          print(
+              "Receipt Lambda container validation passed: "
+              f"image_os=linux image_arch=amd64 runtime_machine={machine} "
+              f"reportlab_version={reportlab.Version}"
+          )
+          PY
 
       - name: Build backend Docker image
         run: docker build --platform linux/amd64 -t fyp-backend-ci:${{ github.sha }} backend
@@ -561,3 +609,262 @@ jobs:
           done
 
           echo "Quality gate passed."
+
+  publish-receipt-image:
+    name: Publish receipt Lambda image
+    needs:
+      - quality-gate
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feature/event-driven-pdf-receipts'
+    runs-on: ubuntu-latest
+    environment: receipt-image
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: receipt-lambda-image-publication
+      cancel-in-progress: false
+    timeout-minutes: 30
+    env:
+      AWS_ACCOUNT_ID: "352306494518"
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: fyp-dev-receipt-lambda
+      IMAGE_TAG: ${{ github.sha }}
+      LOCAL_IMAGE: fyp-receipt-lambda-publish:${{ github.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify source identity and fixed configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_sha="$(git rev-parse HEAD)"
+          if [ "$source_sha" != "${{ github.sha }}" ]; then
+            echo "Checked-out source SHA does not match github.sha." >&2
+            exit 1
+          fi
+          if [ "$IMAGE_TAG" != "${{ github.sha }}" ]; then
+            echo "Image tag does not match github.sha." >&2
+            exit 1
+          fi
+          if [[ ! "$IMAGE_TAG" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Image tag must be a full 40-character hexadecimal Git commit SHA." >&2
+            exit 1
+          fi
+          if [ "$AWS_REGION" != "us-east-1" ]; then
+            echo "AWS_REGION must be us-east-1 for the dedicated receipt repository." >&2
+            exit 1
+          fi
+
+      - name: Build receipt Lambda image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --platform linux/amd64 \
+            --file backend/Dockerfile.receipt-lambda \
+            --tag "$LOCAL_IMAGE" \
+            backend
+
+      - name: Validate receipt Lambda image platform
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_os="$(docker image inspect --format '{{.Os}}' "$LOCAL_IMAGE")"
+          image_arch="$(docker image inspect --format '{{.Architecture}}' "$LOCAL_IMAGE")"
+          if [ "$image_os" != "linux" ] || [ "$image_arch" != "amd64" ]; then
+            echo "Receipt Lambda image platform mismatch: os=$image_os architecture=$image_arch" >&2
+            exit 1
+          fi
+
+      - name: Validate receipt Lambda container runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run --rm -i \
+            --platform linux/amd64 \
+            --entrypoint python \
+            "$LOCAL_IMAGE" - <<'PY'
+          import platform
+
+          import reportlab
+          from src.lambda_handlers.receipt_outbox_recovery import (
+              handler as receipt_outbox_recovery_handler,
+          )
+          from src.lambda_handlers.receipt_processing import (
+              handler as receipt_processing_handler,
+          )
+
+          machine = platform.machine().lower()
+          if machine not in {"x86_64", "amd64"}:
+              raise SystemExit(
+                  f"Receipt Lambda runtime architecture mismatch: {machine}"
+              )
+          if not callable(receipt_processing_handler):
+              raise SystemExit("Receipt processing Lambda handler is not callable")
+          if not callable(receipt_outbox_recovery_handler):
+              raise SystemExit("Receipt recovery Lambda handler is not callable")
+
+          print(
+              "Receipt Lambda container validation passed: "
+              f"image_os=linux image_arch=amd64 runtime_machine={machine} "
+              f"reportlab_version={reportlab.Version}"
+          )
+          PY
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.RECEIPT_IMAGE_PUSH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: receipt-image-${{ github.run_id }}
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          caller_arn="$(aws sts get-caller-identity --query Arn --output text)"
+          expected_arn="arn:aws:sts::${AWS_ACCOUNT_ID}:assumed-role/fyp-github-receipt-image-pusher/receipt-image-${GITHUB_RUN_ID}"
+          if [ "$account" != "$AWS_ACCOUNT_ID" ]; then
+            echo "AWS account mismatch." >&2
+            exit 1
+          fi
+          if [ "$caller_arn" != "$expected_arn" ]; then
+            echo "AWS assumed-role identity mismatch." >&2
+            exit 1
+          fi
+
+      - name: Verify immutable ECR tag is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          describe_error="$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --region "$AWS_REGION" 2>&1)"
+          describe_status=$?
+          set -e
+
+          if [ "$describe_status" -eq 0 ]; then
+            echo "Immutable commit tag $IMAGE_TAG already exists and will not be overwritten." >&2
+            exit 1
+          fi
+          if [[ "$describe_error" != *"ImageNotFoundException"* ]]; then
+            echo "Unable to prove that the immutable ECR tag is absent; refusing publication." >&2
+            exit 1
+          fi
+          echo "Immutable commit tag is available for first publication."
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Verify ECR registry
+        shell: bash
+        env:
+          AUTHENTICATED_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+
+          expected_registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          if [ "$AUTHENTICATED_REGISTRY" != "$expected_registry" ]; then
+            echo "Authenticated ECR registry does not match the dedicated receipt registry." >&2
+            exit 1
+          fi
+
+      - name: Tag and push validated receipt image
+        id: publish-image
+        shell: bash
+        env:
+          AUTHENTICATED_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+
+          image_uri="${AUTHENTICATED_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker tag "$LOCAL_IMAGE" "$image_uri"
+          docker push "$image_uri"
+          echo "image_uri=$image_uri" >> "$GITHUB_OUTPUT"
+
+      - name: Verify published image digest
+        id: verify-digest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          describe_digest=""
+          for attempt in {1..10}; do
+            set +e
+            describe_result="$(aws ecr describe-images \
+              --repository-name "$ECR_REPOSITORY" \
+              --image-ids imageTag="$IMAGE_TAG" \
+              --region "$AWS_REGION" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text 2>&1)"
+            describe_status=$?
+            set -e
+
+            if [ "$describe_status" -eq 0 ]; then
+              describe_digest="$describe_result"
+              break
+            fi
+            if [[ "$describe_result" != *"ImageNotFoundException"* ]]; then
+              echo "Unexpected error while verifying the published image digest." >&2
+              exit 1
+            fi
+            if [ "$attempt" -lt 10 ]; then
+              sleep 2
+            fi
+          done
+
+          if [[ ! "$describe_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "DescribeImages did not return a valid image digest." >&2
+            exit 1
+          fi
+
+          batch_digest="$(aws ecr batch-get-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --region "$AWS_REGION" \
+            --query 'images[0].imageId.imageDigest' \
+            --output text)"
+          if [[ ! "$batch_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "BatchGetImage did not return a valid image digest." >&2
+            exit 1
+          fi
+          if [ "$describe_digest" != "$batch_digest" ]; then
+            echo "DescribeImages and BatchGetImage digest values do not match." >&2
+            exit 1
+          fi
+
+          echo "image_digest=$describe_digest" >> "$GITHUB_OUTPUT"
+          echo "Published image digest verified."
+
+      - name: Write publication summary
+        shell: bash
+        env:
+          IMAGE_URI: ${{ steps.publish-image.outputs.image_uri }}
+          IMAGE_DIGEST: ${{ steps.verify-digest.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Receipt Lambda image publication"
+            echo
+            echo "- Source commit SHA: \`$GITHUB_SHA\`"
+            echo "- Image tag: \`$IMAGE_TAG\`"
+            echo "- ECR image URI: \`$IMAGE_URI\`"
+            echo "- Verified image digest: \`$IMAGE_DIGEST\`"
+            echo "- AWS account: \`$AWS_ACCOUNT_ID\`"
+            echo "- AWS region: \`$AWS_REGION\`"
+            echo "- Repository: \`$ECR_REPOSITORY\`"
+            echo "- Platform: \`linux/amd64\`"
+            echo
+            echo "This workflow only published the container image; it did not deploy or activate the Lambda receipt system."
+          } >> "$GITHUB_STEP_SUMMARY"

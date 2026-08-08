@@ -12,6 +12,7 @@ class MemoryJobs:
     def __init__(self):
         self.records = {}
         self.due = []
+        self.receipt_calls = []
 
     def create_if_absent(self, record):
         if record["job_id"] in self.records:
@@ -34,6 +35,51 @@ class MemoryJobs:
 
     def query_due(self, **_kwargs):
         return [deepcopy(self.records[job_id]) for job_id in self.due]
+
+    def checkpoint_receipt_pending(
+        self,
+        job_id,
+        *,
+        expected_version,
+        updated_at,
+    ):
+        self.receipt_calls.append((
+            "checkpoint",
+            job_id,
+            expected_version,
+            updated_at,
+        ))
+        record = self.records[job_id]
+        assert record["state"] == VoiceJobState.OUTBOUND_SENDING.value
+        assert record["version"] == expected_version
+        record["receipt_activation_state"] = "pending"
+        record["version"] += 1
+        record["updated_at"] = updated_at
+        return deepcopy(record)
+
+    def transition_receipt_activation(
+        self,
+        job_id,
+        *,
+        expected_version,
+        next_state,
+        updated_at,
+    ):
+        self.receipt_calls.append((
+            "transition",
+            job_id,
+            expected_version,
+            next_state,
+            updated_at,
+        ))
+        record = self.records[job_id]
+        assert record["state"] == VoiceJobState.OUTBOUND_SENDING.value
+        assert record["receipt_activation_state"] == "pending"
+        assert record["version"] == expected_version
+        record["receipt_activation_state"] = next_state
+        record["version"] += 1
+        record["updated_at"] = updated_at
+        return deepcopy(record)
 
 
 class FakeQueue:
@@ -110,3 +156,91 @@ def test_enqueue_failure_keeps_durable_retryable_job_and_outbox_recovers():
     queue.fail = False
     assert service.recover_outbox() == 1
     assert repository.records[result.job_id]["state"] == VoiceJobState.QUEUED.value
+
+
+def outbound_record(**overrides):
+    record = {
+        "job_id": "wv1_" + "c" * 64,
+        "state": VoiceJobState.OUTBOUND_SENDING.value,
+        "version": 7,
+        "submitted_order_id": "ORD-123",
+    }
+    record.update(overrides)
+    return record
+
+
+def test_receipt_service_wrappers_use_record_version_clock_and_keep_main_state(
+    monkeypatch,
+):
+    repository = MemoryJobs()
+    record = outbound_record()
+    repository.records[record["job_id"]] = deepcopy(record)
+    service = WhatsAppVoiceJobService(repository, FakeQueue(), settings())
+    fixed = service._now().replace(microsecond=0)
+    monkeypatch.setattr(service, "_now", lambda: fixed)
+
+    pending = service.checkpoint_receipt_pending(record)
+    completed = service.complete_receipt_activation(pending)
+
+    assert repository.receipt_calls == [
+        ("checkpoint", record["job_id"], 7, fixed.isoformat()),
+        ("transition", record["job_id"], 8, "completed", fixed.isoformat()),
+    ]
+    assert pending["state"] == VoiceJobState.OUTBOUND_SENDING.value
+    assert pending["receipt_activation_state"] == "pending"
+    assert completed["state"] == VoiceJobState.OUTBOUND_SENDING.value
+    assert completed["receipt_activation_state"] == "completed"
+    assert completed["version"] == 9
+
+
+def test_receipt_manual_review_wrapper_keeps_main_state(monkeypatch):
+    repository = MemoryJobs()
+    record = outbound_record(receipt_activation_state="pending", version=8)
+    repository.records[record["job_id"]] = deepcopy(record)
+    service = WhatsAppVoiceJobService(repository, FakeQueue(), settings())
+    fixed = service._now().replace(microsecond=0)
+    monkeypatch.setattr(service, "_now", lambda: fixed)
+
+    reviewed = service.mark_receipt_manual_review(record)
+
+    assert reviewed["state"] == VoiceJobState.OUTBOUND_SENDING.value
+    assert reviewed["receipt_activation_state"] == "manual_review"
+    assert repository.receipt_calls == [(
+        "transition",
+        record["job_id"],
+        8,
+        "manual_review",
+        fixed.isoformat(),
+    )]
+
+
+@pytest.mark.parametrize(
+    ("method", "record"),
+    [
+        ("checkpoint_receipt_pending", outbound_record(state="response_ready")),
+        (
+            "checkpoint_receipt_pending",
+            outbound_record(receipt_activation_state="completed"),
+        ),
+        (
+            "complete_receipt_activation",
+            outbound_record(receipt_activation_state="completed"),
+        ),
+        (
+            "mark_receipt_manual_review",
+            outbound_record(state="completed", receipt_activation_state="pending"),
+        ),
+    ],
+)
+def test_unsupported_receipt_service_transitions_fail_before_repository(
+    method,
+    record,
+):
+    repository = MemoryJobs()
+    repository.records[record["job_id"]] = deepcopy(record)
+    service = WhatsAppVoiceJobService(repository, FakeQueue(), settings())
+
+    with pytest.raises(ValueError, match="VOICE_RECEIPT"):
+        getattr(service, method)(record)
+
+    assert repository.receipt_calls == []

@@ -18,6 +18,7 @@ class WhatsAppConversationReply:
     session_id: str
     customer_id: str
     resumed: bool = False
+    submitted_order_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +100,15 @@ class WhatsAppConversationService:
         reply = response.get("text") if isinstance(response, dict) else None
         if result.record.get("status") != "completed" or not isinstance(reply, str) or not reply.strip():
             return None
-        return WhatsAppConversationReply(reply, result.record["request_id"], result.context.agent_session_id, result.context.customer_id, resumed=result.outcome == "completed")
+        submitted_order_id = submitted_order_id_from_response(response)
+        return WhatsAppConversationReply(
+            reply,
+            result.record["request_id"],
+            result.context.agent_session_id,
+            result.context.customer_id,
+            resumed=result.outcome == "completed",
+            submitted_order_id=submitted_order_id,
+        )
 
     def deliver(self, inbound: WhatsAppInboundMessage, reply: WhatsAppConversationReply, *, history_identifier: str | None = None, ambiguous_on_exception: bool = False) -> WhatsAppDeliveryOutcome:
         gateway = self.gateway_provider()
@@ -159,3 +168,40 @@ def build_whatsapp_identity(inbound: WhatsAppInboundMessage, services_provider: 
             name_source="whatsapp_profile",
         )
     return customer_id, session_id
+
+
+def submitted_order_id_from_response(response: Any) -> str | None:
+    if not isinstance(response, dict):
+        return None
+    tool_calls = response.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return None
+
+    submitted_ids: set[str] = set()
+    for call in tool_calls:
+        if (
+            not isinstance(call, dict)
+            or call.get("success") is not True
+            or call.get("tool_name") not in {"confirm_order", "update_order_flow"}
+        ):
+            continue
+        result = call.get("result")
+        if not isinstance(result, dict):
+            continue
+        data = result.get("data")
+        if not isinstance(data, dict):
+            continue
+        if data.get("status") != "submitted_to_restaurant":
+            continue
+        order_id = data.get("order_id")
+        if (
+            not isinstance(order_id, str)
+            or not order_id
+            or order_id != order_id.strip()
+        ):
+            continue
+        submitted_ids.add(order_id)
+
+    if len(submitted_ids) != 1:
+        return None
+    return next(iter(submitted_ids))

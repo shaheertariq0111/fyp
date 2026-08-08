@@ -4,6 +4,8 @@ import base64
 import json
 import logging
 import tempfile
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -20,6 +22,7 @@ from src.services.agentflo_media_service import (
 logger = logging.getLogger(__name__)
 OUTBOUND_ERROR_CODE = "AGENTFLO_OUTBOUND_FAILED"
 AUDIO_OUTBOUND_ERROR_CODE = "AGENTFLO_AUDIO_OUTBOUND_FAILED"
+DOCUMENT_OUTBOUND_ERROR_CODE = "AGENTFLO_DOCUMENT_OUTBOUND_FAILED"
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_MEDIA_BYTES = 10 * 1024 * 1024
 
@@ -35,6 +38,30 @@ MEDIA_ERROR_MESSAGES = {
     "AGENTFLO_MEDIA_EMPTY": "The Agentflo media object is empty.",
     "AGENTFLO_MEDIA_FORMAT_UNSUPPORTED": "The Agentflo media format is unsupported.",
 }
+
+
+class DocumentSendDisposition(str, Enum):
+    SENT = "sent"
+    RETRYABLE_FAILURE = "retryable_failure"
+    PERMANENT_FAILURE = "permanent_failure"
+    MANUAL_REVIEW = "manual_review"
+
+
+@dataclass(frozen=True, slots=True)
+class ClassifiedDocumentSendResult:
+    disposition: DocumentSendDisposition
+    provider_message_id: str | None = None
+    stage: str | None = None
+    status_code: int | None = None
+    error_code: str | None = None
+
+    @property
+    def sent(self) -> bool:
+        return self.disposition is DocumentSendDisposition.SENT
+
+    @property
+    def retryable(self) -> bool:
+        return self.disposition is DocumentSendDisposition.RETRYABLE_FAILURE
 
 
 class AgentfloGatewayRequestError(Exception):
@@ -267,6 +294,269 @@ class AgentfloGatewayService:
                 "log": {},
             },
             error_code=AUDIO_OUTBOUND_ERROR_CODE,
+        )
+
+    def send_document(
+        self,
+        *,
+        customer_number: str,
+        conversation_id: str,
+        sender_id: str,
+        document: bytes,
+        filename: str,
+        caption: str | None,
+        request_id: str,
+    ) -> dict[str, Any]:
+        if not self.configured:
+            return {
+                "sent": False,
+                "skipped": True,
+                "reason": "gateway_not_configured",
+            }
+        try:
+            payload = self._document_payload(
+                customer_number=customer_number,
+                conversation_id=conversation_id,
+                sender_id=sender_id,
+                document=document,
+                filename=filename,
+                caption=caption,
+            )
+        except AgentfloGatewayRequestError as exc:
+            self._failure(
+                stage=exc.stage,
+                request_id=request_id,
+                error_code=DOCUMENT_OUTBOUND_ERROR_CODE,
+            )
+            return self._failure_result(DOCUMENT_OUTBOUND_ERROR_CODE)
+
+        try:
+            token = self._authenticate()
+        except AgentfloGatewayRequestError as exc:
+            self._failure(
+                stage=exc.stage,
+                request_id=request_id,
+                status_code=exc.status_code,
+                exception_type=exc.exception_type,
+                error_code=DOCUMENT_OUTBOUND_ERROR_CODE,
+            )
+            return self._failure_result(DOCUMENT_OUTBOUND_ERROR_CODE)
+
+        return self._send_outbound(
+            token=token,
+            request_id=request_id,
+            payload=payload,
+            error_code=DOCUMENT_OUTBOUND_ERROR_CODE,
+        )
+
+    def send_document_classified(
+        self,
+        *,
+        customer_number: str,
+        conversation_id: str,
+        sender_id: str,
+        document: bytes,
+        filename: str,
+        caption: str | None,
+        request_id: str,
+    ) -> ClassifiedDocumentSendResult:
+        del request_id
+        if not self.configured:
+            return self._document_classification(
+                DocumentSendDisposition.PERMANENT_FAILURE,
+                stage="configuration",
+            )
+        try:
+            payload = self._document_payload(
+                customer_number=customer_number,
+                conversation_id=conversation_id,
+                sender_id=sender_id,
+                document=document,
+                filename=filename,
+                caption=caption,
+            )
+        except AgentfloGatewayRequestError as exc:
+            return self._document_classification(
+                DocumentSendDisposition.PERMANENT_FAILURE,
+                stage=exc.stage,
+            )
+
+        try:
+            token = self._authenticate()
+        except AgentfloGatewayRequestError as exc:
+            return self._classify_document_auth_failure(exc)
+
+        try:
+            outbound = self._request_json(
+                path="/whatsapp/outbound",
+                payload=payload,
+                stage="outbound",
+                token=token,
+            )
+        except AgentfloGatewayRequestError as exc:
+            return self._classify_document_outbound_failure(exc)
+        return self._classify_document_outbound_response(outbound)
+
+    def _document_payload(
+        self,
+        *,
+        customer_number: str,
+        conversation_id: str,
+        sender_id: str,
+        document: bytes,
+        filename: str,
+        caption: str | None,
+    ) -> dict[str, Any]:
+        normalized_filename = filename.strip() if isinstance(filename, str) else ""
+        if (
+            not isinstance(customer_number, str)
+            or not customer_number
+            or not isinstance(conversation_id, str)
+            or not conversation_id
+            or not isinstance(sender_id, str)
+            or not sender_id
+            or not isinstance(document, bytes)
+            or not document
+            or len(document) > self.max_media_bytes
+            or not normalized_filename
+            or (caption is not None and not isinstance(caption, str))
+        ):
+            raise AgentfloGatewayRequestError(stage="document_validation")
+
+        encoded = base64.b64encode(document).decode("ascii")
+        max_encoded_bytes = 4 * ((self.max_media_bytes + 2) // 3)
+        if len(encoded.encode("ascii")) > max_encoded_bytes:
+            raise AgentfloGatewayRequestError(stage="document_encoding")
+
+        gateway_number = (
+            customer_number[1:]
+            if customer_number.startswith("+")
+            else customer_number
+        )
+        message = {
+            "type": "document",
+            "base64": encoded,
+            "filename": normalized_filename,
+        }
+        normalized_caption = caption.strip() if caption is not None else ""
+        if normalized_caption:
+            message["caption"] = normalized_caption
+        return {
+            "tenantId": self.tenant_id,
+            "agentId": self.agent_id,
+            "userId": gateway_number,
+            "conversationId": conversation_id,
+            "actorId": self.actor_id,
+            "actorType": "agent",
+            "recipient": {
+                "type": "phone",
+                "value": gateway_number,
+            },
+            "sender": {
+                "phoneNumberId": sender_id,
+            },
+            "source": "agent",
+            "firestore": False,
+            "kinesis": False,
+            "message": message,
+        }
+
+    @staticmethod
+    def _document_classification(
+        disposition: DocumentSendDisposition,
+        *,
+        provider_message_id: str | None = None,
+        stage: str | None = None,
+        status_code: int | None = None,
+    ) -> ClassifiedDocumentSendResult:
+        return ClassifiedDocumentSendResult(
+            disposition=disposition,
+            provider_message_id=provider_message_id,
+            stage=stage,
+            status_code=status_code,
+            error_code=(
+                None
+                if disposition is DocumentSendDisposition.SENT
+                else DOCUMENT_OUTBOUND_ERROR_CODE
+            ),
+        )
+
+    @classmethod
+    def _classify_document_auth_failure(
+        cls,
+        exc: AgentfloGatewayRequestError,
+    ) -> ClassifiedDocumentSendResult:
+        disposition = (
+            DocumentSendDisposition.PERMANENT_FAILURE
+            if exc.status_code in {400, 401, 403, 404, 422}
+            else DocumentSendDisposition.RETRYABLE_FAILURE
+        )
+        return cls._document_classification(
+            disposition,
+            stage=exc.stage,
+            status_code=exc.status_code,
+        )
+
+    @classmethod
+    def _classify_document_outbound_failure(
+        cls,
+        exc: AgentfloGatewayRequestError,
+    ) -> ClassifiedDocumentSendResult:
+        status_code = exc.status_code
+        if status_code == 429:
+            disposition = DocumentSendDisposition.RETRYABLE_FAILURE
+        elif (
+            status_code is not None
+            and 400 <= status_code < 500
+            and status_code != 408
+        ):
+            disposition = DocumentSendDisposition.PERMANENT_FAILURE
+        else:
+            disposition = DocumentSendDisposition.MANUAL_REVIEW
+        return cls._document_classification(
+            disposition,
+            stage=exc.stage,
+            status_code=status_code,
+        )
+
+    @classmethod
+    def _classify_document_outbound_response(
+        cls,
+        outbound: dict[str, Any],
+    ) -> ClassifiedDocumentSendResult:
+        downstream = outbound.get("downstream")
+        downstream = downstream if isinstance(downstream, dict) else {}
+        raw_status = outbound.get("status")
+        status = raw_status.strip() if isinstance(raw_status, str) else ""
+        normalized_status = status.lower()
+        downstream_accepted = downstream.get("accepted")
+        rejected = (
+            outbound.get("success") is False
+            or normalized_status in {"failed", "rejected"}
+            or downstream_accepted is False
+        )
+        if rejected:
+            return cls._document_classification(
+                DocumentSendDisposition.PERMANENT_FAILURE,
+                stage="outbound_response",
+            )
+        accepted = (
+            normalized_status == "accepted"
+            or downstream_accepted is True
+        )
+        if not accepted:
+            return cls._document_classification(
+                DocumentSendDisposition.MANUAL_REVIEW,
+                stage="outbound_response",
+            )
+        provider_message_id = downstream.get("providerMessageId")
+        if isinstance(provider_message_id, str):
+            provider_message_id = provider_message_id.strip() or None
+        else:
+            provider_message_id = None
+        return cls._document_classification(
+            DocumentSendDisposition.SENT,
+            provider_message_id=provider_message_id,
         )
 
     def _send_outbound(

@@ -132,6 +132,43 @@ class WhatsAppVoiceJobService:
             next_state=next_state, updated_at=self._now().isoformat(), values=values, remove=remove,
         )
 
+    def checkpoint_receipt_pending(self, record: dict) -> dict:
+        if (
+            record.get("state") != VoiceJobState.OUTBOUND_SENDING.value
+            or "submitted_order_id" not in record
+            or "receipt_activation_state" in record
+        ):
+            raise ValueError("VOICE_RECEIPT_PENDING_CHECKPOINT_INVALID")
+        return self.repository.checkpoint_receipt_pending(
+            record["job_id"],
+            expected_version=int(record["version"]),
+            updated_at=self._now().isoformat(),
+        )
+
+    def complete_receipt_activation(self, record: dict) -> dict:
+        return self._transition_receipt_activation(record, "completed")
+
+    def mark_receipt_manual_review(self, record: dict) -> dict:
+        return self._transition_receipt_activation(record, "manual_review")
+
+    def _transition_receipt_activation(
+        self,
+        record: dict,
+        next_state: str,
+    ) -> dict:
+        if (
+            record.get("state") != VoiceJobState.OUTBOUND_SENDING.value
+            or record.get("receipt_activation_state") != "pending"
+            or next_state not in {"completed", "manual_review"}
+        ):
+            raise ValueError("VOICE_RECEIPT_TRANSITION_INVALID")
+        return self.repository.transition_receipt_activation(
+            record["job_id"],
+            expected_version=int(record["version"]),
+            next_state=next_state,
+            updated_at=self._now().isoformat(),
+        )
+
     def acquire_lease(self, job_id: str, owner: str) -> dict:
         now = self._now()
         return self.repository.acquire_lease(

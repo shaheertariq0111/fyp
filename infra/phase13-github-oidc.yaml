@@ -17,6 +17,11 @@ Parameters:
     Default: staging
     AllowedPattern: "^[A-Za-z0-9_.-]+$"
     Description: GitHub environment used by future deployment jobs.
+  ReceiptImagePushEnvironment:
+    Type: String
+    Default: receipt-image
+    AllowedPattern: "^[A-Za-z0-9_.-]+$"
+    Description: Dedicated GitHub Environment for receipt Lambda image publication.
   CreateGitHubOidcProvider:
     Type: String
     Default: "false"
@@ -36,12 +41,19 @@ Parameters:
     Type: String
     Default: fyp-github-agentcore-deployer
     AllowedPattern: "^[A-Za-z0-9+=,.@_-]{1,64}$"
+  ReceiptImagePushRoleName:
+    Type: String
+    Default: fyp-github-receipt-image-pusher
+    AllowedPattern: "^[A-Za-z0-9+=,.@_-]{1,64}$"
   BackendEcrRepositoryArn:
     Type: String
     Default: arn:aws:ecr:us-east-1:352306494518:repository/fyp-dev-backend
   AgentRuntimeEcrRepositoryArn:
     Type: String
     Default: arn:aws:ecr:us-east-1:352306494518:repository/fyp-dev-agent-runtime
+  ReceiptLambdaEcrRepositoryArn:
+    Type: String
+    Default: arn:aws:ecr:us-east-1:352306494518:repository/fyp-dev-receipt-lambda
   EcsClusterName:
     Type: String
     Default: fyp-dev-backend
@@ -251,6 +263,53 @@ Resources:
                   - sts:GetCallerIdentity
                 Resource: "*"
 
+  ReceiptImagePushRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref ReceiptImagePushRoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TrustGitHubReceiptImageEnvironmentOnly
+            Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateGitHubOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Ref ExistingGitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrganization}/${GitHubRepository}:environment:${ReceiptImagePushEnvironment}
+      Policies:
+        - PolicyName: receipt-image-push
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: GetEcrAuthorizationToken
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PushAndVerifyReceiptLambdaImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:DescribeImages
+                Resource: !Ref ReceiptLambdaEcrRepositoryArn
+              - Sid: IdentifyCaller
+                Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: "*"
+
 Outputs:
   GitHubOidcProviderArn:
     Description: GitHub Actions OIDC provider ARN used by the deployment roles.
@@ -264,3 +323,6 @@ Outputs:
   AgentCoreDeploymentRoleArn:
     Description: IAM role ARN for future AgentCore deployment workflows.
     Value: !GetAtt AgentCoreDeploymentRole.Arn
+  ReceiptImagePushRoleArn:
+    Description: IAM role ARN for the dedicated receipt Lambda image publication workflow.
+    Value: !GetAtt ReceiptImagePushRole.Arn

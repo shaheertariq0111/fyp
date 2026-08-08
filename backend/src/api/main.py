@@ -64,6 +64,7 @@ from src.repositories.whatsapp_voice_job_repository import WhatsAppVoiceJobRepos
 from src.services.voice_queue_service import VoiceQueueService
 from src.services.whatsapp_voice_job_service import WhatsAppVoiceJobService
 from src.services.whatsapp_conversation_service import WhatsAppConversationService
+from src.services.whatsapp_conversation_service import WhatsAppDeliveryOutcome
 from src.services.customer_service import CustomerService
 from src.services.ticket_service import (
     AdminTicketError,
@@ -1628,6 +1629,116 @@ def _finalize_agentflo_outbound_send(
     )
 
 
+def _agentflo_text_definitely_sent(delivery: WhatsAppDeliveryOutcome) -> bool:
+    return (
+        delivery.status == "sent"
+        and isinstance(delivery.outbound, dict)
+        and delivery.outbound.get("sent") is True
+    )
+
+
+def _activate_pending_agentflo_receipt(
+    inbound: WhatsAppInboundMessage,
+    marker: dict[str, Any] | None,
+    *,
+    recovery: bool,
+) -> None:
+    if (
+        not isinstance(marker, dict)
+        or marker.get("delivery_state") != "completed"
+        or marker.get("receipt_activation_state") != "pending"
+        or not isinstance(inbound.message_id, str)
+        or not inbound.message_id
+        or not isinstance(inbound.customer_number, str)
+        or not inbound.customer_number
+        or not isinstance(inbound.sender_id, str)
+        or not inbound.sender_id
+    ):
+        return
+    activation = get_services().whatsapp_receipt_activation
+    if activation is None:
+        raise RuntimeError("RECEIPT_ACTIVATION_DEPENDENCY_UNAVAILABLE")
+    result = activation.activate_pending(
+        message_id=inbound.message_id,
+        marker=marker,
+        customer_number=inbound.customer_number,
+        sender_id=inbound.sender_id,
+    )
+    logger.info(
+        "Agentflo WhatsApp receipt activation handled",
+        extra={
+            "event": "agentflo_whatsapp_receipt_activation",
+            "receipt_activation_status": result.status,
+            "retryable": result.retryable,
+            "recovery": recovery,
+        },
+    )
+
+
+def _finalize_agentflo_text_send(
+    inbound: WhatsAppInboundMessage,
+    *,
+    success: bool,
+    definitely_sent: bool,
+    submitted_order_id: str | None,
+    http_request_id: str | None,
+    request_id: str | None = None,
+) -> None:
+    message_id = inbound.message_id
+    if message_id is None:
+        return
+    settings = get_settings()
+    receipt_handoff = (
+        settings.receipt_activation_enabled
+        and submitted_order_id is not None
+        and definitely_sent
+    )
+    if not receipt_handoff:
+        _finalize_agentflo_outbound_send(
+            message_id,
+            success=success,
+            http_request_id=http_request_id,
+            request_id=request_id,
+        )
+        return
+
+    try:
+        applied = (
+            get_services().agent_requests
+            .complete_agentflo_whatsapp_with_receipt_pending(message_id)
+        )
+    except Exception as exc:
+        logger.error(
+            "Agentflo WhatsApp receipt handoff failed",
+            extra={
+                "event": "agentflo_whatsapp_receipt_handoff_failed",
+                "channel": "whatsapp",
+                "previous_delivery_state": "outbound_sending",
+                "delivery_state": "completed",
+                "exception_type": type(exc).__name__,
+                "error_code": "RECEIPT_ACTIVATION_HANDOFF_FAILED",
+            },
+        )
+        return
+    logger.info(
+        "Agentflo WhatsApp receipt handoff checkpointed",
+        extra={
+            "event": "agentflo_whatsapp_receipt_handoff",
+            "previous_delivery_state": "outbound_sending",
+            "delivery_state": "completed",
+            "transition_applied": applied,
+        },
+    )
+    marker = get_services().agent_requests.get_agentflo_whatsapp_message(
+        message_id
+    )
+    _activate_pending_agentflo_receipt(
+        inbound,
+        marker,
+        recovery=not applied,
+    )
+
+
 def _retry_cached_agentflo_outbound(
     inbound: WhatsAppInboundMessage,
     marker: dict[str, Any],
@@ -1674,9 +1785,11 @@ def _retry_cached_agentflo_outbound(
         outbound=outbound,
     )
     if inbound.message_id is not None:
-        _finalize_agentflo_outbound_send(
-            inbound.message_id,
+        _finalize_agentflo_text_send(
+            inbound,
             success=response["success"],
+            definitely_sent=outbound.get("sent") is True,
+            submitted_order_id=marker.get("submitted_order_id"),
             http_request_id=http_request_id,
             request_id=request_id,
         )
@@ -1865,6 +1978,12 @@ def agentflo_whatsapp(
             )
             delivery_state = marker.get("delivery_state") if marker else None
             request_id = marker.get("request_id") if marker else None
+            if get_settings().receipt_activation_enabled:
+                _activate_pending_agentflo_receipt(
+                    inbound,
+                    marker,
+                    recovery=True,
+                )
             if (
                 delivery_state == "response_ready"
                 and _claim_agentflo_outbound_send(
@@ -1925,12 +2044,19 @@ def agentflo_whatsapp(
     reply_text = conversation_reply.reply
     response.headers["X-Agent-Request-ID"] = request_id
     if inbound.message_id is not None:
+        cache_kwargs = {
+            "request_id": request_id,
+            "session_id": session_id,
+            "customer_id": customer_id,
+            "reply": reply_text,
+        }
+        if get_settings().receipt_activation_enabled:
+            cache_kwargs["submitted_order_id"] = (
+                conversation_reply.submitted_order_id
+            )
         get_services().agent_requests.cache_agentflo_whatsapp_response(
             inbound.message_id,
-            request_id=request_id,
-            session_id=session_id,
-            customer_id=customer_id,
-            reply=reply_text,
+            **cache_kwargs,
         )
         _log_agentflo_delivery_transition(
             previous_state="processing",
@@ -1965,9 +2091,11 @@ def agentflo_whatsapp(
         outbound=outbound,
     )
     if inbound.message_id is not None:
-        _finalize_agentflo_outbound_send(
-            inbound.message_id,
+        _finalize_agentflo_text_send(
+            inbound,
             success=outbound_response["success"],
+            definitely_sent=_agentflo_text_definitely_sent(delivery),
+            submitted_order_id=conversation_reply.submitted_order_id,
             http_request_id=http_request_id,
             request_id=request_id,
         )
