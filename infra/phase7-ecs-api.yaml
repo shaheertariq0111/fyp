@@ -1047,6 +1047,7 @@ Resources:
             Action:
               - dynamodb:GetItem
               - dynamodb:PutItem
+              - dynamodb:UpdateItem
             Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}
           - Sid: RefreshCartResponseState
             Effect: Allow
