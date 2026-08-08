@@ -37,6 +37,12 @@ class MemoryAgentSessionRepository:
         session = self.data.get(session_id)
         return dict(session) if session else None
 
+    def get_owned(self, customer_id, session_id):
+        session = self.data.get(session_id)
+        if not session or session.get("customer_id") != customer_id:
+            return None
+        return dict(session)
+
     def save(self, session):
         self.data[session["agent_session_id"]] = dict(session)
 
@@ -264,6 +270,61 @@ def test_trusted_channel_can_create_and_reuse_stable_requested_session():
     assert first["rotated"] is True
     assert second["session"]["agent_session_id"] == stable_session_id
     assert second["rotated"] is False
+
+
+def test_known_customer_uses_owned_session_when_duplicate_id_exists():
+    customers = CustomerService(MemoryCustomerRepository())
+
+    class DuplicateRepository:
+        def __init__(self):
+            self.canonical = {
+                "PK": "CUSTOMER#cust-canonical",
+                "SK": "SESSION#whatsapp-stable",
+                "agent_session_id": "whatsapp-stable",
+                "customer_id": "cust-canonical",
+                "channel": "whatsapp",
+                "status": "active",
+                "expires_at": 9999999999,
+            }
+            self.synthetic = {
+                **self.canonical,
+                "PK": "CUSTOMER#whatsapp-stable",
+                "customer_id": "whatsapp-stable",
+            }
+            self.create_calls = []
+
+        def get(self, _session_id):
+            return dict(self.synthetic)
+
+        def get_owned(self, customer_id, _session_id):
+            return dict(self.canonical) if customer_id == "cust-canonical" else None
+
+        def save(self, session):
+            self.canonical = dict(session)
+
+        def create(self, session):
+            self.create_calls.append(session)
+            raise AssertionError("owned session already exists")
+
+    repository = DuplicateRepository()
+    sessions = AgentSessionService(
+        repository,
+        customers,
+        SimpleNamespace(agent_session_ttl_hours=24),
+    )
+
+    result = sessions.resolve(
+        requested_session_id="whatsapp-stable",
+        customer_id="cust-canonical",
+        channel="whatsapp",
+        preserve_expired=True,
+        allow_requested_session_creation=True,
+    )
+
+    assert result["session"]["customer_id"] == "cust-canonical"
+    assert result["session"]["agent_session_id"] == "whatsapp-stable"
+    assert result["rotated"] is False
+    assert repository.create_calls == []
 
 
 def test_whatsapp_menu_choices_are_persisted_for_the_next_message():

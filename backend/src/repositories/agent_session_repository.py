@@ -53,6 +53,16 @@ class AgentSessionRepository:
                 return None
             kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
+    def get_owned(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> dict | None:
+        try:
+            return self._get_owned_session(customer_id, agent_session_id)
+        except SessionNotFoundError:
+            return None
+
     def save(self, session: dict) -> None:
         self.table.put_item(Item=to_dynamodb(session))
 

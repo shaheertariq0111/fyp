@@ -172,6 +172,29 @@ def test_support_state_lookup_uses_owner_bound_primary_key():
     ]
 
 
+def test_owned_session_lookup_uses_consistent_exact_key():
+    repository, table = repository_with_session()
+
+    session = repository.get_owned("cust-1", "session-1")
+
+    assert session["customer_id"] == "cust-1"
+    assert table.get_calls == [{
+        "Key": {
+            "PK": "CUSTOMER#cust-1",
+            "SK": "SESSION#session-1",
+        },
+        "ConsistentRead": True,
+    }]
+
+
+def test_owned_session_lookup_does_not_cross_customer_ownership():
+    repository, _ = repository_with_session(
+        customer_id="cust-2", PK="CUSTOMER#cust-2"
+    )
+
+    assert repository.get_owned("cust-1", "session-1") is None
+
+
 @pytest.mark.parametrize(
     "item",
     [

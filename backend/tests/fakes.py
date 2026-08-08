@@ -163,6 +163,14 @@ class MemoryAgentSessionRepository:
     def get(self, agent_session_id):
         return deepcopy(self.data.get(agent_session_id))
 
+    def get_owned(self, customer_id, agent_session_id):
+        from src.repositories.agent_session_repository import SessionNotFoundError
+
+        try:
+            return deepcopy(self._get_owned_session(customer_id, agent_session_id))
+        except SessionNotFoundError:
+            return None
+
     def save(self, session):
         self.data[session["agent_session_id"]] = deepcopy(session)
 

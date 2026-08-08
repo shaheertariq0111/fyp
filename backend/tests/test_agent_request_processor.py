@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from botocore.exceptions import ClientError
+
 from src.services.agent_request_processor import (
     AgentRequestProcessor,
     PreparedAgentRequest,
@@ -9,6 +11,78 @@ from src.services.agent_request_processor import (
 class ForbiddenCall:
     def __call__(self, *_args, **_kwargs):
         raise AssertionError("completed AgentRequest must not invoke dependencies")
+
+
+class DurableRequests:
+    def __init__(self):
+        self.record = {
+            "request_id": "request-safe",
+            "status": "processing",
+            "invocation_state": "not_started",
+        }
+        self.claim_calls = 0
+
+    def claim_invocation(self, _request_id):
+        self.claim_calls += 1
+        if (
+            self.record["status"] != "processing"
+            or self.record["invocation_state"] != "not_started"
+        ):
+            return False
+        self.record["invocation_state"] = "invoking"
+        return True
+
+    def fail(self, _request_id, *, error_code, message):
+        self.record.update({
+            "status": "failed",
+            "error_code": error_code,
+            "failure_message": message,
+        })
+        return self.record
+
+    def fail_before_invocation(self, _request_id, *, error_code, message):
+        assert self.record["status"] == "processing"
+        assert self.record["invocation_state"] == "invoking"
+        self.record.update({
+            "status": "failed",
+            "invocation_state": "failed",
+            "error_code": error_code,
+            "failure_message": message,
+        })
+        return self.record
+
+    def get(self, _request_id):
+        return self.record
+
+    def mark_invocation_ambiguous(self, _request_id):
+        if self.record["invocation_state"] != "invoking":
+            return False
+        self.record["invocation_state"] = "ambiguous"
+        return True
+
+    def complete(self, _request_id, response):
+        self.record.update({
+            "status": "completed",
+            "invocation_state": "completed",
+            "response": response,
+        })
+        return self.record
+
+
+def prepared_request(record):
+    return PreparedAgentRequest(
+        payload=SimpleNamespace(message="safe", branch_id=None),
+        record=record,
+        context=SimpleNamespace(
+            channel="whatsapp",
+            user_id="customer-safe",
+            customer_id="customer-safe",
+            agent_session_id="session-safe",
+            customer_name=None,
+            customer_phone=None,
+        ),
+        identity_state={},
+    )
 
 
 def test_completed_request_returns_persisted_structured_response_without_agentcore():
@@ -50,6 +124,118 @@ def test_completed_request_returns_persisted_structured_response_without_agentco
     assert result.outcome == "completed"
     assert result.record is record
     assert result.record["response"] is response
+
+
+def test_pre_invocation_session_state_failure_is_not_logged_as_agentcore_failure(
+    caplog,
+):
+    class Sessions:
+        calls = 0
+
+        def get_whatsapp_order_state(self, *_args):
+            self.calls += 1
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "private"}},
+                "GetItem",
+            )
+
+    requests = DurableRequests()
+    sessions = Sessions()
+    processor = AgentRequestProcessor(
+        services_provider=lambda: SimpleNamespace(
+            agent_requests=requests,
+            agent_sessions=sessions,
+        ),
+        agent_client_provider=ForbiddenCall(),
+        identity_resolver=ForbiddenCall(),
+        response_builder=ForbiddenCall(),
+    )
+    prepared = prepared_request(requests.record)
+
+    with caplog.at_level("ERROR"):
+        result = processor.invoke_prepared(prepared)
+
+    assert result.outcome == "failed"
+    assert requests.record["status"] == "failed"
+    assert requests.record["invocation_state"] == "failed"
+    assert requests.claim_calls == 1
+    assert any(
+        getattr(record, "event", None) == "agent_pre_invocation_state_failed"
+        for record in caplog.records
+    )
+    assert not any(
+        getattr(record, "event", None) == "agentcore_invocation_failed"
+        for record in caplog.records
+    )
+    assert "private" not in caplog.text
+
+    resumed = processor.invoke_prepared(prepared)
+
+    assert resumed.outcome == "failed"
+    assert requests.claim_calls == 1
+    assert sessions.calls == 1
+
+
+def test_actual_agentcore_failure_retains_ambiguous_replay_protection(caplog):
+    requests = DurableRequests()
+    processor = AgentRequestProcessor(
+        services_provider=lambda: SimpleNamespace(
+            agent_requests=requests,
+            agent_sessions=SimpleNamespace(
+                get_whatsapp_order_state=lambda *_args: {}
+            ),
+        ),
+        agent_client_provider=lambda: SimpleNamespace(
+            invoke=lambda _request: (_ for _ in ()).throw(
+                RuntimeError("private runtime detail")
+            )
+        ),
+        identity_resolver=ForbiddenCall(),
+        response_builder=ForbiddenCall(),
+    )
+
+    with caplog.at_level("ERROR"):
+        result = processor.invoke_prepared(
+            prepared_request(requests.record),
+            ambiguous_on_invocation_failure=True,
+        )
+
+    assert result.outcome == "ambiguous"
+    assert requests.record["status"] == "processing"
+    assert requests.record["invocation_state"] == "ambiguous"
+    assert requests.claim_calls == 1
+    assert any(
+        getattr(record, "event", None) == "agentcore_invocation_failed"
+        for record in caplog.records
+    )
+    assert "private runtime detail" not in caplog.text
+
+
+def test_successful_invocation_still_claims_and_completes_request():
+    requests = DurableRequests()
+    invocation = SimpleNamespace(raw_result={})
+    processor = AgentRequestProcessor(
+        services_provider=lambda: SimpleNamespace(
+            agent_requests=requests,
+            agent_sessions=SimpleNamespace(
+                get_whatsapp_order_state=lambda *_args: {}
+            ),
+        ),
+        agent_client_provider=lambda: SimpleNamespace(
+            invoke=lambda _request: invocation
+        ),
+        identity_resolver=ForbiddenCall(),
+        response_builder=lambda *_args: SimpleNamespace(
+            model_dump=lambda **_kwargs: {"text": "safe response"}
+        ),
+    )
+
+    result = processor.invoke_prepared(prepared_request(requests.record))
+
+    assert result.outcome == "completed"
+    assert requests.claim_calls == 1
+    assert requests.record["status"] == "completed"
+    assert requests.record["invocation_state"] == "completed"
 
 
 def test_search_results_persist_expected_item_selection_write_and_options():
