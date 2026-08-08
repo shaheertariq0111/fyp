@@ -300,6 +300,7 @@ def build_response_builder(services_provider: Callable[[], Any]):
                 claim_assessment=assessment,
                 no_write_authorized=bool(raw.get("no_write_authorized", False)),
                 informational_turn=bool(raw.get("informational_turn", False)),
+                expected_write_tool=raw.get("expected_write_tool"),
             ).text
         return ChatResponse(
             text=response_text, session_id=context.agent_session_id,

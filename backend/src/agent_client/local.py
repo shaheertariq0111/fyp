@@ -25,7 +25,7 @@ from src.agent.whatsapp_turn_intent import (
     WhatsAppTurnInterpretation,
     classify_whatsapp_turn,
 )
-from src.services.whatsapp_turn_policy_service import whatsapp_no_write_authorization
+from src.services.whatsapp_turn_policy_service import whatsapp_grounding_context
 from src.agent_client.schemas import (
     AgentInvocationRequest,
     AgentInvocationResult,
@@ -119,6 +119,7 @@ class LocalStrandsAgentRuntimeClient:
             informational_turn = False
             expected_write_tool = request.expected_write_tool
             if needs_assessment:
+                no_write_authorized = expected_write_tool is None
                 allowed_actions = [
                     "menu_browse", "menu_search", "menu_item_detail",
                     "menu_compare", "menu_recommendation", "general_chat",
@@ -133,35 +134,39 @@ class LocalStrandsAgentRuntimeClient:
                         allowed_actions=allowed_actions,
                         available_options=request.available_options,
                     )
-                    no_write_authorized, informational_turn = whatsapp_no_write_authorization(
+                    transition_requested, informational_turn = whatsapp_grounding_context(
                         turn,
                         allowed_actions=allowed_actions,
                         available_options=request.available_options,
                     )
+                    no_write_authorized = not (
+                        expected_write_tool and transition_requested
+                    )
                 except Exception:
-                    logger.exception("Local WhatsApp customer turn classification failed closed")
-                if no_write_authorized:
-                    try:
-                        assessment = assess_assistant_claims(
-                            customer_message=request.message,
-                            assistant_message=response_text,
-                        )
-                    except Exception:
-                        logger.exception("Local WhatsApp claim classification failed closed")
-                        assessment = AssistantClaimAssessment(
-                            claims_transactional_progression=True,
-                            claimed_actions=["other_transactional_progression"],
-                        )
+                    logger.exception(
+                        "Local WhatsApp customer turn classification could not add semantic context"
+                    )
+                try:
+                    assessment = assess_assistant_claims(
+                        customer_message=request.message,
+                        assistant_message=response_text,
+                    )
+                except Exception:
+                    logger.exception("Local WhatsApp claim classification failed closed")
+                    assessment = AssistantClaimAssessment(
+                        claims_transactional_progression=True,
+                        claimed_actions=["other_transactional_progression"],
+                    )
             grounded = ground_agent_response(
                 text=response_text,
                 tool_calls=tool_calls,
                 claim_assessment=assessment,
                 no_write_authorized=no_write_authorized,
                 informational_turn=informational_turn,
+                expected_write_tool=expected_write_tool,
             )
             response_text = grounded.text
-            if grounded.expected_transactional_action:
-                expected_write_tool = grounded.expected_transactional_action
+            expected_write_tool = grounded.expected_transactional_action
             if memory_buffer is not None:
                 memory_buffer.commit(response_text, runtime_agent)
             try:

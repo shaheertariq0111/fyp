@@ -113,6 +113,121 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
     }
 
 
+def test_transactional_customer_can_receive_conversational_continuation(monkeypatch):
+    text = "Of course. What would you like to order today?"
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def fake_invoke(message, **kwargs):
+        agent = kwargs["agent"]
+        agent.session_manager.append_message(
+            {"role": "assistant", "content": [{"text": text}]},
+            agent,
+        )
+        return SimpleNamespace(
+            message={"content": [{"text": text}]},
+            tool_calls=[],
+        )
+
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: text)
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="transactional_change",
+            confidence=0.99,
+            informational_only=False,
+            wants_to_order=True,
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        message="I want to place an order",
+        channel="whatsapp",
+    ))
+
+    assert response["text"] == text
+    assert response["claim_assessment"]["claims_transactional_progression"] is False
+    assert FakeMemorySessionManager.created[0].history[-1] == {
+        "role": "assistant",
+        "content": [{"text": text}],
+    }
+
+
+def test_pending_write_survives_conversational_detour(monkeypatch):
+    text = "Would you like a quick description before choosing?"
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def fake_invoke(message, **kwargs):
+        agent = kwargs["agent"]
+        agent.session_manager.append_message(
+            {"role": "assistant", "content": [{"text": text}]},
+            agent,
+        )
+        return SimpleNamespace(
+            message={"content": [{"text": text}]},
+            tool_calls=[],
+        )
+
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: text)
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="clarify",
+            confidence=0.99,
+            informational_only=False,
+            wants_to_order=False,
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        message="Could you explain the difference first?",
+        channel="whatsapp",
+        expected_write_tool="start_cart_item_customization",
+        available_options=[{"id": "item-1", "label": "First Item"}],
+    ))
+
+    assert response["text"] == text
+    assert response["expected_write_tool"] == "start_cart_item_customization"
+    assert response["tool_calls"] == []
+
+
 def test_two_turn_search_selection_blocks_prose_progression_across_production_path(monkeypatch):
     class FakeAgent:
         def __init__(self, session_manager):

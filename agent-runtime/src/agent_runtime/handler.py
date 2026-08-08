@@ -14,7 +14,7 @@ from src.agent.response_grounding import (
     ground_agent_response,
 )
 from src.agent.whatsapp_turn_intent import classify_whatsapp_turn
-from src.services.whatsapp_turn_policy_service import whatsapp_no_write_authorization
+from src.services.whatsapp_turn_policy_service import whatsapp_grounding_context
 from src.agent.restaurant_agent import agent_result_text, build_restaurant_agent, invoke_restaurant_agent
 from src.agent.dependencies import get_services
 from src.infrastructure.config import get_settings
@@ -191,6 +191,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 if request.channel == "whatsapp":
                     has_write = any(call.is_write for call in tool_calls)
                     if not has_write:
+                        no_write_authorized = expected_write_tool is None
                         allowed_actions = [
                             "menu_browse", "menu_search", "menu_item_detail",
                             "menu_compare", "menu_recommendation", "general_chat",
@@ -205,39 +206,41 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                                 allowed_actions=allowed_actions,
                                 available_options=request.available_options,
                             )
-                            no_write_authorized, informational_turn = (
-                                whatsapp_no_write_authorization(
-                                    turn,
-                                    allowed_actions=allowed_actions,
-                                    available_options=request.available_options,
-                                )
+                            transition_requested, informational_turn = whatsapp_grounding_context(
+                                turn,
+                                allowed_actions=allowed_actions,
+                                available_options=request.available_options,
+                            )
+                            no_write_authorized = not (
+                                expected_write_tool and transition_requested
                             )
                         except Exception:
-                            logger.exception("WhatsApp customer turn classification failed closed")
-                        if no_write_authorized:
-                            try:
-                                claim_assessment = assess_assistant_claims(
-                                    customer_message=request.message,
-                                    assistant_message=raw_text,
-                                )
-                            except Exception:
-                                logger.exception(
-                                    "WhatsApp assistant claim classification failed closed"
-                                )
-                                claim_assessment = AssistantClaimAssessment(
-                                    claims_transactional_progression=True,
-                                    claimed_actions=["other_transactional_progression"],
-                                )
+                            logger.exception(
+                                "WhatsApp customer turn classification could not add semantic context"
+                            )
+                        try:
+                            claim_assessment = assess_assistant_claims(
+                                customer_message=request.message,
+                                assistant_message=raw_text,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "WhatsApp assistant claim classification failed closed"
+                            )
+                            claim_assessment = AssistantClaimAssessment(
+                                claims_transactional_progression=True,
+                                claimed_actions=["other_transactional_progression"],
+                            )
                     grounded = ground_agent_response(
                         text=raw_text,
                         tool_calls=tool_calls,
                         claim_assessment=claim_assessment,
                         no_write_authorized=no_write_authorized,
                         informational_turn=informational_turn,
+                        expected_write_tool=expected_write_tool,
                     )
                     grounded_text = grounded.text
-                    if grounded.expected_transactional_action:
-                        expected_write_tool = grounded.expected_transactional_action
+                    expected_write_tool = grounded.expected_transactional_action
                 if memory_buffer is not None:
                     memory_buffer.commit(grounded_text, runtime_agent)
             finally:

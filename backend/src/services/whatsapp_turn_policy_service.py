@@ -101,3 +101,32 @@ def whatsapp_no_write_authorization(
         "menu_recommendation",
     }
     return authorized, informational_read
+
+
+def whatsapp_grounding_context(
+    interpretation: WhatsAppTurnInterpretation,
+    *,
+    allowed_actions: list[str],
+    available_options: list[dict[str, str]] | None = None,
+) -> tuple[bool, bool]:
+    """Return (transition_requested, informational_read) for grounding context.
+
+    Customer intent can request an already-authoritative pending transition, but
+    it never proves that transition occurred.
+    """
+    decision = WhatsAppTurnPolicyService().validate(
+        interpretation,
+        allowed_actions=allowed_actions,
+        available_options=available_options,
+    )
+    if not decision.accepted:
+        return False, False
+    action = interpretation.action
+    return (
+        action in TRANSACTIONAL_ACTIONS,
+        action in {
+            "menu_item_detail",
+            "menu_compare",
+            "menu_recommendation",
+        },
+    )
