@@ -40,12 +40,32 @@ jobs:
           cache-dependency-path: |
             backend/pyproject.toml
             agent-runtime/pyproject.toml
+            agent-runtime/constraints.txt
 
       - name: Install backend and AgentCore runtime dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e "./backend[dev]"
-          python -m pip install -e "./agent-runtime[dev]"
+          python -m pip install -c agent-runtime/constraints.txt -e "./backend[dev]"
+          python -m pip install -c agent-runtime/constraints.txt -e "./agent-runtime[dev]"
+
+      - name: Verify AgentCore orchestration dependency versions
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+
+          expected = {
+              "bedrock-agentcore": "1.19.0",
+              "strands-agents": "1.50.2",
+          }
+          for distribution, required in expected.items():
+              resolved = version(distribution)
+              print(f"{distribution}=={resolved}")
+              if resolved != required:
+                  raise SystemExit(
+                      f"Expected {distribution}=={required}, resolved {resolved}"
+                  )
+          PY
+          python -m pip check
 
       - name: Run AgentCore runtime tests
         working-directory: agent-runtime
@@ -70,6 +90,28 @@ jobs:
             -f agent-runtime/Dockerfile \
             -t fyp-agent-runtime-ci:${{ github.sha }} \
             .
+
+      - name: Verify AgentCore runtime image dependencies
+        run: |
+          docker run --rm -i \
+            --platform linux/arm64 \
+            --entrypoint python \
+            fyp-agent-runtime-ci:${{ github.sha }} \
+            - <<'PY'
+          from importlib.metadata import version
+
+          expected = {
+              "bedrock-agentcore": "1.19.0",
+              "strands-agents": "1.50.2",
+          }
+          for distribution, required in expected.items():
+              resolved = version(distribution)
+              print(f"{distribution}=={resolved}")
+              if resolved != required:
+                  raise SystemExit(
+                      f"Expected {distribution}=={required}, resolved {resolved}"
+                  )
+          PY
 
       - name: Start AgentCore runtime container
         run: |
