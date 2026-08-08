@@ -13,6 +13,7 @@ from src.repositories.whatsapp_voice_job_repository import (
 from src.services.whatsapp_voice_service import WhatsAppVoiceProcessingError
 from src.services.whatsapp_voice_service import WhatsAppVoiceService
 from src.services.whatsapp_conversation_service import (
+    UNGROUNDED_ORDER_SUBMISSION_FALLBACK,
     WhatsAppConversationReply,
     WhatsAppDeliveryOutcome,
 )
@@ -290,6 +291,23 @@ class OptionalVoiceDelivery:
         return self.outcome
 
 
+class PersistedResponseTextDelivery:
+    def __init__(self, response):
+        self.response = response
+        self.replies = []
+
+    def services_provider(self):
+        return SimpleNamespace(
+            agent_requests=SimpleNamespace(
+                get=lambda _request_id: {"response": self.response}
+            )
+        )
+
+    def deliver(self, _inbound, reply, **_kwargs):
+        self.replies.append(reply)
+        return WhatsAppDeliveryOutcome("sent", {"sent": True})
+
+
 def _ready_worker(*, enabled, text_status="sent", voice_outcome=None):
     events = []
     jobs = RecordingTransitions()
@@ -361,6 +379,39 @@ def test_disabled_audio_reply_preserves_text_only_behavior():
     assert events == ["text"]
     assert voice_replies.calls == []
     assert jobs.calls[-1][1]["values"] == {"voice_reply_status": "disabled"}
+
+
+def test_resumed_voice_delivery_blocks_persisted_false_submission_claim():
+    conversations = PersistedResponseTextDelivery({
+        "text": (
+            "Your order has been successfully submitted!\n"
+            "Order ID: ORD-123456789"
+        ),
+        "tool_calls": [],
+    })
+    jobs = RecordingTransitions()
+    worker = WhatsAppVoiceWorker(
+        settings=SimpleNamespace(whatsapp_voice_reply_enabled=False),
+        jobs=jobs,
+        queue=SimpleNamespace(),
+        voice=SimpleNamespace(),
+        conversations=conversations,
+    )
+    record = {
+        "job_id": voice_job_id("resumed-false-submission"),
+        "state": "response_ready",
+        "version": 1,
+        "customer_number": "+10000000000",
+        "sender_id": "sender-safe",
+        "request_id": "request-safe",
+        "session_id": "session-safe",
+        "customer_id": "customer-safe",
+    }
+
+    assert worker._send_ready(record, OwnedHeartbeat()) is True
+    assert len(conversations.replies) == 1
+    assert conversations.replies[0].reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
+    assert conversations.replies[0].submitted_order_id is None
 
 
 @pytest.mark.parametrize("audio_status", ["failed", "ambiguous"])

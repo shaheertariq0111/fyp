@@ -28,7 +28,12 @@ from src.services.transcription_service import TranscriptionService
 from src.services.voice_media_storage_service import VoiceMediaStorageService
 from src.services.voice_queue_service import VoiceQueueError, VoiceQueueService
 from src.services.voice_reply_audio_converter import VoiceReplyAudioConverter
-from src.services.whatsapp_conversation_service import WhatsAppConversationReply, WhatsAppConversationService, build_whatsapp_identity
+from src.services.whatsapp_conversation_service import (
+    WhatsAppConversationReply,
+    WhatsAppConversationService,
+    build_whatsapp_identity,
+    whatsapp_reply_from_response,
+)
 from src.services.whatsapp_voice_reply_service import (
     VoiceReplyOutcome,
     WhatsAppVoiceReplyService,
@@ -270,12 +275,28 @@ class WhatsAppVoiceWorker:
         if reply is None:
             request = self.conversations.services_provider().agent_requests.get(record.get("request_id", ""))
             response = request.get("response") if isinstance(request, dict) else None
-            text = response.get("text") if isinstance(response, dict) else None
-            if not isinstance(text, str) or not text.strip():
-                text = GENERIC_FAILURE_REPLY if record.get("generic_response_code") else None
-            if text is None:
-                return False
-            reply = WhatsAppConversationReply(text, record.get("request_id") or f"voice-generic-{record['job_id'][4:]}", record["session_id"], record["customer_id"], resumed=True)
+            request_id = (
+                record.get("request_id")
+                or f"voice-generic-{record['job_id'][4:]}"
+            )
+            reply = whatsapp_reply_from_response(
+                response,
+                request_id=request_id,
+                session_id=record["session_id"],
+                customer_id=record["customer_id"],
+                resumed=True,
+                logger=logger,
+            )
+            if reply is None:
+                if not record.get("generic_response_code"):
+                    return False
+                reply = WhatsAppConversationReply(
+                    GENERIC_FAILURE_REPLY,
+                    request_id,
+                    record["session_id"],
+                    record["customer_id"],
+                    resumed=True,
+                )
         record = self.jobs.transition(record, VoiceJobState.OUTBOUND_SENDING.value)
         heartbeat.assert_owned()
         delivery = self.conversations.deliver(
