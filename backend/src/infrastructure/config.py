@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     bedrock_guardrail_version: str = ""
     knowledge_base_id: str = ""
     knowledge_base_max_results: int = Field(default=5, gt=0, le=100)
+    customer_menu_result_limit: int = Field(default=5, ge=1, le=20)
     agentcore_runtime_arn: str = ""
 
     allow_aws_resource_creation: bool = False

@@ -5,7 +5,7 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from src.models.tool_responses import ToolResponse
+from src.models.tool_responses import GroundingEvidence, ImmutableFact, ToolResponse
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,16 @@ ADMIN_ORDER_TRANSITIONS = {
     ("ready_for_pickup", "complete"): "completed",
     ("out_for_delivery", "deliver"): "delivered",
     ("out_for_delivery", "fail"): "failed",
+}
+ORDER_ACTION_EFFECTS = {
+    "confirm": "order_submitted",
+    "cancel": "order_cancelled",
+    "set_delivery": "fulfillment_saved",
+    "set_takeaway": "fulfillment_saved",
+    "save_address": "address_saved",
+    "save_customer_name": "customer_name_updated",
+    "confirm_customer_name": "customer_name_updated",
+    "reject_customer_name": "customer_name_updated",
 }
 
 
@@ -153,6 +163,10 @@ class OrderService:
                 required_input=self._required_input(status),
                 instruction=self._instruction(status),
             ),
+            grounding=self._order_grounding(
+                order,
+                effects=["checkout_started"],
+            ),
         )
 
     def update_order_flow(self, user_id: str, order_id: str, action: str, value: str | None = None,
@@ -185,6 +199,10 @@ class OrderService:
                     order,
                     next_action,
                     instruction=instruction,
+                ),
+                grounding=self._order_grounding(
+                    order,
+                    effects=(["order_submitted"] if submitted else []),
                 ),
             )
         next_status = ORDER_TRANSITIONS.get((order["status"], action))
@@ -264,6 +282,7 @@ class OrderService:
                             "Do not submit the order yet."
                         ),
                     ),
+                    grounding=self._order_grounding(order),
                 )
         if next_status == "submitted_to_restaurant":
             submitted_at = self._now()
@@ -295,6 +314,10 @@ class OrderService:
                                    next_action,
                                    required_input=self._required_input(next_status),
                                    instruction=self._instruction(next_status),
+                               ),
+                               grounding=self._order_grounding(
+                                   order,
+                                   effects=[ORDER_ACTION_EFFECTS[action]],
                                ))
 
     def get_order_status(self, user_id: str,
@@ -329,6 +352,7 @@ class OrderService:
                 user_message=status_message,
                 next_action="present_order_status",
                 agent=agent,
+                grounding=self._order_read_grounding([order]),
             )
 
         orders = [
@@ -348,8 +372,10 @@ class OrderService:
                 self._next_action(order["status"]),
                 required_input=self._required_input(order["status"]),
                 instruction=(
-                    "Exactly one active order was found. Present status_message "
-                    "without asking the customer for an Order ID."
+                    "Exactly one active order was found. It is authoritative "
+                    "context, not an automatic conversation target. Present its "
+                    "status only when the customer's current semantic intent "
+                    "targets that order."
                 ),
             )
             agent.update({
@@ -376,6 +402,7 @@ class OrderService:
                 user_message=status_message,
                 next_action="present_order_status",
                 agent=agent,
+                grounding=self._order_read_grounding([orders[0]]),
             )
 
         if len(orders) > 1:
@@ -414,8 +441,9 @@ class OrderService:
                 "required_input": "order_id",
                 "valid_next_actions": ["get_order_status"],
                 "instruction": (
-                    "Present the listed Order IDs and statuses, then ask the "
-                    "customer which Order ID they want to check."
+                    "The listed Order IDs and statuses are authoritative context. "
+                    "Ask which one to check only when the customer's current "
+                    "semantic intent is order tracking or an action on one of them."
                 ),
             }
 
@@ -424,6 +452,7 @@ class OrderService:
                 user_message=user_message,
                 next_action="request_order_id",
                 agent=agent,
+                grounding=self._order_read_grounding(orders),
             )
 
         user_message = (
@@ -443,8 +472,9 @@ class OrderService:
                 "create_menu_session_link",
             ],
             "instruction": (
-                "No active order was found. Ask the customer for an Order ID "
-                "if they want to check an older order."
+                "No active order was found. Ask for an older Order ID only when "
+                "the customer's current semantic intent is order tracking. "
+                "Otherwise continue the independently valid capability."
             ),
         }
 
@@ -453,6 +483,7 @@ class OrderService:
             user_message=user_message,
             next_action="request_order_id",
             agent=agent,
+            grounding=self._order_read_grounding([]),
         )
 
     def get_active_order_for_session(
@@ -918,6 +949,44 @@ class OrderService:
                 "customer-facing Order ID and current status."
             ),
         }.get(status, "Present the returned order status.")
+
+    @classmethod
+    def _order_grounding(cls, order, *, effects=None):
+        status = order.get("status")
+        exact_customer_text = None
+        if status == "pending_confirmation":
+            exact_customer_text = cls._confirmation_summary(order)
+        elif status == "submitted_to_restaurant":
+            exact_customer_text = cls._submission_confirmation(order)
+        return GroundingEvidence(
+            authoritative_domains=["order"],
+            transactional_effects=effects or [],
+            immutable_facts=cls._order_immutable_facts(order),
+            exact_customer_text=exact_customer_text,
+        )
+
+    @classmethod
+    def _order_read_grounding(cls, orders):
+        facts = []
+        for index, order in enumerate(orders):
+            facts.extend(
+                cls._order_immutable_facts(
+                    order,
+                    prefix=("order" if len(orders) == 1 else f"orders[{index}]"),
+                )
+            )
+        return GroundingEvidence(
+            authoritative_domains=["order"],
+            immutable_facts=facts,
+        )
+
+    @staticmethod
+    def _order_immutable_facts(order, *, prefix="order"):
+        return [
+            ImmutableFact(path=f"{prefix}.{field}", value=order[field])
+            for field in ("order_id", "status", "total", "currency")
+            if order.get(field) is not None
+        ]
 
     @classmethod
     def _order_agent(cls, order, next_action, *, required_input=None, instruction=None):

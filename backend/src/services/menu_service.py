@@ -3,13 +3,25 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from src.scripts.import_menu import normalize_records
-from src.models.tool_responses import ToolResponse
+from src.models.tool_responses import (
+    GroundingEvidence,
+    GroundingOption,
+    PresentationConstraints,
+    ToolResponse,
+)
 
 
 class MenuService:
-    def __init__(self, repository, branch_id: str = ""):
+    def __init__(
+        self,
+        repository,
+        branch_id: str = "",
+        *,
+        customer_result_limit: int = 5,
+    ):
         self.repository = repository
         self.branch_id = branch_id
+        self.customer_result_limit = customer_result_limit
 
     def search_menu(self, query=None, category=None, tags=None, max_price=None,
                     available_only=True, limit=None, exclude_product_ids=None) -> ToolResponse:
@@ -55,12 +67,29 @@ class MenuService:
             ]
         total_matches = len(matches)
         if limit is not None:
-            matches = matches[:limit]
+            matches = matches[:min(limit, self.customer_result_limit)]
+        else:
+            matches = matches[:self.customer_result_limit]
         return ToolResponse.ok(
             data={"items": matches, "has_more": total_matches > len(matches)},
             user_message=("I found current menu options." if matches
                           else "I couldn't find a matching available menu item."),
             next_action="present_menu_results",
+            grounding=GroundingEvidence(
+                authoritative_domains=["menu"],
+                required_next_effect="item_selected" if matches else None,
+                offered_options=[
+                    GroundingOption(
+                        id=str(item["product_id"]),
+                        label=str(item.get("name") or item["product_id"]),
+                    )
+                    for item in matches
+                    if item.get("product_id")
+                ],
+                presentation=PresentationConstraints(
+                    max_items=self.customer_result_limit,
+                ),
+            ),
         )
 
     def get_menu_item(self, item_id: str) -> ToolResponse:
@@ -78,8 +107,12 @@ class MenuService:
                 groups.append(self._public_group(group))
         result = self._public_item(item)
         result["customization_groups"] = groups
-        return ToolResponse.ok(data={"item": result}, user_message="Here are the current item details.",
-                               next_action="present_item")
+        return ToolResponse.ok(
+            data={"item": result},
+            user_message="Here are the current item details.",
+            next_action="present_item",
+            grounding=GroundingEvidence(authoritative_domains=["menu"]),
+        )
 
     def search_menu_options(self, query: str) -> ToolResponse:
         """Find an available choice that may not be a standalone menu item."""
@@ -124,6 +157,7 @@ class MenuService:
                 else "I couldn't find that item or choice in the current menu."
             ),
             next_action="present_menu_information",
+            grounding=GroundingEvidence(authoritative_domains=["menu"]),
         )
 
     def admin_list_entities(self, entity_type: str) -> dict:

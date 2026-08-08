@@ -251,6 +251,8 @@ def test_size_choice_includes_authoritative_prices():
         "3. Large - PKR 2,400"
     )
     assert response.user_message == active_choice["choice_prompt"]
+    assert response.grounding.authoritative_domains == ["cart", "menu"]
+    assert response.grounding.exact_customer_text == active_choice["choice_prompt"]
 
 
 def test_crust_choice_includes_authoritative_price_deltas():
@@ -322,6 +324,7 @@ def test_upsell_prompt_lists_backend_items_and_prices():
         "You can choose one add-on or proceed to checkout."
     )
     assert response.user_message == response.agent["upsell_prompt"]
+    assert response.grounding.exact_customer_text == response.agent["upsell_prompt"]
 
 
 def test_cart_mutations_require_the_cart_owner():

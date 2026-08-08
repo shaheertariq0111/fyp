@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import re
 
-from src.models.tool_responses import ToolResponse
+from src.models.tool_responses import GroundingEvidence, ToolResponse
 from src.repositories.cart_repository import CartVersionConflictError
 
 
@@ -103,6 +103,14 @@ class CartService:
                     {"label": "Customize separately", "action": "set_customization_mode",
                      "metadata": {"cart_id": cart_id, "mode": "separate"}},
                 ],
+                grounding=GroundingEvidence(
+                    authoritative_domains=["cart"],
+                    transactional_effects=["item_selected"],
+                    exact_customer_text=(
+                        "Should these items use the same customization or be "
+                        "customized separately?"
+                    ),
+                ),
             )
         if cart["status"] == "item_ready":
             return ToolResponse.ok(data=self._cart_data(cart),
@@ -111,8 +119,12 @@ class CartService:
                                        cart,
                                        "offer_upsell",
                                        instruction="Offer backend upsells or skip add-ons before creating a pending order.",
+                                   ),
+                                   grounding=GroundingEvidence(
+                                       authoritative_domains=["cart"],
+                                       transactional_effects=["item_selected"],
                                    ))
-        return self._next_choice_response(cart)
+        return self._next_choice_response(cart, effects=["item_selected"])
 
     def set_customization_mode(
         self, user_id: str, cart_id: str, mode: str
@@ -139,7 +151,7 @@ class CartService:
         cart["active_cart_item_id"] = cart["items"][0]["cart_item_id"]
         self._recalculate(cart)
         self._save(cart)
-        return self._next_choice_response(cart)
+        return self._next_choice_response(cart, effects=["customization_saved"])
 
     def save_choice(
         self,
@@ -205,6 +217,10 @@ class CartService:
                                        cart,
                                        "create_pending_order",
                                        instruction="Cart is ready. If the customer wants to proceed, call create_pending_order_from_cart with this cart_id.",
+                                   ),
+                                   grounding=GroundingEvidence(
+                                       authoritative_domains=["cart"],
+                                       transactional_effects=["customization_saved"],
                                    ))
         if cart["status"] == "item_ready":
             return ToolResponse.ok(data=self._cart_data(cart),
@@ -214,8 +230,12 @@ class CartService:
                                        cart,
                                        "offer_upsell",
                                        instruction="Offer backend upsells or skip add-ons before creating a pending order.",
+                                   ),
+                                   grounding=GroundingEvidence(
+                                       authoritative_domains=["cart"],
+                                       transactional_effects=["customization_saved"],
                                    ))
-        return self._next_choice_response(cart)
+        return self._next_choice_response(cart, effects=["customization_saved"])
 
     def handle_upsell(self, user_id: str, cart_id: str, action: str, item_id: str | None = None,
                       quantity: int = 1) -> ToolResponse:
@@ -253,6 +273,10 @@ class CartService:
                         "call handle_cart_upsell with action skip."
                     ),
                 ),
+                grounding=GroundingEvidence(
+                    authoritative_domains=["cart", "menu"],
+                    exact_customer_text=upsell_prompt,
+                ),
             )
         if action == "add_item":
             if quantity < 1 or not item_id or item_id not in allowed:
@@ -269,7 +293,7 @@ class CartService:
             self._recalculate(cart)
             self._save(cart)
             if entry["missing_required_fields"]:
-                return self._next_choice_response(cart)
+                return self._next_choice_response(cart, effects=["item_added"])
             cart["status"] = "cart_ready"
             self._save(cart)
             return ToolResponse.ok(data=self._cart_data(cart), user_message="The add-on was added.",
@@ -278,6 +302,10 @@ class CartService:
                                        cart,
                                        "create_pending_order",
                                        instruction="One add-on was added. Do not offer more add-ons; proceed to checkout when the customer is ready.",
+                                   ),
+                                   grounding=GroundingEvidence(
+                                       authoritative_domains=["cart"],
+                                       transactional_effects=["item_added"],
                                    ))
         cart["status"] = "cart_ready"
         self._save(cart)
@@ -287,6 +315,10 @@ class CartService:
                                    cart,
                                    "create_pending_order",
                                    instruction="Cart is ready. If the customer wants to proceed, call create_pending_order_from_cart with this cart_id.",
+                               ),
+                               grounding=GroundingEvidence(
+                                   authoritative_domains=["cart"],
+                                   transactional_effects=["cart_progressed"],
                                ))
 
     def create_pending_order(self, user_id: str, cart_id: str) -> ToolResponse:
@@ -405,12 +437,16 @@ class CartService:
                     "valid_next_actions": ["get_order_status", "update_order_flow",
                                            "search_menu", "create_menu_session_link"],
                     "instruction": (
-                        "Tell the customer no active chat cart was found. If orders are present, "
-                        "summarize the active order status using those order IDs and continue the "
-                        "order flow from the order state. Do not use a cart_id as an order_id. If "
-                        "there are no orders, offer to search the menu or open the website."
+                        "No active chat cart was found. Orders, when present, are "
+                        "authoritative context rather than an automatic conversation target. "
+                        "Continue an order only when the customer's current semantic intent "
+                        "targets it; otherwise continue the independently valid capability. "
+                        "Do not use a cart_id as an order_id."
                     ),
                 },
+                grounding=GroundingEvidence(
+                    authoritative_domains=["cart", "order"],
+                ),
             )
         data = self._cart_data(cart)
         if cart.get("status") == "customizing_item" and cart.get("active_cart_item_id"):
@@ -425,6 +461,7 @@ class CartService:
                 active_choice=data if cart.get("status") == "customizing_item" else None,
                 instruction="Present the current cart from data.cart. If a question is present, ask that question next.",
             ),
+            grounding=GroundingEvidence(authoritative_domains=["cart"]),
         )
 
     def discard_active_cart(self, user_id: str, session_id: str) -> ToolResponse:
@@ -438,6 +475,7 @@ class CartService:
                 data={"discarded": False},
                 user_message="There isn't an active cart to discard.",
                 next_action="search_menu",
+                grounding=GroundingEvidence(authoritative_domains=["cart"]),
             )
         cart["status"] = "cancelled"
         cart["active_cart_item_id"] = None
@@ -451,6 +489,10 @@ class CartService:
             },
             user_message="The current cart was discarded.",
             next_action="search_menu",
+            grounding=GroundingEvidence(
+                authoritative_domains=["cart"],
+                transactional_effects=["cart_cancelled"],
+            ),
         )
 
     def add_item_to_active_cart(
@@ -498,7 +540,7 @@ class CartService:
         self._recalculate(cart)
         self._save(cart)
         if entry["missing_required_fields"]:
-            return self._next_choice_response(cart)
+            return self._next_choice_response(cart, effects=["item_selected"])
         return ToolResponse.ok(
             data=self._cart_data(cart),
             user_message="The item was added to your cart.",
@@ -507,6 +549,10 @@ class CartService:
                 cart,
                 "offer_upsell",
                 instruction="Item was added. Offer backend upsells or skip add-ons before creating a pending order.",
+            ),
+            grounding=GroundingEvidence(
+                authoritative_domains=["cart"],
+                transactional_effects=["item_added"],
             ),
         )
 
@@ -732,6 +778,13 @@ class CartService:
                         "metadata": {"cart_id": cart_id, "mode": "separate"},
                     },
                 ],
+                grounding=GroundingEvidence(
+                    authoritative_domains=["cart"],
+                    exact_customer_text=(
+                        "Should these items use the same customization or be "
+                        "customized separately?"
+                    ),
+                ),
             )
 
         if status == "customizing_item" and cart.get("active_cart_item_id"):
@@ -759,6 +812,10 @@ class CartService:
                         "upsell_prompt exactly."
                     ),
                 ),
+                grounding=GroundingEvidence(
+                    authoritative_domains=["cart", "menu"],
+                    exact_customer_text=upsell_prompt,
+                ),
             )
 
         if status == "item_ready":
@@ -777,6 +834,7 @@ class CartService:
                         "upsells or proceed to checkout."
                     ),
                 ),
+                grounding=GroundingEvidence(authoritative_domains=["cart"]),
             )
 
         if status == "cart_ready":
@@ -792,6 +850,7 @@ class CartService:
                         "checkout when the customer is ready."
                     ),
                 ),
+                grounding=GroundingEvidence(authoritative_domains=["cart"]),
             )
 
         return ToolResponse.ok(
@@ -805,9 +864,10 @@ class CartService:
                     "Resume this existing cart instead of creating another cart."
                 ),
             ),
+            grounding=GroundingEvidence(authoritative_domains=["cart"]),
         )
 
-    def _next_choice_response(self, cart):
+    def _next_choice_response(self, cart, effects=None):
         item = next(
             entry for entry in cart["items"]
             if entry["cart_item_id"] == cart["active_cart_item_id"]
@@ -836,6 +896,11 @@ class CartService:
                     "one of the returned option IDs with "
                     "save_customization_choice."
                 ),
+            ),
+            grounding=GroundingEvidence(
+                authoritative_domains=["cart", "menu"],
+                transactional_effects=effects or [],
+                exact_customer_text=active_choice["choice_prompt"],
             ),
         )
 

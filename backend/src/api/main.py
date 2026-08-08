@@ -718,6 +718,11 @@ def _chat_response_from_invocation(
                 if isinstance(result, dict)
                 else getattr(result, "expected_write_tool", None)
             ),
+            required_effect=(
+                result.get("required_effect")
+                if isinstance(result, dict)
+                else getattr(result, "required_effect", None)
+            ),
         ).text
     else:
         response_text = _menu_grounded_response_from_tool_calls(tool_calls) or invocation.text

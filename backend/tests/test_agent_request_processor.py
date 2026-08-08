@@ -244,7 +244,10 @@ def test_search_results_persist_expected_item_selection_write_and_options():
             self.state = {}
 
         def save_whatsapp_order_state(self, customer_id, session_id, **kwargs):
-            self.state = {"offered_menu_items": kwargs["offered_menu_items"]}
+            self.state = {
+                "offered_menu_items": kwargs["offered_menu_items"],
+                "whatsapp_required_effect": kwargs["required_effect"],
+            }
 
         def get_whatsapp_order_state(self, customer_id, session_id):
             return self.state
@@ -265,14 +268,23 @@ def test_search_results_persist_expected_item_selection_write_and_options():
     )
     invocation = SimpleNamespace(raw_result={
         "expected_write_tool": "start_cart_item_customization",
+        "required_effect": "item_selected",
         "tool_calls": [{
-            "tool_name": "search_menu", "success": True,
+            "tool_name": "any_menu_capability", "success": True,
             "result": {
                 "success": True,
                 "data": {"items": [
                     {"product_id": "item-1", "name": "First Item"},
                     {"product_id": "item-2", "name": "Second Item"},
                 ]},
+                "grounding": {
+                    "authoritative_domains": ["menu"],
+                    "required_next_effect": "item_selected",
+                    "offered_options": [
+                        {"id": "item-1", "label": "First Item"},
+                        {"id": "item-2", "label": "Second Item"},
+                    ],
+                },
             },
         }],
     })
@@ -282,6 +294,7 @@ def test_search_results_persist_expected_item_selection_write_and_options():
 
     assert state == {
         "expected_write_tool": "start_cart_item_customization",
+        "required_effect": "item_selected",
         "available_options": [
             {"id": "item-1", "label": "First Item"},
             {"id": "item-2", "label": "Second Item"},
@@ -289,9 +302,39 @@ def test_search_results_persist_expected_item_selection_write_and_options():
     }
 
 
+def test_legacy_whatsapp_menu_state_is_inferred_only_at_orchestration_boundary():
+    class Sessions:
+        def get_whatsapp_order_state(self, customer_id, session_id):
+            return {
+                "offered_menu_items": [
+                    {"product_id": "item-1", "name": "First Item"},
+                ],
+            }
+
+    processor = AgentRequestProcessor(
+        services_provider=lambda: SimpleNamespace(agent_sessions=Sessions()),
+        agent_client_provider=ForbiddenCall(),
+        identity_resolver=ForbiddenCall(),
+        response_builder=ForbiddenCall(),
+    )
+    context = SimpleNamespace(
+        channel="whatsapp", customer_id="customer-1",
+        user_id="user-1", agent_session_id="session-1",
+    )
+
+    assert processor._whatsapp_grounding_state(context) == {
+        "expected_write_tool": "start_cart_item_customization",
+        "required_effect": "item_selected",
+        "available_options": [{"id": "item-1", "label": "First Item"}],
+    }
+
+
 def test_successful_expected_write_clears_persisted_menu_selection_state():
     class Sessions:
-        state = {"offered_menu_items": [{"product_id": "item-1", "name": "First"}]}
+        state = {
+            "offered_menu_items": [{"product_id": "item-1", "name": "First"}],
+            "whatsapp_required_effect": "item_selected",
+        }
 
         def clear_whatsapp_order_state(self, customer_id, session_id):
             self.state = {}
@@ -309,10 +352,17 @@ def test_successful_expected_write_clears_persisted_menu_selection_state():
             user_id="user-1", agent_session_id="session-1",
         ),
         SimpleNamespace(raw_result={"tool_calls": [{
-            "tool_name": "start_cart_item_customization",
+            "tool_name": "any_selection_capability",
             "success": True,
-            "result": {"success": True, "user_message": "Choose a size."},
+            "result": {
+                "success": True,
+                "user_message": "Choose a size.",
+                "grounding": {
+                    "transactional_effects": ["item_selected"],
+                },
+            },
         }]}),
+        prior_required_effect="item_selected",
     )
 
     assert sessions.state == {}
@@ -342,14 +392,27 @@ def test_informational_search_does_not_replace_pending_item_choices():
         ),
         SimpleNamespace(raw_result={
             "expected_write_tool": "start_cart_item_customization",
+            "required_effect": "item_selected",
             "tool_calls": [{
-                "tool_name": "search_menu", "success": True,
-                "result": {"success": True, "data": {"items": [
-                    {"product_id": "clarification-item", "name": "Clarification"},
-                ]}},
+                "tool_name": "any_menu_capability", "success": True,
+                "result": {
+                    "success": True,
+                    "data": {"items": [
+                        {"product_id": "clarification-item", "name": "Clarification"},
+                    ]},
+                    "grounding": {
+                        "authoritative_domains": ["menu"],
+                        "required_next_effect": "item_selected",
+                        "offered_options": [{
+                            "id": "clarification-item",
+                            "label": "Clarification",
+                        }],
+                    },
+                },
             }],
         }),
         prior_expected_write_tool="start_cart_item_customization",
+        prior_required_effect="item_selected",
     )
 
     assert sessions.state["offered_menu_items"] == original

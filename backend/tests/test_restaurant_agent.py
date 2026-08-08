@@ -18,15 +18,17 @@ def test_system_prompt_requires_tool_grounding():
     assert "prefer a tool call over guessing" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "If a tool returns an agent object" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "call it in the same turn" in RESTAURANT_AGENT_SYSTEM_PROMPT
-    assert "Do not announce this check first" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "The chat UI may not show buttons" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "1. search_menu" in RESTAURANT_AGENT_SYSTEM_PROMPT
-    assert "do not search the literal phrase" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "broad food/category query" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "never imply that the returned page is the entire menu" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
     assert "Never use it for live menu, cart, price, customization, or order" in (
         RESTAURANT_AGENT_SYSTEM_PROMPT
     )
     assert "STARTING OR RESUMING AN ORDER" in RESTAURANT_AGENT_SYSTEM_PROMPT
-    assert "broad phrases are not menu-item names" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "Distinguish semantically" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "Do not say the item is added unless this tool succeeds" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "fulfillment details" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "confirmation_summary" in RESTAURANT_AGENT_SYSTEM_PROMPT
@@ -43,7 +45,7 @@ def test_system_prompt_requires_tool_grounding():
     assert "Do not answer cart contents from memory" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "get_active_cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "A cart_id is never an order_id" in RESTAURANT_AGENT_SYSTEM_PROMPT
-    assert "get_active_cart returns no cart but includes active orders" in (
+    assert "treat those orders" in (
         RESTAURANT_AGENT_SYSTEM_PROMPT
     )
     assert "update_customer_profile" in RESTAURANT_AGENT_SYSTEM_PROMPT
@@ -97,11 +99,11 @@ def test_system_prompt_requires_tool_grounding():
         in normalized_prompt
     )
     assert (
-        "call get_active_cart before starting a new chat cart"
+        "Before creating a chat cart mutation, use current cart evidence when needed"
         in normalized_prompt
     )
     assert (
-        "Do not call start_cart_item_customization for a second cart."
+        "instead of creating a conflicting second cart"
         in normalized_prompt
     )
     assert (
@@ -155,7 +157,7 @@ def test_system_prompt_requires_tool_grounding():
     assert "Checkout does not require special instructions" in normalized_prompt
     assert "Ask only for the backend-required next input" in normalized_prompt
     assert "Never refuse to collect a delivery address" in normalized_prompt
-    assert "hello I would like to order a pepperoni pizza" in normalized_prompt
+    assert "names a food or category while starting an order" in normalized_prompt
     assert "ask the customer to choose the item" in normalized_prompt
     assert "The selection identifies only the product" in normalized_prompt
     assert "Do not ask for or infer size, crust" in normalized_prompt
@@ -179,6 +181,11 @@ def test_system_prompt_requires_tool_grounding():
     assert "upsell group IDs" in normalized_prompt
     assert (
         "customer saying they want an item is not proof" in normalized_prompt
+    )
+    assert "Tool selection follows the customer's current intent" in normalized_prompt
+    assert "not automatic targets for a separate ordering request" in normalized_prompt
+    assert "Do not perform an unrelated status check as a mandatory preamble" in (
+        normalized_prompt
     )
 
 

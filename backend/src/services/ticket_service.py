@@ -34,7 +34,7 @@ from src.models.ticket import (
     generate_ticket_id,
     normalize_ticket_timestamp,
 )
-from src.models.tool_responses import ToolResponse
+from src.models.tool_responses import GroundingEvidence, ToolResponse
 from src.repositories.ticket_repository import (
     HumanSessionGuardConflictError,
     IdempotencyConflictError,
@@ -379,6 +379,7 @@ class TicketService:
                     "requires_ticket_id": True,
                     "required_input": "ticket_id",
                 },
+                grounding=GroundingEvidence(authoritative_domains=["support"]),
             )
         return ToolResponse.ok(
             data={"tickets": []},
@@ -393,6 +394,7 @@ class TicketService:
                 "requires_ticket_id": True,
                 "required_input": "ticket_id",
             },
+            grounding=GroundingEvidence(authoritative_domains=["support"]),
         )
 
     def get_admin_ticket(self, ticket_id: str) -> dict:
@@ -1133,6 +1135,11 @@ class TicketService:
                 "ticket_id": ticket["ticket_id"],
                 "ticket_status": ticket["status"],
             },
+            grounding=GroundingEvidence(
+                authoritative_domains=["support"],
+                transactional_effects=["support_ticket_created"],
+                exact_customer_text=message,
+            ),
         )
 
     def _status_response(
@@ -1158,6 +1165,7 @@ class TicketService:
                 "requires_ticket_id": requires_ticket_id,
                 "status_message": message,
             },
+            grounding=GroundingEvidence(authoritative_domains=["support"]),
         )
 
     @staticmethod

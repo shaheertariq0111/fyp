@@ -1,6 +1,8 @@
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
+from src.models.tool_responses import TransactionalEffect
+
 from .base import from_dynamodb, to_dynamodb
 
 
@@ -20,6 +22,7 @@ WHATSAPP_ORDER_STATE_FIELDS = (
     "whatsapp_menu_query",
     "shown_menu_item_ids",
     "whatsapp_menu_has_more",
+    "whatsapp_required_effect",
     "whatsapp_order_state_updated_at",
 )
 
@@ -111,6 +114,7 @@ class AgentSessionRepository:
         menu_query: str | None,
         shown_menu_item_ids: list[str],
         menu_has_more: bool,
+        required_effect: TransactionalEffect,
         updated_at: str,
     ) -> None:
         session = self._get_owned_session(customer_id, agent_session_id)
@@ -119,7 +123,7 @@ class AgentSessionRepository:
             update_expression=(
                 "SET #items = :items, #menu_query = :menu_query, "
                 "#shown_ids = :shown_ids, #has_more = :has_more, "
-                "#updated_at = :updated_at"
+                "#required_effect = :required_effect, #updated_at = :updated_at"
             ),
             condition_expression=(
                 "attribute_exists(#pk) "
@@ -134,6 +138,7 @@ class AgentSessionRepository:
                 "#menu_query": "whatsapp_menu_query",
                 "#shown_ids": "shown_menu_item_ids",
                 "#has_more": "whatsapp_menu_has_more",
+                "#required_effect": "whatsapp_required_effect",
                 "#updated_at": "whatsapp_order_state_updated_at",
             },
             values={
@@ -143,6 +148,7 @@ class AgentSessionRepository:
                 ":menu_query": menu_query or "",
                 ":shown_ids": shown_menu_item_ids,
                 ":has_more": menu_has_more,
+                ":required_effect": required_effect,
                 ":updated_at": updated_at,
             },
         )
@@ -156,7 +162,8 @@ class AgentSessionRepository:
         self._update_support_attributes(
             session,
             update_expression=(
-                "REMOVE #items, #menu_query, #shown_ids, #has_more, #updated_at"
+                "REMOVE #items, #menu_query, #shown_ids, #has_more, "
+                "#required_effect, #updated_at"
             ),
             condition_expression=(
                 "attribute_exists(#pk) "
@@ -171,6 +178,7 @@ class AgentSessionRepository:
                 "#menu_query": "whatsapp_menu_query",
                 "#shown_ids": "shown_menu_item_ids",
                 "#has_more": "whatsapp_menu_has_more",
+                "#required_effect": "whatsapp_required_effect",
                 "#updated_at": "whatsapp_order_state_updated_at",
             },
             values={

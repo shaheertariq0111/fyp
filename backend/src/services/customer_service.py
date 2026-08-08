@@ -6,7 +6,7 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from src.models.tool_responses import ToolResponse
+from src.models.tool_responses import GroundingEvidence, ToolResponse
 
 
 class CustomerService:
@@ -82,6 +82,7 @@ class CustomerService:
                 "customer": self._public(customer),
                 "instruction": "Use this trusted customer profile. Do not invent missing fields.",
             },
+            grounding=GroundingEvidence(authoritative_domains=["customer"]),
         )
 
     def update_profile(
@@ -143,6 +144,14 @@ class CustomerService:
                 "customer": self._public(customer),
                 "instruction": "Use these trusted customer details for this customer.",
             },
+            grounding=GroundingEvidence(
+                authoritative_domains=["customer"],
+                transactional_effects=(
+                    ["customer_profile_updated", "customer_name_updated"]
+                    if display_name is not None
+                    else ["customer_profile_updated"]
+                ),
+            ),
         )
 
     def confirm_customer_name(
@@ -273,6 +282,10 @@ class CustomerService:
                     "onto the current order with update_order_flow(save_address)."
                 ),
             },
+            grounding=GroundingEvidence(
+                authoritative_domains=["customer"],
+                transactional_effects=["address_saved"],
+            ),
         )
 
     def admin_search(self, query: str | None = None, limit: int = 50) -> dict:

@@ -1,7 +1,7 @@
 import logging
 import time
 
-from src.models.tool_responses import ToolResponse
+from src.models.tool_responses import GroundingEvidence, ToolResponse
 
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,11 @@ class KnowledgeService:
         results = [{"text": result.get("content", {}).get("text", ""),
                     "score": result.get("score"), "location": result.get("location")}
                    for result in response.get("retrievalResults", [])]
-        return ToolResponse.ok(data={"results": results},
-                               user_message="I found restaurant information from the approved knowledge source.",
-                               next_action="answer_from_knowledge")
+        return ToolResponse.ok(
+            data={"results": results},
+            user_message="I found restaurant information from the approved knowledge source.",
+            next_action="answer_from_knowledge",
+            grounding=GroundingEvidence(
+                authoritative_domains=["restaurant_policy"],
+            ),
+        )

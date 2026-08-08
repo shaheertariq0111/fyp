@@ -193,6 +193,8 @@ class AgentCoreRuntimeClient:
         }
         if request.expected_write_tool:
             payload["expected_write_tool"] = request.expected_write_tool
+        if request.required_effect:
+            payload["required_effect"] = request.required_effect
         if request.available_options:
             payload["available_options"] = request.available_options
         return payload

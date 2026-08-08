@@ -63,7 +63,11 @@ def get_services() -> ServiceContainer:
         menu_repository,
         customer_service=customer_service,
     )
-    menu_service = MenuService(menu_repository, settings.branch_id)
+    menu_service = MenuService(
+        menu_repository,
+        settings.branch_id,
+        customer_result_limit=settings.customer_menu_result_limit,
+    )
     agent_session_service = AgentSessionService(
         AgentSessionRepository(dynamodb, settings.agent_sessions_table_name),
         customer_service,
