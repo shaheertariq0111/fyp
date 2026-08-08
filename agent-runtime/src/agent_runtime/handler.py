@@ -7,7 +7,14 @@ import time
 from typing import Any
 
 from src.agent.order_intent import classify_order_intent
+from src.agent.response_grounding import (
+    AssistantClaimAssessment,
+    GroundedAssistantMemoryBuffer,
+    assess_assistant_claims,
+    ground_agent_response,
+)
 from src.agent.whatsapp_turn_intent import classify_whatsapp_turn
+from src.services.whatsapp_turn_policy_service import whatsapp_no_write_authorization
 from src.agent.restaurant_agent import agent_result_text, build_restaurant_agent, invoke_restaurant_agent
 from src.agent.dependencies import get_services
 from src.infrastructure.config import get_settings
@@ -150,19 +157,92 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             agentcore_memory_config=memory_config,
             region_name=settings.aws_region,
         ) as session_manager:
-            runtime_agent = build_restaurant_agent(session_manager=session_manager)
-            result = invoke_restaurant_agent(
-                request.message,
-                user_id=request.user_id,
-                agent_session_id=request.agent_session_id,
-                request_id=request.request_id,
-                branch_id=request.branch_id,
-                customer_id=request.customer_id,
-                customer_name=request.customer_name,
-                customer_phone=request.customer_phone,
-                channel=request.channel,
-                agent=runtime_agent,
+            memory_buffer = (
+                GroundedAssistantMemoryBuffer(session_manager)
+                if request.channel == "whatsapp"
+                else None
             )
+            try:
+                runtime_agent = build_restaurant_agent(
+                    session_manager=memory_buffer or session_manager
+                )
+                result = invoke_restaurant_agent(
+                    request.message,
+                    user_id=request.user_id,
+                    agent_session_id=request.agent_session_id,
+                    request_id=request.request_id,
+                    branch_id=request.branch_id,
+                    customer_id=request.customer_id,
+                    customer_name=request.customer_name,
+                    customer_phone=request.customer_phone,
+                    channel=request.channel,
+                    agent=runtime_agent,
+                )
+                tool_calls = [
+                    ToolCallResult.model_validate(call)
+                    for call in (getattr(result, "tool_calls", []) or [])
+                ]
+                raw_text = agent_result_text(result)
+                claim_assessment = None
+                grounded_text = raw_text
+                no_write_authorized = False
+                informational_turn = False
+                expected_write_tool = request.expected_write_tool
+                if request.channel == "whatsapp":
+                    has_write = any(call.is_write for call in tool_calls)
+                    if not has_write:
+                        allowed_actions = [
+                            "menu_browse", "menu_search", "menu_item_detail",
+                            "menu_compare", "menu_recommendation", "general_chat",
+                            "clarify", "transactional_change",
+                        ]
+                        if expected_write_tool == "start_cart_item_customization":
+                            allowed_actions.append("select_menu_item")
+                        try:
+                            turn = classify_whatsapp_turn(
+                                message=request.message,
+                                state=("menu_selection" if expected_write_tool else "conversation"),
+                                allowed_actions=allowed_actions,
+                                available_options=request.available_options,
+                            )
+                            no_write_authorized, informational_turn = (
+                                whatsapp_no_write_authorization(
+                                    turn,
+                                    allowed_actions=allowed_actions,
+                                    available_options=request.available_options,
+                                )
+                            )
+                        except Exception:
+                            logger.exception("WhatsApp customer turn classification failed closed")
+                        if no_write_authorized:
+                            try:
+                                claim_assessment = assess_assistant_claims(
+                                    customer_message=request.message,
+                                    assistant_message=raw_text,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "WhatsApp assistant claim classification failed closed"
+                                )
+                                claim_assessment = AssistantClaimAssessment(
+                                    claims_transactional_progression=True,
+                                    claimed_actions=["other_transactional_progression"],
+                                )
+                    grounded = ground_agent_response(
+                        text=raw_text,
+                        tool_calls=tool_calls,
+                        claim_assessment=claim_assessment,
+                        no_write_authorized=no_write_authorized,
+                        informational_turn=informational_turn,
+                    )
+                    grounded_text = grounded.text
+                    if grounded.expected_transactional_action:
+                        expected_write_tool = grounded.expected_transactional_action
+                if memory_buffer is not None:
+                    memory_buffer.commit(grounded_text, runtime_agent)
+            finally:
+                if memory_buffer is not None:
+                    memory_buffer.pending_assistant = None
     except Exception:
         logger.exception(
             "Restaurant agent invocation failed",
@@ -178,10 +258,6 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             },
         )
         raise
-    tool_calls = [
-        ToolCallResult.model_validate(call)
-        for call in (getattr(result, "tool_calls", []) or [])
-    ]
     for call in tool_calls:
         logger.info(
             "AgentCore tool call completed",
@@ -210,13 +286,17 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
         },
     )
     response = RuntimeResponse(
-        text=agent_result_text(result),
+        text=grounded_text,
         tool_calls=tool_calls,
         memory={
             "memory_id": memory_id,
             "actor_id": actor_id,
             "session_id": memory_session_id,
         },
+        claim_assessment=claim_assessment,
+        no_write_authorized=no_write_authorized,
+        informational_turn=informational_turn,
+        expected_write_tool=expected_write_tool,
     )
     return response.model_dump(exclude_none=True)
 

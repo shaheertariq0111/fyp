@@ -3,6 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from src.agent.order_intent import OrderIntentClassification
+from src.agent.response_grounding import AssistantClaimAssessment
 from src.agent.whatsapp_turn_intent import WhatsAppTurnInterpretation
 
 
@@ -24,6 +25,7 @@ class RuntimeRequest(BaseModel):
     state: str | None = None
     allowed_actions: list[str] = Field(default_factory=list)
     available_options: list[dict[str, str]] = Field(default_factory=list)
+    expected_write_tool: str | None = None
 
 
 class ToolCallResult(BaseModel):
@@ -40,3 +42,7 @@ class RuntimeResponse(BaseModel):
     memory: dict[str, str] = Field(default_factory=dict)
     intent: OrderIntentClassification | None = None
     turn_intent: WhatsAppTurnInterpretation | None = None
+    claim_assessment: AssistantClaimAssessment | None = None
+    no_write_authorized: bool | None = None
+    informational_turn: bool | None = None
+    expected_write_tool: str | None = None

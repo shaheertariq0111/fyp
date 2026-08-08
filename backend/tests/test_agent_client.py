@@ -102,6 +102,59 @@ def test_local_agent_runtime_client_preserves_missing_request_id(monkeypatch):
     assert captured["request_id"] is None
 
 
+def test_local_whatsapp_client_commits_grounded_message_without_raw_redaction(monkeypatch):
+    class Manager:
+        def __init__(self):
+            self.messages = []
+
+        def append_message(self, message, agent, **kwargs):
+            self.messages.append(message)
+
+        def redact_latest_message(self, message, agent):
+            raise AssertionError("redaction path must not be used")
+
+    manager = Manager()
+    def fake_invoke(message, **kwargs):
+        runtime_agent = kwargs["agent"]
+        raw = "I selected the item and saved a size."
+        runtime_agent.session_manager.append_message(
+            {"role": "assistant", "content": [{"text": raw}]},
+            runtime_agent,
+        )
+        return SimpleNamespace(
+            message={"content": [{"text": raw}]},
+            tool_calls=[],
+        )
+
+    monkeypatch.setattr("src.agent_client.local.build_session_manager", lambda session_id: manager)
+    monkeypatch.setattr(
+        "src.agent_client.local.build_restaurant_agent",
+        lambda *, session_manager: SimpleNamespace(session_manager=session_manager),
+    )
+    monkeypatch.setattr("src.agent_client.local.invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr("src.agent_client.local.agent_result_text", lambda result: result.message["content"][0]["text"])
+    monkeypatch.setattr(
+        "src.agent_client.local.classify_whatsapp_turn",
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="select_menu_item", confidence=0.99,
+            informational_only=False, wants_to_order=True,
+            selected_option="item-1",
+        ),
+    )
+
+    result = LocalStrandsAgentRuntimeClient().invoke(AgentInvocationRequest(
+        message="select the first item",
+        user_id="user-1",
+        agent_session_id="session-1",
+        channel="whatsapp",
+        expected_write_tool="start_cart_item_customization",
+        available_options=[{"id": "item-1", "label": "First Item"}],
+    ))
+
+    assert "I selected" not in str(manager.messages)
+    assert manager.messages[-1]["content"][0]["text"] == result.text
+
+
 def test_local_agent_runtime_client_async_methods_are_agentcore_boundary():
     client = LocalStrandsAgentRuntimeClient()
     request = AgentInvocationRequest(

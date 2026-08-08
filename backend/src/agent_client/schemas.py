@@ -15,6 +15,8 @@ class AgentInvocationRequest:
     customer_phone: str | None = None
     channel: str = "web"
     request_id: str | None = None
+    expected_write_tool: str | None = None
+    available_options: list[dict[str, str]] | None = None
 
 
 @dataclass(frozen=True)

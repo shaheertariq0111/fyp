@@ -17,6 +17,7 @@ TRANSACTIONAL_ACTIONS = {
     "answer_customization_step",
     "checkout",
     "cancel_cart",
+    "transactional_change",
 }
 SELECTION_ACTIONS = {"select_menu_item", "answer_customization_step"}
 
@@ -76,3 +77,27 @@ class WhatsAppTurnPolicyService:
         if action == "menu_compare" and len(interpretation.target_items) < 2:
             return WhatsAppTurnPolicyDecision(False, "comparison_targets_required")
         return WhatsAppTurnPolicyDecision(True, "accepted")
+
+
+def whatsapp_no_write_authorization(
+    interpretation: WhatsAppTurnInterpretation,
+    *,
+    allowed_actions: list[str],
+    available_options: list[dict[str, str]] | None = None,
+) -> tuple[bool, bool]:
+    """Return (authorized, informational_read) after strict policy validation."""
+    decision = WhatsAppTurnPolicyService().validate(
+        interpretation,
+        allowed_actions=allowed_actions,
+        available_options=available_options,
+    )
+    if not decision.accepted:
+        return False, False
+    action = interpretation.action
+    authorized = action in INFORMATIONAL_ACTIONS | {"general_chat"}
+    informational_read = action in {
+        "menu_item_detail",
+        "menu_compare",
+        "menu_recommendation",
+    }
+    return authorized, informational_read
