@@ -14,7 +14,10 @@ from src.agent.whatsapp_turn_intent import (
     WhatsAppTurnInterpretation,
     classify_whatsapp_turn,
 )
-from src.services.whatsapp_turn_policy_service import WhatsAppTurnPolicyService
+from src.services.whatsapp_turn_policy_service import (
+    WhatsAppTurnPolicyService,
+    whatsapp_grounding_context,
+)
 
 
 class StructuredAgent:
@@ -178,6 +181,53 @@ def test_whatsapp_turn_policy_rejects_unsafe_output(interpretation, options, rea
 
     assert decision.accepted is False
     assert decision.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("interpretation", "transition_requested", "informational_read"),
+    [
+        (
+            WhatsAppTurnInterpretation(
+                action="transactional_change",
+                confidence=0.95,
+                informational_only=False,
+                wants_to_order=True,
+            ),
+            True,
+            False,
+        ),
+        (
+            WhatsAppTurnInterpretation(
+                action="clarify",
+                confidence=0.95,
+                informational_only=False,
+                wants_to_order=False,
+            ),
+            False,
+            False,
+        ),
+        (
+            WhatsAppTurnInterpretation(
+                action="menu_item_detail",
+                confidence=0.95,
+                informational_only=True,
+                wants_to_order=False,
+                target_items=["item"],
+            ),
+            False,
+            True,
+        ),
+    ],
+)
+def test_whatsapp_grounding_context_separates_transition_requests_from_detours(
+    interpretation, transition_requested, informational_read
+):
+    result = whatsapp_grounding_context(
+        interpretation,
+        allowed_actions=[interpretation.action],
+    )
+
+    assert result == (transition_requested, informational_read)
 
 
 def test_whatsapp_turn_prompt_keeps_menu_facts_and_transactions_backend_owned():

@@ -125,6 +125,39 @@ def test_failed_write_never_uses_model_success_prose():
     assert result.source == "failed_write"
 
 
+def test_successful_required_write_consumes_pending_transition():
+    result = ground_agent_response(
+        text="The model invented progression.",
+        tool_calls=[tool_call(
+            "start_cart_item_customization",
+            is_write=True,
+            user_message="Which size would you like?",
+        )],
+        expected_write_tool="start_cart_item_customization",
+    )
+
+    assert result.text == "Which size would you like?"
+    assert result.source == "successful_write"
+    assert result.expected_transactional_action is None
+
+
+def test_failed_required_write_preserves_pending_transition():
+    result = ground_agent_response(
+        text="The model claimed the item was selected.",
+        tool_calls=[tool_call(
+            "start_cart_item_customization",
+            success=False,
+            is_write=True,
+            user_message="Please choose an available item.",
+        )],
+        expected_write_tool="start_cart_item_customization",
+    )
+
+    assert result.text == "Please choose an available item."
+    assert result.source == "failed_write"
+    assert result.expected_transactional_action == "start_cart_item_customization"
+
+
 def test_informational_clarification_during_ordering_requires_no_write():
     text = "Thin crust is the crispier option; pan crust is thicker."
     result = ground_agent_response(
@@ -139,6 +172,42 @@ def test_informational_clarification_during_ordering_requires_no_write():
 
     assert result.text == text
     assert result.source == "conversation"
+
+
+def test_transactional_customer_intent_does_not_block_conversational_response():
+    text = "Absolutely. What kind of food are you in the mood for?"
+
+    result = ground_agent_response(
+        text=text,
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+        no_write_authorized=False,
+    )
+
+    assert result.text == text
+    assert result.source == "conversation"
+
+
+def test_clarification_preserves_pending_authoritative_transition():
+    text = "Would you like the first option or the second one?"
+
+    result = ground_agent_response(
+        text=text,
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+        no_write_authorized=True,
+        expected_write_tool="start_cart_item_customization",
+    )
+
+    assert result.text == text
+    assert result.source == "conversation"
+    assert result.expected_transactional_action == "start_cart_item_customization"
 
 
 def test_transaction_can_resume_after_informational_clarification():
@@ -165,18 +234,47 @@ def test_transaction_can_resume_after_informational_clarification():
     assert resumed.source == "successful_write"
 
 
-def test_claim_classifier_false_negative_is_not_authority_for_transactional_turn():
+def test_pending_required_transition_cannot_be_claimed_without_write_evidence():
     result = ground_agent_response(
         text="Everything you picked is locked in; we're ready for fulfillment.",
         tool_calls=[],
         claim_assessment=AssistantClaimAssessment(
-            claims_transactional_progression=False,
-            claimed_actions=[],
+            claims_transactional_progression=True,
+            claimed_actions=["cart_progressed"],
         ),
-        no_write_authorized=False,
+        expected_write_tool="start_cart_item_customization",
     )
 
     assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.expected_transactional_action == "start_cart_item_customization"
+
+
+def test_authoritative_state_claim_requires_authoritative_read_evidence():
+    assessment = AssistantClaimAssessment(
+        claims_transactional_progression=False,
+        claimed_actions=[],
+        depends_on_authoritative_state=True,
+        authoritative_state_domains=["cart"],
+    )
+
+    missing = ground_agent_response(
+        text="Your cart is empty.",
+        tool_calls=[],
+        claim_assessment=assessment,
+    )
+    observed = ground_agent_response(
+        text="The model paraphrased the cart from memory.",
+        tool_calls=[tool_call(
+            "get_active_cart",
+            user_message="Your cart is currently empty.",
+            data={"cart": None},
+        )],
+        claim_assessment=assessment,
+    )
+
+    assert missing.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert observed.text == "Your cart is currently empty."
+    assert observed.source == "authoritative_read"
 
 
 def test_contradictory_claim_classification_is_rejected():
@@ -218,6 +316,28 @@ def test_informational_menu_read_preserves_clarification_answer():
 
     assert result.text == text
     assert result.source == "informational_read"
+
+
+def test_informational_read_does_not_erase_pending_transition():
+    text = "The first option is the milder one."
+    result = ground_agent_response(
+        text=text,
+        tool_calls=[tool_call(
+            "search_menu",
+            data={"items": [{"product_id": "item-1", "name": "Menu Item", "price": 10}]},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+        no_write_authorized=True,
+        informational_turn=True,
+        expected_write_tool="start_cart_item_customization",
+    )
+
+    assert result.text == text
+    assert result.source == "informational_read"
+    assert result.expected_transactional_action == "start_cart_item_customization"
 
 
 @pytest.mark.parametrize(
