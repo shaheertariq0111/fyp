@@ -451,3 +451,54 @@ def test_multi_select_choices_are_validated_and_fully_priced():
     assert ready.data["items"][0]["current_price"] == 15
     assert pending.data["total"] == 15
     assert next(iter(orders.data.values()))["total"] == 15
+
+
+def test_optional_single_select_can_reach_takeaway_without_a_selection():
+    service, carts, orders = build_services()
+    service.menu.groups["optional-dip"] = {
+        "option_group_id": "optional-dip",
+        "name": "Dip Choice",
+        "type": "single_select",
+        "required": False,
+        "question": "Would you like a dip?",
+        "options": [
+            {"option_id": "garlic", "name": "Garlic Dip", "price_delta": 2},
+        ],
+    }
+    service.menu.items["customizable-roll"] = {
+        "product_id": "customizable-roll",
+        "name": "Customizable Roll",
+        "category": "roll",
+        "currency": "CUR",
+        "available": True,
+        "starting_price": 10,
+        "requires_customization": True,
+        "customization_group_ids": ["optional-dip"],
+        "upsell_group_ids": [],
+    }
+
+    started = service.start_item_customization(
+        "optional-user",
+        "optional-session",
+        "customizable-roll",
+    )
+    cart_id = started.data["cart_id"]
+    pending = service.create_pending_order("optional-user", cart_id)
+    takeaway = service.order_service.update_order_flow(
+        "optional-user",
+        pending.data["order_id"],
+        "set_takeaway",
+    )
+
+    assert started.success
+    assert started.data["status"] == "item_ready"
+    assert started.data["items"][0]["selected_options"] == {}
+    assert started.data["items"][0]["missing_required_fields"] == []
+    assert pending.success
+    assert pending.data["status"] == "awaiting_fulfillment_method"
+    assert carts.find_by_cart_id("optional-user", cart_id)["status"] == (
+        "converted_to_order"
+    )
+    assert takeaway.success
+    assert takeaway.data["status"] == "pending_confirmation"
+    assert next(iter(orders.data.values()))["total"] == 10

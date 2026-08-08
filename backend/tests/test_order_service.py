@@ -88,6 +88,139 @@ def test_takeaway_skips_address():
     assert response.agent["required_input"] == "confirm_or_cancel"
 
 
+def _customization_order(*, group, selected_options):
+    menu = MemoryMenuRepository(
+        [{
+            "product_id": "custom-item",
+            "name": "Custom Item",
+            "available": True,
+            "starting_price": 10,
+            "customization_group_ids": [group["option_group_id"]],
+        }],
+        [group],
+    )
+    repository = MemoryOrderRepository()
+    service = OrderService(repository, menu)
+    pending = service.create_pending_from_cart({
+        "user_id": "custom-user",
+        "agent_session_id": "custom-session",
+        "restaurant_id": "restaurant",
+        "branch_id": "branch",
+        "cart_id": "custom-cart",
+        "subtotal": 10,
+        "currency": "CUR",
+        "items": [{
+            "item_id": "custom-item",
+            "name": "Custom Item",
+            "quantity": 1,
+            "selected_options": selected_options,
+            "current_price": 10,
+        }],
+    })
+    return service, pending.data["order_id"]
+
+
+def _single_select_group(*, required=False, min_selections=None):
+    group = {
+        "option_group_id": "optional-choice",
+        "name": "Optional Choice",
+        "type": "single_select",
+        "required": required,
+        "options": [
+            {"option_id": "choice-a", "name": "Choice A", "price_delta": 2},
+            {"option_id": "choice-b", "name": "Choice B", "price_delta": 3},
+        ],
+    }
+    if min_selections is not None:
+        group["min_selections"] = min_selections
+    return group
+
+
+@pytest.mark.parametrize(
+    ("group", "selected_options", "success", "expected_total"),
+    [
+        (_single_select_group(), {}, True, 10),
+        (_single_select_group(), {"optional-choice": "choice-a"}, True, 12),
+        (
+            _single_select_group(),
+            {"optional-choice": ["choice-a", "choice-b"]},
+            False,
+            None,
+        ),
+        (_single_select_group(required=True), {}, False, None),
+        (
+            _single_select_group(required=True),
+            {"optional-choice": "choice-a"},
+            True,
+            12,
+        ),
+        (_single_select_group(min_selections=1), {"optional-choice": []}, False, None),
+    ],
+    ids=[
+        "optional-zero",
+        "optional-one",
+        "optional-multiple",
+        "required-zero",
+        "required-one",
+        "positive-minimum-zero",
+    ],
+)
+def test_order_repricing_enforces_single_select_cardinality(
+    group, selected_options, success, expected_total
+):
+    service, order_id = _customization_order(
+        group=group,
+        selected_options=selected_options,
+    )
+
+    response = service.update_order_flow("custom-user", order_id, "set_takeaway")
+
+    assert response.success is success
+    if success:
+        assert response.data["status"] == "pending_confirmation"
+        assert response.data["total"] == expected_total
+    else:
+        assert response.error_code == "INVALID_CUSTOMIZATION"
+
+
+@pytest.mark.parametrize(
+    ("selected_options", "success", "expected_total"),
+    [
+        ({"extras": ["extra-a", "extra-b"]}, True, 15),
+        ({"extras": ["extra-a", "extra-b", "extra-c"]}, False, None),
+    ],
+    ids=["within-maximum", "above-maximum"],
+)
+def test_order_repricing_preserves_multi_select_validation(
+    selected_options, success, expected_total
+):
+    group = {
+        "option_group_id": "extras",
+        "name": "Extras",
+        "type": "multi_select",
+        "required": False,
+        "max_selections": 2,
+        "options": [
+            {"option_id": "extra-a", "name": "Extra A", "price_delta": 2},
+            {"option_id": "extra-b", "name": "Extra B", "price_delta": 3},
+            {"option_id": "extra-c", "name": "Extra C", "price_delta": 4},
+        ],
+    }
+    service, order_id = _customization_order(
+        group=group,
+        selected_options=selected_options,
+    )
+
+    response = service.update_order_flow("custom-user", order_id, "set_takeaway")
+
+    assert response.success is success
+    if success:
+        assert response.data["status"] == "pending_confirmation"
+        assert response.data["total"] == expected_total
+    else:
+        assert response.error_code == "INVALID_CUSTOMIZATION"
+
+
 def _whatsapp_order(*, confirmed_name=None, profile_name=None, phone_number=None):
     customers = CustomerService(MemoryCustomerRepository())
     if phone_number:

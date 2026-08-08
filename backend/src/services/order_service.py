@@ -580,7 +580,7 @@ class OrderService:
                     or len(set(selected_ids)) != len(selected_ids)
                     or len(selected_ids) < minimum
                     or (maximum and len(selected_ids) > maximum)
-                    or (group.get("type") == "single_select" and len(selected_ids) != 1)
+                    or (group.get("type") == "single_select" and len(selected_ids) > 1)
                 ):
                     return ToolResponse.error(error_code="INVALID_CUSTOMIZATION",
                                               user_message="An order customization is no longer valid.")
