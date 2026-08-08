@@ -11,8 +11,12 @@ from src.agent.order_intent import (
 from src.agent.response_grounding import (
     AssistantClaimAssessment,
     GroundedAssistantMemoryBuffer,
+    SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+    SemanticClassifierTimeout,
     assess_assistant_claims,
+    ground_authoritative_tool_response,
     ground_agent_response,
+    run_semantic_classifier,
 )
 from src.agent.restaurant_agent import (
     agent_result_text,
@@ -92,33 +96,19 @@ class LocalStrandsAgentRuntimeClient:
                 },
             )
             raise
-        logger.info(
-            "Agent runtime invocation finished",
-            extra={
-                "event": "agentcore_invocation_completed",
-                "actor_id": request.user_id,
-                "agent_session_id": request.agent_session_id,
-                "channel": request.channel,
-                "agentcore_invocation_status": "completed",
-                "response_time_ms": round((time.perf_counter() - started) * 1000, 2),
-            },
-        )
         response_text = agent_result_text(raw_result)
         if request.channel == "whatsapp":
             tool_calls = list(getattr(raw_result, "tool_calls", []) or [])
-            needs_assessment = not any(
-                (
-                    call.get("is_write")
-                    if isinstance(call, dict)
-                    else getattr(call, "is_write", False)
-                )
-                for call in tool_calls
+            expected_write_tool = request.expected_write_tool
+            grounded = ground_authoritative_tool_response(
+                tool_calls=tool_calls,
+                expected_write_tool=expected_write_tool,
             )
             assessment = None
             no_write_authorized = False
             informational_turn = False
-            expected_write_tool = request.expected_write_tool
-            if needs_assessment:
+            authoritative_fast_path = grounded is not None
+            if grounded is None:
                 no_write_authorized = expected_write_tool is None
                 allowed_actions = [
                     "menu_browse", "menu_search", "menu_item_detail",
@@ -127,12 +117,17 @@ class LocalStrandsAgentRuntimeClient:
                 ]
                 if expected_write_tool == "start_cart_item_customization":
                     allowed_actions.append("select_menu_item")
+                classifier_timed_out = False
                 try:
-                    turn = classify_whatsapp_turn(
-                        message=request.message,
-                        state=("menu_selection" if expected_write_tool else "conversation"),
-                        allowed_actions=allowed_actions,
-                        available_options=request.available_options,
+                    turn = run_semantic_classifier(
+                        classifier_name="whatsapp_turn",
+                        timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+                        operation=lambda: classify_whatsapp_turn(
+                            message=request.message,
+                            state=("menu_selection" if expected_write_tool else "conversation"),
+                            allowed_actions=allowed_actions,
+                            available_options=request.available_options,
+                        ),
                     )
                     transition_requested, informational_turn = whatsapp_grounding_context(
                         turn,
@@ -142,28 +137,46 @@ class LocalStrandsAgentRuntimeClient:
                     no_write_authorized = not (
                         expected_write_tool and transition_requested
                     )
-                except Exception:
-                    logger.exception(
-                        "Local WhatsApp customer turn classification could not add semantic context"
-                    )
-                try:
-                    assessment = assess_assistant_claims(
-                        customer_message=request.message,
-                        assistant_message=response_text,
-                    )
-                except Exception:
-                    logger.exception("Local WhatsApp claim classification failed closed")
+                except SemanticClassifierTimeout:
+                    classifier_timed_out = True
                     assessment = AssistantClaimAssessment(
                         claims_transactional_progression=True,
                         claimed_actions=["other_transactional_progression"],
                     )
-            grounded = ground_agent_response(
-                text=response_text,
-                tool_calls=tool_calls,
-                claim_assessment=assessment,
-                no_write_authorized=no_write_authorized,
-                informational_turn=informational_turn,
-                expected_write_tool=expected_write_tool,
+                except Exception:
+                    logger.exception(
+                        "Local WhatsApp customer turn classification could not add semantic context"
+                    )
+                if not classifier_timed_out:
+                    try:
+                        assessment = run_semantic_classifier(
+                            classifier_name="assistant_claim",
+                            timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+                            operation=lambda: assess_assistant_claims(
+                                customer_message=request.message,
+                                assistant_message=response_text,
+                            ),
+                        )
+                    except Exception:
+                        assessment = AssistantClaimAssessment(
+                            claims_transactional_progression=True,
+                            claimed_actions=["other_transactional_progression"],
+                        )
+                grounded = ground_agent_response(
+                    text=response_text,
+                    tool_calls=tool_calls,
+                    claim_assessment=assessment,
+                    no_write_authorized=no_write_authorized,
+                    informational_turn=informational_turn,
+                    expected_write_tool=expected_write_tool,
+                )
+            logger.info(
+                "Local WhatsApp response grounded",
+                extra={
+                    "event": "whatsapp_grounding_completed",
+                    "authoritative_fast_path": authoritative_fast_path,
+                    "grounding_source": grounded.source,
+                },
             )
             response_text = grounded.text
             expected_write_tool = grounded.expected_transactional_action
@@ -178,30 +191,50 @@ class LocalStrandsAgentRuntimeClient:
                 setattr(raw_result, "no_write_authorized", no_write_authorized)
                 setattr(raw_result, "informational_turn", informational_turn)
                 setattr(raw_result, "expected_write_tool", expected_write_tool)
+                setattr(raw_result, "grounding_source", grounded.source)
             except Exception:
                 raise RuntimeError("Local runtime result cannot carry grounding metadata")
+        logger.info(
+            "Agent runtime invocation finished",
+            extra={
+                "event": "agentcore_invocation_completed",
+                "actor_id": request.user_id,
+                "agent_session_id": request.agent_session_id,
+                "channel": request.channel,
+                "agentcore_invocation_status": "completed",
+                "response_time_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
         return AgentInvocationResult(text=response_text, raw_result=raw_result)
 
     def classify_order_intent(
         self,
         request: OrderIntentRequest,
     ) -> OrderIntentClassification:
-        return classify_order_intent(
-            message=request.message,
-            state=request.state,
-            allowed_actions=request.allowed_actions,
-            available_options=request.available_options,
+        return run_semantic_classifier(
+            classifier_name="order_intent",
+            timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+            operation=lambda: classify_order_intent(
+                message=request.message,
+                state=request.state,
+                allowed_actions=request.allowed_actions,
+                available_options=request.available_options,
+            ),
         )
 
     def classify_whatsapp_turn(
         self,
         request: WhatsAppTurnIntentRequest,
     ) -> WhatsAppTurnInterpretation:
-        return classify_whatsapp_turn(
-            message=request.message,
-            state=request.state,
-            allowed_actions=request.allowed_actions,
-            available_options=request.available_options,
+        return run_semantic_classifier(
+            classifier_name="whatsapp_turn",
+            timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+            operation=lambda: classify_whatsapp_turn(
+                message=request.message,
+                state=request.state,
+                allowed_actions=request.allowed_actions,
+                available_options=request.available_options,
+            ),
         )
 
     async def start_request(self, request: AgentInvocationRequest) -> dict:

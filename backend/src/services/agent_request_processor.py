@@ -7,7 +7,11 @@ from typing import Any, Callable
 
 from src.agent_client.schemas import AgentInvocationRequest
 from src.agent.context import AgentRequestContext
-from src.agent.response_grounding import AssistantClaimAssessment, ground_agent_response
+from src.agent.response_grounding import (
+    AssistantClaimAssessment,
+    ground_agent_response,
+    ground_authoritative_tool_response,
+)
 from src.api.schemas import ChatResponse, ToolCallResult
 from src.services.customer_service import CustomerService
 
@@ -285,23 +289,30 @@ def build_response_builder(services_provider: Callable[[], Any]):
                 pass
         response_text = grounded or invocation.text
         if context.channel == "whatsapp":
-            assessment_payload = raw.get("claim_assessment")
-            assessment = (
-                AssistantClaimAssessment.model_validate(assessment_payload)
-                if assessment_payload is not None
-                else AssistantClaimAssessment(
-                    claims_transactional_progression=True,
-                    claimed_actions=["other_transactional_progression"],
-                )
-            )
-            response_text = ground_agent_response(
-                text=invocation.text,
+            authoritative = ground_authoritative_tool_response(
                 tool_calls=calls,
-                claim_assessment=assessment,
-                no_write_authorized=bool(raw.get("no_write_authorized", False)),
-                informational_turn=bool(raw.get("informational_turn", False)),
                 expected_write_tool=raw.get("expected_write_tool"),
-            ).text
+            )
+            if authoritative is not None:
+                response_text = authoritative.text
+            else:
+                assessment_payload = raw.get("claim_assessment")
+                assessment = (
+                    AssistantClaimAssessment.model_validate(assessment_payload)
+                    if assessment_payload is not None
+                    else AssistantClaimAssessment(
+                        claims_transactional_progression=True,
+                        claimed_actions=["other_transactional_progression"],
+                    )
+                )
+                response_text = ground_agent_response(
+                    text=invocation.text,
+                    tool_calls=calls,
+                    claim_assessment=assessment,
+                    no_write_authorized=bool(raw.get("no_write_authorized", False)),
+                    informational_turn=bool(raw.get("informational_turn", False)),
+                    expected_write_tool=raw.get("expected_write_tool"),
+                ).text
         return ChatResponse(
             text=response_text, session_id=context.agent_session_id,
             user_id=context.user_id, customer_id=context.customer_id,

@@ -8,6 +8,7 @@ from src.agent.response_grounding import (
     GroundedAssistantMemoryBuffer,
     UNGROUNDED_TRANSACTION_FALLBACK,
     assess_assistant_claims,
+    ground_authoritative_tool_response,
     ground_agent_response,
 )
 
@@ -110,6 +111,33 @@ def test_successful_write_uses_authoritative_progression_message():
     assert result.source == "successful_write"
 
 
+def test_authoritative_tool_fast_path_supports_current_state_reads():
+    result = ground_authoritative_tool_response(
+        tool_calls=[tool_call(
+            "get_active_cart",
+            user_message="Your cart is currently empty.",
+            data={"cart": None},
+        )],
+        expected_write_tool="start_cart_item_customization",
+    )
+
+    assert result is not None
+    assert result.text == "Your cart is currently empty."
+    assert result.source == "authoritative_read"
+    assert result.expected_transactional_action == "start_cart_item_customization"
+
+
+def test_authoritative_tool_fast_path_rejects_insufficient_read_evidence():
+    result = ground_authoritative_tool_response(
+        tool_calls=[tool_call(
+            "retrieve_restaurant_knowledge",
+            data={"documents": [{"title": "Policy"}]},
+        )],
+    )
+
+    assert result is None
+
+
 def test_failed_write_never_uses_model_success_prose():
     result = ground_agent_response(
         text="Your customization was saved successfully.",
@@ -136,6 +164,29 @@ def test_successful_required_write_consumes_pending_transition():
         expected_write_tool="start_cart_item_customization",
     )
 
+    assert result.text == "Which size would you like?"
+    assert result.source == "successful_write"
+    assert result.expected_transactional_action is None
+
+
+def test_successful_required_write_takes_priority_over_follow_up_read():
+    result = ground_authoritative_tool_response(
+        tool_calls=[
+            tool_call(
+                "start_cart_item_customization",
+                is_write=True,
+                user_message="Which size would you like?",
+            ),
+            tool_call(
+                "get_active_cart",
+                user_message="The cart is customizing an item.",
+                data={"cart": {"status": "customizing_item"}},
+            ),
+        ],
+        expected_write_tool="start_cart_item_customization",
+    )
+
+    assert result is not None
     assert result.text == "Which size would you like?"
     assert result.source == "successful_write"
     assert result.expected_transactional_action is None
@@ -298,7 +349,7 @@ def test_malformed_classifier_output_is_rejected():
         )
 
 
-def test_informational_menu_read_preserves_clarification_answer():
+def test_informational_menu_read_uses_authoritative_fast_path():
     text = "Cheese burst adds a cheese-filled layer to the crust."
     result = ground_agent_response(
         text=text,
@@ -314,8 +365,9 @@ def test_informational_menu_read_preserves_clarification_answer():
         informational_turn=True,
     )
 
-    assert result.text == text
-    assert result.source == "informational_read"
+    assert result.text.endswith("Which item would you like?")
+    assert "Menu Item" in result.text
+    assert result.source == "menu_search"
 
 
 def test_informational_read_does_not_erase_pending_transition():
@@ -335,8 +387,30 @@ def test_informational_read_does_not_erase_pending_transition():
         expected_write_tool="start_cart_item_customization",
     )
 
-    assert result.text == text
-    assert result.source == "informational_read"
+    assert result.text.endswith("Which item would you like?")
+    assert result.source == "menu_search"
+    assert result.expected_transactional_action == "start_cart_item_customization"
+
+
+def test_get_menu_item_fast_path_preserves_pending_transition():
+    result = ground_authoritative_tool_response(
+        tool_calls=[tool_call(
+            "get_menu_item",
+            data={
+                "item": {
+                    "product_id": "item-1",
+                    "name": "Menu Item",
+                    "description": "Authoritative description.",
+                    "price": 10,
+                }
+            },
+        )],
+        expected_write_tool="start_cart_item_customization",
+    )
+
+    assert result is not None
+    assert "Authoritative description." in result.text
+    assert result.source == "menu_item"
     assert result.expected_transactional_action == "start_cart_item_customization"
 
 
@@ -350,7 +424,7 @@ def test_informational_read_does_not_erase_pending_transition():
         ("How much is delivery?", "The current delivery fee policy is shown here.", "retrieve_restaurant_knowledge"),
     ],
 )
-def test_active_order_clarifications_do_not_advance_state(question, answer, tool_name):
+def test_active_order_authoritative_reads_do_not_advance_state(question, answer, tool_name):
     call = tool_call(
         tool_name,
         data=(
@@ -371,7 +445,12 @@ def test_active_order_clarifications_do_not_advance_state(question, answer, tool
     )
 
     assert question
-    assert result.text == answer
+    if tool_name == "retrieve_restaurant_knowledge":
+        assert result.text == answer
+    elif tool_name == "get_menu_item":
+        assert result.text == "Menu Item - 10"
+    else:
+        assert result.text.endswith("Which item would you like?")
     assert not any(getattr(current, "is_write", False) for current in [call])
 
 

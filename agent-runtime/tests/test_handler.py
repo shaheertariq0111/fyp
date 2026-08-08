@@ -1,4 +1,5 @@
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -100,6 +101,16 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
         "agent_result_text",
         lambda result: "Choose the item and size.",
     )
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: pytest.fail("authoritative search must bypass turn classification"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: pytest.fail("authoritative search must bypass claim classification"),
+    )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
     response = handler.invoke(runtime_payload(channel="whatsapp"))
@@ -111,6 +122,65 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
         "role": "assistant",
         "content": [{"text": response["text"]}],
     }
+    assert response["grounding_source"] == "menu_search"
+
+
+def test_whatsapp_get_menu_item_uses_authoritative_fast_path(monkeypatch):
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    raw = "The model added unsupported details."
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(
+        handler,
+        "invoke_restaurant_agent",
+        lambda message, **kwargs: SimpleNamespace(
+            message={"content": [{"text": raw}]},
+            tool_calls=[{
+                "tool_name": "get_menu_item",
+                "success": True,
+                "is_write": False,
+                "result": {
+                    "success": True,
+                    "data": {"item": {
+                        "product_id": "item-1",
+                        "name": "First Item",
+                        "description": "Authoritative description.",
+                        "price": 10,
+                    }},
+                },
+                "error_code": None,
+            }],
+        ),
+    )
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: raw)
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: pytest.fail("authoritative item read must bypass classification"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: pytest.fail("authoritative item read must bypass classification"),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        channel="whatsapp",
+        expected_write_tool="start_cart_item_customization",
+    ))
+
+    assert response["text"] == "First Item - 10\nAuthoritative description."
+    assert response["expected_write_tool"] == "start_cart_item_customization"
+    assert response["grounding_source"] == "menu_item"
+    assert raw not in str(FakeMemorySessionManager.created[0].history)
+    assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == response["text"]
 
 
 def test_transactional_customer_can_receive_conversational_continuation(monkeypatch):
@@ -371,6 +441,55 @@ def test_assistant_classifier_exception_fails_closed_before_memory_commit(monkey
     assert "selections are now locked" not in str(FakeMemorySessionManager.created[0].history)
 
 
+def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(monkeypatch):
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    raw = "Your selections are now locked in."
+
+    def fake_invoke(message, **kwargs):
+        agent = kwargs["agent"]
+        agent.session_manager.append_message(
+            {"role": "assistant", "content": [{"text": raw}]}, agent
+        )
+        return SimpleNamespace(message={"content": [{"text": raw}]}, tool_calls=[])
+
+    def slow_claim_classifier(**kwargs):
+        time.sleep(0.3)
+        return AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        )
+
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: raw)
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="general_chat", confidence=0.99,
+            informational_only=False, wants_to_order=False,
+        ),
+    )
+    monkeypatch.setattr(handler, "assess_assistant_claims", slow_claim_classifier)
+    monkeypatch.setattr(handler, "SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    started = time.perf_counter()
+    response = handler.invoke(runtime_payload(channel="whatsapp"))
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.15
+    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
+    assert response["grounding_source"] == "ungrounded_transaction_fallback"
+    assert raw not in str(FakeMemorySessionManager.created[0].history)
+    assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == (
+        UNGROUNDED_TRANSACTION_FALLBACK
+    )
+
+
 @pytest.mark.parametrize(
     ("success", "user_message"),
     [
@@ -403,6 +522,16 @@ def test_write_outcome_commits_only_authoritative_message(monkeypatch, success, 
     monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: pytest.fail("write evidence must bypass classification"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: pytest.fail("write evidence must bypass classification"),
+    )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
     response = handler.invoke(runtime_payload(channel="whatsapp"))
@@ -410,6 +539,56 @@ def test_write_outcome_commits_only_authoritative_message(monkeypatch, success, 
     assert response["text"] == user_message
     assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == user_message
     assert "every customization" not in str(FakeMemorySessionManager.created[0].history)
+    assert response["grounding_source"] == ("successful_write" if success else "failed_write")
+
+
+def test_authoritative_cart_read_bypasses_classifiers(monkeypatch):
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    raw = "The model invented a cart item."
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
+    monkeypatch.setattr(
+        handler,
+        "invoke_restaurant_agent",
+        lambda message, **kwargs: SimpleNamespace(
+            message={"content": [{"text": raw}]},
+            tool_calls=[{
+                "tool_name": "get_active_cart",
+                "success": True,
+                "is_write": False,
+                "result": {
+                    "success": True,
+                    "user_message": "Your cart is currently empty.",
+                    "data": {"cart": None},
+                },
+                "error_code": None,
+            }],
+        ),
+    )
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: raw)
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: pytest.fail("authoritative cart read must bypass classification"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: pytest.fail("authoritative cart read must bypass classification"),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        channel="whatsapp",
+        expected_write_tool="start_cart_item_customization",
+    ))
+
+    assert response["text"] == "Your cart is currently empty."
+    assert response["expected_write_tool"] == "start_cart_item_customization"
+    assert response["grounding_source"] == "authoritative_read"
+    assert raw not in str(FakeMemorySessionManager.created[0].history)
 
 
 def test_memory_commit_failure_leaves_no_raw_turn_for_next_invocation(monkeypatch):

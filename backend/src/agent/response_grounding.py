@@ -1,12 +1,102 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import json
+import logging
+import time
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Callable, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from strands import Agent
 from strands.hooks.events import AfterInvocationEvent, AgentInitializedEvent, MessageAddedEvent
+
+
+logger = logging.getLogger(__name__)
+
+SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS = 10.0
+_CLASSIFIER_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="semantic-classifier",
+)
+ClassifierResult = TypeVar("ClassifierResult")
+
+
+class SemanticClassifierTimeout(TimeoutError):
+    pass
+
+
+def run_semantic_classifier(
+    *,
+    classifier_name: str,
+    operation: Callable[[], ClassifierResult],
+    timeout_seconds: float = SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+) -> ClassifierResult:
+    started = time.perf_counter()
+    logger.info(
+        "Semantic classifier started",
+        extra={
+            "event": "semantic_classifier_started",
+            "classifier_name": classifier_name,
+            "classifier_timeout_seconds": timeout_seconds,
+        },
+    )
+    future = _CLASSIFIER_EXECUTOR.submit(operation)
+    try:
+        result = future.result(timeout=timeout_seconds)
+    except FutureTimeoutError as exc:
+        if future.done() and isinstance(future.exception(), FutureTimeoutError):
+            logger.exception(
+                "Semantic classifier failed",
+                extra={
+                    "event": "semantic_classifier_failed",
+                    "classifier_name": classifier_name,
+                    "response_time_ms": round(
+                        (time.perf_counter() - started) * 1000,
+                        2,
+                    ),
+                },
+            )
+            raise
+        future.cancel()
+        logger.warning(
+            "Semantic classifier timed out",
+            extra={
+                "event": "semantic_classifier_timed_out",
+                "classifier_name": classifier_name,
+                "classifier_timeout_seconds": timeout_seconds,
+                "response_time_ms": round(
+                    (time.perf_counter() - started) * 1000,
+                    2,
+                ),
+            },
+        )
+        raise SemanticClassifierTimeout(classifier_name) from exc
+    except Exception:
+        logger.exception(
+            "Semantic classifier failed",
+            extra={
+                "event": "semantic_classifier_failed",
+                "classifier_name": classifier_name,
+                "response_time_ms": round(
+                    (time.perf_counter() - started) * 1000,
+                    2,
+                ),
+            },
+        )
+        raise
+    logger.info(
+        "Semantic classifier completed",
+        extra={
+            "event": "semantic_classifier_completed",
+            "classifier_name": classifier_name,
+            "response_time_ms": round(
+                (time.perf_counter() - started) * 1000,
+                2,
+            ),
+        },
+    )
+    return result
 
 
 UNGROUNDED_TRANSACTION_FALLBACK = (
@@ -170,6 +260,64 @@ def assess_assistant_claims(
     )
 
 
+def ground_authoritative_tool_response(
+    *,
+    tool_calls: list[Any],
+    expected_write_tool: str | None = None,
+) -> GroundedAgentResponse | None:
+    """Ground a response when tool evidence is sufficient without model prose."""
+    for call in reversed(list(tool_calls or [])):
+        if not bool(_value(call, "is_write")):
+            continue
+        result = _result(call)
+        tool_name = _value(call, "tool_name")
+        user_message = _clean_text(result.get("user_message"))
+        if _call_succeeded(call):
+            return GroundedAgentResponse(
+                user_message or FAILED_TRANSACTION_FALLBACK,
+                "successful_write" if user_message else "write_without_grounding",
+                _next_action(result)
+                or (
+                    None
+                    if tool_name == expected_write_tool
+                    else expected_write_tool
+                ),
+            )
+        return GroundedAgentResponse(
+            user_message or FAILED_TRANSACTION_FALLBACK,
+            "failed_write",
+            expected_write_tool,
+        )
+    for call in reversed(list(tool_calls or [])):
+        result = _result(call)
+        tool_name = _value(call, "tool_name")
+        if tool_name == "search_menu" and _call_succeeded(call):
+            grounded = _search_menu_response(call)
+            if grounded:
+                return GroundedAgentResponse(
+                    grounded,
+                    "menu_search",
+                    expected_write_tool or "start_cart_item_customization",
+                )
+        if tool_name == "get_menu_item" and _call_succeeded(call):
+            grounded = _get_menu_item_response(call)
+            if grounded:
+                return GroundedAgentResponse(
+                    grounded,
+                    "menu_item",
+                    expected_write_tool,
+                )
+        if _call_succeeded(call) and _authoritative_domains(call):
+            user_message = _clean_text(result.get("user_message"))
+            if user_message:
+                return GroundedAgentResponse(
+                    user_message,
+                    "authoritative_read",
+                    expected_write_tool,
+                )
+    return None
+
+
 def ground_agent_response(
     *,
     text: str,
@@ -180,63 +328,12 @@ def ground_agent_response(
     expected_write_tool: str | None = None,
 ) -> GroundedAgentResponse:
     calls = list(tool_calls or [])
-
-    for call in reversed(calls):
-        if bool(_value(call, "is_write")):
-            result = _result(call)
-            user_message = _clean_text(result.get("user_message"))
-            if _call_succeeded(call):
-                return GroundedAgentResponse(
-                    user_message or FAILED_TRANSACTION_FALLBACK,
-                    "successful_write" if user_message else "write_without_grounding",
-                    _next_action(result)
-                    or (
-                        None
-                        if _value(call, "tool_name") == expected_write_tool
-                        else expected_write_tool
-                    ),
-                )
-            return GroundedAgentResponse(
-                user_message or FAILED_TRANSACTION_FALLBACK,
-                "failed_write",
-                expected_write_tool,
-            )
-        if _value(call, "tool_name") == "search_menu" and _call_succeeded(call):
-            if (
-                informational_turn
-                and no_write_authorized
-                and claim_assessment is not None
-                and not claim_assessment.claims_transactional_progression
-                and not claim_assessment.depends_on_authoritative_state
-            ):
-                return GroundedAgentResponse(
-                    text,
-                    "informational_read",
-                    expected_write_tool,
-                )
-            grounded = _search_menu_response(call)
-            if grounded:
-                return GroundedAgentResponse(
-                    grounded,
-                    "menu_search",
-                    "start_cart_item_customization",
-                )
-        if _value(call, "tool_name") == "get_menu_item" and _call_succeeded(call):
-            if (
-                informational_turn
-                and no_write_authorized
-                and claim_assessment is not None
-                and not claim_assessment.claims_transactional_progression
-                and not claim_assessment.depends_on_authoritative_state
-            ):
-                return GroundedAgentResponse(
-                    text,
-                    "informational_read",
-                    expected_write_tool,
-                )
-            grounded = _get_menu_item_response(call)
-            if grounded:
-                return GroundedAgentResponse(grounded, "menu_item")
+    authoritative = ground_authoritative_tool_response(
+        tool_calls=calls,
+        expected_write_tool=expected_write_tool,
+    )
+    if authoritative is not None:
+        return authoritative
     if (
         claim_assessment is None
         or claim_assessment.claims_transactional_progression
