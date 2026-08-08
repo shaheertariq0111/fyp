@@ -10,8 +10,12 @@ from src.agent.order_intent import classify_order_intent
 from src.agent.response_grounding import (
     AssistantClaimAssessment,
     GroundedAssistantMemoryBuffer,
+    SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+    SemanticClassifierTimeout,
     assess_assistant_claims,
+    ground_authoritative_tool_response,
     ground_agent_response,
+    run_semantic_classifier,
 )
 from src.agent.whatsapp_turn_intent import classify_whatsapp_turn
 from src.services.whatsapp_turn_policy_service import whatsapp_grounding_context
@@ -77,11 +81,15 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             raise ValueError(
                 "WhatsApp turn classification requires state and allowed_actions"
             )
-        turn_intent = classify_whatsapp_turn(
-            message=request.message,
-            state=request.state,
-            allowed_actions=request.allowed_actions,
-            available_options=request.available_options,
+        turn_intent = run_semantic_classifier(
+            classifier_name="whatsapp_turn",
+            timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+            operation=lambda: classify_whatsapp_turn(
+                message=request.message,
+                state=request.state,
+                allowed_actions=request.allowed_actions,
+                available_options=request.available_options,
+            ),
         )
         return RuntimeResponse(
             text="",
@@ -103,11 +111,15 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 "order_state": request.state,
             },
         )
-        intent = classify_order_intent(
-            message=request.message,
-            state=request.state,
-            allowed_actions=request.allowed_actions,
-            available_options=request.available_options,
+        intent = run_semantic_classifier(
+            classifier_name="order_intent",
+            timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+            operation=lambda: classify_order_intent(
+                message=request.message,
+                state=request.state,
+                allowed_actions=request.allowed_actions,
+                available_options=request.available_options,
+            ),
         )
         logger.info(
             "WhatsApp order intent classified",
@@ -188,9 +200,14 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 no_write_authorized = False
                 informational_turn = False
                 expected_write_tool = request.expected_write_tool
+                grounding_source = None
                 if request.channel == "whatsapp":
-                    has_write = any(call.is_write for call in tool_calls)
-                    if not has_write:
+                    grounded = ground_authoritative_tool_response(
+                        tool_calls=tool_calls,
+                        expected_write_tool=expected_write_tool,
+                    )
+                    authoritative_fast_path = grounded is not None
+                    if grounded is None:
                         no_write_authorized = expected_write_tool is None
                         allowed_actions = [
                             "menu_browse", "menu_search", "menu_item_detail",
@@ -199,12 +216,17 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                         ]
                         if expected_write_tool == "start_cart_item_customization":
                             allowed_actions.append("select_menu_item")
+                        classifier_timed_out = False
                         try:
-                            turn = classify_whatsapp_turn(
-                                message=request.message,
-                                state=("menu_selection" if expected_write_tool else "conversation"),
-                                allowed_actions=allowed_actions,
-                                available_options=request.available_options,
+                            turn = run_semantic_classifier(
+                                classifier_name="whatsapp_turn",
+                                timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+                                operation=lambda: classify_whatsapp_turn(
+                                    message=request.message,
+                                    state=("menu_selection" if expected_write_tool else "conversation"),
+                                    allowed_actions=allowed_actions,
+                                    available_options=request.available_options,
+                                ),
                             )
                             transition_requested, informational_turn = whatsapp_grounding_context(
                                 turn,
@@ -214,32 +236,49 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                             no_write_authorized = not (
                                 expected_write_tool and transition_requested
                             )
-                        except Exception:
-                            logger.exception(
-                                "WhatsApp customer turn classification could not add semantic context"
-                            )
-                        try:
-                            claim_assessment = assess_assistant_claims(
-                                customer_message=request.message,
-                                assistant_message=raw_text,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "WhatsApp assistant claim classification failed closed"
-                            )
+                        except SemanticClassifierTimeout:
+                            classifier_timed_out = True
                             claim_assessment = AssistantClaimAssessment(
                                 claims_transactional_progression=True,
                                 claimed_actions=["other_transactional_progression"],
                             )
-                    grounded = ground_agent_response(
-                        text=raw_text,
-                        tool_calls=tool_calls,
-                        claim_assessment=claim_assessment,
-                        no_write_authorized=no_write_authorized,
-                        informational_turn=informational_turn,
-                        expected_write_tool=expected_write_tool,
+                        except Exception:
+                            logger.exception(
+                                "WhatsApp customer turn classification could not add semantic context"
+                            )
+                        if not classifier_timed_out:
+                            try:
+                                claim_assessment = run_semantic_classifier(
+                                    classifier_name="assistant_claim",
+                                    timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+                                    operation=lambda: assess_assistant_claims(
+                                        customer_message=request.message,
+                                        assistant_message=raw_text,
+                                    ),
+                                )
+                            except Exception:
+                                claim_assessment = AssistantClaimAssessment(
+                                    claims_transactional_progression=True,
+                                    claimed_actions=["other_transactional_progression"],
+                                )
+                        grounded = ground_agent_response(
+                            text=raw_text,
+                            tool_calls=tool_calls,
+                            claim_assessment=claim_assessment,
+                            no_write_authorized=no_write_authorized,
+                            informational_turn=informational_turn,
+                            expected_write_tool=expected_write_tool,
+                        )
+                    logger.info(
+                        "WhatsApp response grounded",
+                        extra={
+                            "event": "whatsapp_grounding_completed",
+                            "authoritative_fast_path": authoritative_fast_path,
+                            "grounding_source": grounded.source,
+                        },
                     )
                     grounded_text = grounded.text
+                    grounding_source = grounded.source
                     expected_write_tool = grounded.expected_transactional_action
                 if memory_buffer is not None:
                     memory_buffer.commit(grounded_text, runtime_agent)
@@ -300,6 +339,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
         no_write_authorized=no_write_authorized,
         informational_turn=informational_turn,
         expected_write_tool=expected_write_tool,
+        grounding_source=grounding_source,
     )
     return response.model_dump(exclude_none=True)
 

@@ -46,3 +46,4 @@ class RuntimeResponse(BaseModel):
     no_write_authorized: bool | None = None
     informational_turn: bool | None = None
     expected_write_tool: str | None = None
+    grounding_source: str | None = None

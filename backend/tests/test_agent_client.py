@@ -7,6 +7,7 @@ import pytest
 
 from src.agent_client.agentcore import AgentCoreRuntimeClient
 from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
+from src.agent.response_grounding import AssistantClaimAssessment
 from src.agent.whatsapp_turn_intent import (
     WhatsAppTurnIntentRequest,
     WhatsAppTurnInterpretation,
@@ -139,6 +140,13 @@ def test_local_whatsapp_client_commits_grounded_message_without_raw_redaction(mo
             action="select_menu_item", confidence=0.99,
             informational_only=False, wants_to_order=True,
             selected_option="item-1",
+        ),
+    )
+    monkeypatch.setattr(
+        "src.agent_client.local.assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=True,
+            claimed_actions=["item_selected"],
         ),
     )
 
