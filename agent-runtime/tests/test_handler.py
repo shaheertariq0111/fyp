@@ -241,6 +241,97 @@ def test_transactional_customer_can_receive_conversational_continuation(monkeypa
     }
 
 
+@pytest.mark.parametrize(
+    ("customer_message", "authoritative_tool"),
+    [
+        ("I'd like to start a separate order now.", "get_order_status"),
+        (
+            "Leave that earlier purchase alone and help me buy something else.",
+            "get_active_cart",
+        ),
+        (
+            "Can we make another order independently of the one already submitted?",
+            "get_order_status",
+        ),
+    ],
+)
+def test_explicit_new_transaction_intent_is_not_hijacked_by_existing_orders(
+    monkeypatch,
+    customer_message,
+    authoritative_tool,
+):
+    model_reply = "Absolutely—what would you like for the new order?"
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def fake_invoke(message, **kwargs):
+        agent = kwargs["agent"]
+        agent.session_manager.append_message(
+            {"role": "assistant", "content": [{"text": model_reply}]},
+            agent,
+        )
+        return SimpleNamespace(
+            message={"content": [{"text": model_reply}]},
+            tool_calls=[{
+                "tool_name": authoritative_tool,
+                "success": True,
+                "is_write": False,
+                "result": {
+                    "success": True,
+                    "user_message": "Your existing order is being prepared.",
+                    "data": {
+                        "orders": [{
+                            "order_id": "ORD-EXISTING",
+                            "status": "submitted_to_restaurant",
+                        }]
+                    },
+                },
+                "error_code": None,
+            }],
+        )
+
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: model_reply)
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="transactional_change",
+            confidence=0.99,
+            informational_only=False,
+            wants_to_order=True,
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        message=customer_message,
+        channel="whatsapp",
+    ))
+
+    assert response["text"] == model_reply
+    assert response["tool_calls"][0]["tool_name"] == authoritative_tool
+    assert FakeMemorySessionManager.created[0].history[-1] == {
+        "role": "assistant",
+        "content": [{"text": model_reply}],
+    }
+
+
 def test_pending_write_survives_conversational_detour(monkeypatch):
     text = "Would you like a quick description before choosing?"
 

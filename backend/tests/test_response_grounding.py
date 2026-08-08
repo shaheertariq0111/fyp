@@ -528,3 +528,295 @@ def test_full_normal_order_write_sequence_remains_authoritatively_grounded():
     assert search.text.endswith("Which item would you like?")
     assert [result.text for result in grounded] == [message for _, message in sequence]
     assert all(result.source == "successful_write" for result in grounded)
+
+
+MAX_CUSTOMER_FACING_MENU_ITEMS = 5
+
+
+def test_broad_menu_browse_has_a_bounded_customer_facing_result_set():
+    items = [
+        {
+            "item_id": f"item-{index}",
+            "name": f"Menu Choice {index}",
+            "price": 10 + index,
+        }
+        for index in range(MAX_CUSTOMER_FACING_MENU_ITEMS + 3)
+    ]
+
+    result = ground_agent_response(
+        text="I found several options; here are a few good starting points.",
+        tool_calls=[tool_call("search_menu", data={"items": items})],
+    )
+
+    presented = [line for line in result.text.splitlines() if line[:1].isdigit()]
+    assert 0 < len(presented) <= MAX_CUSTOMER_FACING_MENU_ITEMS
+
+
+@pytest.mark.parametrize(
+    ("customer_message", "model_reply"),
+    [
+        ("Thanks for checking that.", "You're welcome!"),
+        ("Hello again.", "Hi! How can I help?"),
+        ("Could you clarify what you meant?", "Of course—what should I clarify?"),
+        ("How has your day been?", "It's going well, thank you!"),
+    ],
+)
+def test_ordinary_conversation_is_not_replaced_by_an_existing_order_read(
+    customer_message,
+    model_reply,
+):
+    result = ground_agent_response(
+        text=model_reply,
+        tool_calls=[tool_call(
+            "get_order_status",
+            user_message="You have an order being prepared.",
+            data={"orders": [{"order_id": "ORD-EXISTING", "status": "preparing"}]},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+        no_write_authorized=True,
+    )
+
+    assert customer_message
+    assert result.text == model_reply
+    assert result.source == "conversation"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "backend_message", "model_reply"),
+    [
+        (
+            "handle_cart_upsell",
+            "The add-on was added.",
+            "Nice choice. Would you like anything else?",
+        ),
+        (
+            "create_pending_order_from_cart",
+            "The order is ready for fulfillment details.",
+            "Great—would you prefer delivery or takeaway?",
+        ),
+    ],
+)
+def test_generic_success_evidence_does_not_require_canned_backend_presentation(
+    tool_name,
+    backend_message,
+    model_reply,
+):
+    result = ground_agent_response(
+        text=model_reply,
+        tool_calls=[tool_call(
+            tool_name,
+            is_write=True,
+            user_message=backend_message,
+            data={"cart": {"status": "ready"}},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
+
+    assert result.text == model_reply
+
+
+def test_menu_item_evidence_allows_a_natural_grounded_continuation():
+    model_reply = (
+        "The Garden Flatbread is 14 and includes roasted vegetables. "
+        "Would you like to customize it?"
+    )
+    result = ground_agent_response(
+        text=model_reply,
+        tool_calls=[tool_call(
+            "get_menu_item",
+            data={
+                "item": {
+                    "item_id": "item-1",
+                    "name": "Garden Flatbread",
+                    "description": "Includes roasted vegetables.",
+                    "price": 14,
+                }
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+        ),
+        no_write_authorized=True,
+    )
+
+    assert result.text == model_reply
+    assert "14" in result.text
+
+
+@pytest.mark.parametrize(
+    ("model_claim", "claimed_action"),
+    [
+        ("I added that item to your cart.", "item_added"),
+        ("Checkout is now started.", "checkout_started"),
+        ("Your order was submitted successfully.", "order_submitted"),
+    ],
+)
+def test_unsupported_transactional_progression_fails_closed(
+    model_claim,
+    claimed_action,
+):
+    result = ground_agent_response(
+        text=model_claim,
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=True,
+            claimed_actions=[claimed_action],
+        ),
+        no_write_authorized=True,
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.source == "ungrounded_transaction_fallback"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "backend_message", "data"),
+    [
+        (
+            "choose_takeaway",
+            "Total: PKR 2,450. Please confirm.",
+            {"order": {"order_id": "ORD-AUTH", "total": 2450, "status": "pending_confirmation"}},
+        ),
+        (
+            "confirm_order",
+            "Order ORD-AUTH was submitted. Total: PKR 2,450.",
+            {"order": {"order_id": "ORD-AUTH", "total": 2450, "status": "submitted_to_restaurant"}},
+        ),
+    ],
+)
+def test_critical_transaction_artifacts_remain_authoritative(
+    tool_name,
+    backend_message,
+    data,
+):
+    result = ground_agent_response(
+        text="Order ORD-FABRICATED is complete for PKR 1.",
+        tool_calls=[tool_call(
+            tool_name,
+            is_write=True,
+            user_message=backend_message,
+            data=data,
+        )],
+    )
+
+    assert result.text == backend_message
+    assert "ORD-FABRICATED" not in result.text
+    assert data["order"]["status"] in {
+        "pending_confirmation",
+        "submitted_to_restaurant",
+    }
+
+
+def test_conversation_continuity_preserves_natural_and_authoritative_boundaries():
+    prior_status = ground_agent_response(
+        text="The model invented a status.",
+        tool_calls=[tool_call(
+            "get_order_status",
+            user_message="Order ORD-PRIOR has been submitted.",
+            data={"order": {"order_id": "ORD-PRIOR", "status": "submitted_to_restaurant"}},
+        )],
+    )
+    acknowledgement = ground_agent_response(
+        text="You're welcome!",
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+        no_write_authorized=True,
+    )
+    menu_browse = ground_agent_response(
+        text="Here are a few current choices.",
+        tool_calls=[tool_call(
+            "search_menu",
+            data={"items": [
+                {"item_id": f"choice-{index}", "name": f"Choice {index}", "price": index + 10}
+                for index in range(MAX_CUSTOMER_FACING_MENU_ITEMS + 2)
+            ]},
+        )],
+    )
+    item_selection = ground_agent_response(
+        text="Choice 0 is 10. Shall we customize it?",
+        tool_calls=[tool_call(
+            "get_menu_item",
+            data={"item": {"item_id": "choice-0", "name": "Choice 0", "price": 10}},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+        ),
+        no_write_authorized=True,
+    )
+    customization = ground_agent_response(
+        text="The model must not rewrite exact options.",
+        tool_calls=[tool_call(
+            "start_cart_item_customization",
+            is_write=True,
+            user_message="Choose one size:\n1. Small — PKR 10\n2. Large — PKR 15",
+            data={"cart": {"status": "customizing_item"}},
+        )],
+    )
+    upsell = ground_agent_response(
+        text="The model must not rewrite this priced upsell.",
+        tool_calls=[tool_call(
+            "handle_cart_upsell",
+            is_write=True,
+            user_message="Would you like a side for PKR 4?",
+            data={"cart": {"status": "awaiting_upsell_decision"}},
+        )],
+    )
+    checkout = ground_agent_response(
+        text="All set—delivery or takeaway?",
+        tool_calls=[tool_call(
+            "create_pending_order_from_cart",
+            is_write=True,
+            user_message="The order is ready for fulfillment details.",
+            data={"order": {"order_id": "ORD-NEW", "status": "awaiting_fulfillment_method"}},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
+    fulfillment = ground_agent_response(
+        text="The model invented a different total.",
+        tool_calls=[tool_call(
+            "choose_takeaway",
+            is_write=True,
+            user_message="Order ORD-NEW total: PKR 14. Please confirm.",
+            data={"order": {"order_id": "ORD-NEW", "total": 14, "status": "pending_confirmation"}},
+        )],
+    )
+    submission = ground_agent_response(
+        text="The model invented a different order ID.",
+        tool_calls=[tool_call(
+            "confirm_order",
+            is_write=True,
+            user_message="Order ORD-NEW was submitted. Total: PKR 14.",
+            data={"order": {"order_id": "ORD-NEW", "total": 14, "status": "submitted_to_restaurant"}},
+        )],
+    )
+
+    presented_menu_lines = [
+        line for line in menu_browse.text.splitlines() if line[:1].isdigit()
+    ]
+    assert prior_status.text == "Order ORD-PRIOR has been submitted."
+    assert acknowledgement.text == "You're welcome!"
+    assert len(presented_menu_lines) <= MAX_CUSTOMER_FACING_MENU_ITEMS
+    assert item_selection.text == "Choice 0 is 10. Shall we customize it?"
+    assert customization.text == "Choose one size:\n1. Small — PKR 10\n2. Large — PKR 15"
+    assert upsell.text == "Would you like a side for PKR 4?"
+    assert checkout.text == "All set—delivery or takeaway?"
+    assert fulfillment.text == "Order ORD-NEW total: PKR 14. Please confirm."
+    assert submission.text == "Order ORD-NEW was submitted. Total: PKR 14."
