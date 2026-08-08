@@ -6,14 +6,29 @@ from types import SimpleNamespace
 import pytest
 
 from src.services.whatsapp_conversation_service import (
+    UNGROUNDED_ORDER_SUBMISSION_ERROR_CODE,
+    UNGROUNDED_ORDER_SUBMISSION_FALLBACK,
     PreparedWhatsAppConversation,
     WhatsAppConversationReply,
     WhatsAppConversationService,
+    authoritative_order_submission_from_response,
     submitted_order_id_from_response,
 )
 
 
 ORDER_ID = "ORD-STRUCTURED-123"
+SUBMISSION_CONFIRMATION = (
+    "Your order has been confirmed and sent to the restaurant.\n"
+    "\n"
+    f"Order ID: {ORDER_ID}\n"
+    "Status: Submitted to restaurant\n"
+    "\n"
+    "Please keep this Order ID for tracking."
+)
+STATUS_MESSAGE = (
+    f"Order ID: {ORDER_ID}\n"
+    "Status: Submitted to restaurant"
+)
 
 
 def tool_call(
@@ -23,14 +38,54 @@ def tool_call(
     status="submitted_to_restaurant",
     order_id=ORDER_ID,
     is_write=True,
+    result_success=None,
+    include_agent=True,
+    agent_order_id=None,
+    confirmation_text=None,
 ):
+    nested_success = success if result_success is None else result_success
+    result = {
+        "success": nested_success,
+        "data": {"status": status, "order_id": order_id},
+    }
+    if include_agent:
+        result["agent"] = {
+            "submitted_order_id": (
+                order_id if agent_order_id is None else agent_order_id
+            ),
+            "submission_confirmation": (
+                SUBMISSION_CONFIRMATION
+                if confirmation_text is None
+                else confirmation_text
+            ),
+        }
     return {
         "tool_name": tool_name,
         "success": success,
         "is_write": is_write,
+        "result": result,
+        "error_code": None,
+    }
+
+
+def order_status_tool_call(*, message=STATUS_MESSAGE):
+    return {
+        "tool_name": "get_order_status",
+        "success": True,
+        "is_write": False,
         "result": {
-            "success": success,
-            "data": {"status": status, "order_id": order_id},
+            "success": True,
+            "data": {
+                "order": {
+                    "order_id": ORDER_ID,
+                    "status": "submitted_to_restaurant",
+                }
+            },
+            "user_message": message,
+            "agent": {
+                "selected_order_id": ORDER_ID,
+                "status_message": message,
+            },
         },
         "error_code": None,
     }
@@ -71,7 +126,15 @@ class ForbiddenProvider:
         raise AssertionError("submission extraction must not access services")
 
 
-def conversation_result(persisted_response, *, outcome="completed"):
+class RecordingLogger:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, message, *, extra):
+        self.warnings.append((message, extra))
+
+
+def conversation_result(persisted_response, *, outcome="completed", logger=None):
     record = {
         "request_id": "request-safe",
         "status": "completed",
@@ -83,6 +146,7 @@ def conversation_result(persisted_response, *, outcome="completed"):
         processor=processor,
         identity_builder=lambda _message: ("customer-safe", "session-safe"),
         gateway_provider=ForbiddenProvider(),
+        logger=logger,
     )
     prepared = PreparedWhatsAppConversation(
         inbound=SimpleNamespace(),
@@ -92,18 +156,90 @@ def conversation_result(persisted_response, *, outcome="completed"):
 
 
 @pytest.mark.parametrize("name", ["confirm_order", "update_order_flow"])
-def test_authoritative_submission_tools_return_structured_order_id(name):
-    reply, _ = conversation_result(response(tool_call(name)))
+def test_authoritative_submission_tools_replace_model_text_with_backend_confirmation(
+    name,
+):
+    reply, _ = conversation_result(response(
+        tool_call(name),
+        text=(
+            "Great! Order ID: ORD-FABRICATED, total Rs 9999, paid by card. "
+            "Your order has been submitted."
+        ),
+    ))
     assert reply.submitted_order_id == ORDER_ID
+    assert reply.reply == SUBMISSION_CONFIRMATION
+    assert "ORD-FABRICATED" not in reply.reply
+    assert "9999" not in reply.reply
 
 
 def test_repricing_pending_confirmation_is_not_submission():
-    reply, _ = conversation_result(response(tool_call(status="pending_confirmation")))
+    reply, _ = conversation_result(response(
+        tool_call(status="pending_confirmation"),
+        text="Your order has been successfully submitted.",
+    ))
     assert reply.submitted_order_id is None
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
 
 
 def test_failed_confirm_order_is_not_submission():
-    reply, _ = conversation_result(response(tool_call(success=False)))
+    reply, _ = conversation_result(response(
+        tool_call(success=False),
+        text="Your order was successfully submitted.",
+    ))
+    assert reply.submitted_order_id is None
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
+
+
+def test_nested_failed_result_is_not_submission():
+    reply, _ = conversation_result(response(
+        tool_call(success=True, result_success=False),
+        text="Your order has been placed.",
+    ))
+    assert reply.submitted_order_id is None
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
+
+
+def test_production_incident_claim_is_blocked_and_safely_logged():
+    fabricated_text = (
+        "Your order has been successfully submitted!\n"
+        "Order ID: ORD-123456789"
+    )
+    logger = RecordingLogger()
+    reply, _ = conversation_result(
+        response(text=fabricated_text, tool_calls=[]),
+        logger=logger,
+    )
+
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
+    assert reply.submitted_order_id is None
+    assert fabricated_text not in reply.reply
+    assert logger.warnings == [(
+        "Ungrounded order submission claim blocked",
+        {
+            "event": "ungrounded_order_submission_claim_blocked",
+            "error_code": UNGROUNDED_ORDER_SUBMISSION_ERROR_CODE,
+            "channel": "whatsapp",
+            "request_id": "request-safe",
+            "agent_session_id": "session-safe",
+        },
+    )]
+    logged = repr(logger.warnings)
+    assert "ORD-123456789" not in logged
+    assert fabricated_text not in logged
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Order successfully submitted.",
+        "Your order is now placed.",
+        "Your order was submitted successfully.",
+        "We have confirmed your order.",
+    ],
+)
+def test_equivalent_clear_submission_success_claims_are_blocked(text):
+    reply, _ = conversation_result(response(text=text, tool_calls=[]))
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
     assert reply.submitted_order_id is None
 
 
@@ -164,7 +300,37 @@ def test_noncausal_text_read_tools_and_projected_state_are_not_trusted(
     ],
 )
 def test_malformed_or_noncanonical_tool_results_are_ignored(call):
-    assert submitted_order_id_from_response(response(call)) is None
+    persisted = response(
+        call,
+        text="Your order has been successfully submitted.",
+    )
+    reply, _ = conversation_result(persisted)
+
+    assert submitted_order_id_from_response(persisted) is None
+    assert reply.submitted_order_id is None
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        tool_call(include_agent=False),
+        tool_call(confirmation_text=""),
+        tool_call(confirmation_text="   "),
+        tool_call(confirmation_text=" confirmation "),
+        tool_call(agent_order_id="ORD-DIFFERENT"),
+        tool_call(agent_order_id=""),
+    ],
+)
+def test_missing_or_conflicting_authoritative_agent_evidence_fails_closed(call):
+    reply, _ = conversation_result(response(
+        call,
+        text="Your order is confirmed and sent to the restaurant.",
+    ))
+
+    assert authoritative_order_submission_from_response(response(call)) is None
+    assert reply.submitted_order_id is None
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
 
 
 @pytest.mark.parametrize(
@@ -183,12 +349,49 @@ def test_duplicate_proof_for_same_order_returns_that_order():
     assert submitted_order_id_from_response(persisted) == ORDER_ID
 
 
+def test_duplicate_proof_for_same_order_requires_matching_confirmation():
+    persisted = response(
+        tool_call("confirm_order"),
+        tool_call(
+            "update_order_flow",
+            confirmation_text="A conflicting backend confirmation",
+        ),
+        text="Your order has been successfully submitted.",
+    )
+    reply, _ = conversation_result(persisted)
+
+    assert submitted_order_id_from_response(persisted) is None
+    assert reply.submitted_order_id is None
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
+
+
 def test_distinct_submitted_order_proofs_are_ambiguous():
     persisted = response(
         tool_call(order_id="ORD-FIRST"),
         tool_call("update_order_flow", order_id="ORD-SECOND"),
     )
     assert submitted_order_id_from_response(persisted) is None
+
+
+def test_distinct_submitted_order_proofs_block_submission_claim():
+    persisted = response(
+        tool_call(
+            order_id="ORD-FIRST",
+            agent_order_id="ORD-FIRST",
+            confirmation_text="First trusted confirmation",
+        ),
+        tool_call(
+            "update_order_flow",
+            order_id="ORD-SECOND",
+            agent_order_id="ORD-SECOND",
+            confirmation_text="Second trusted confirmation",
+        ),
+        text="Your order has been placed.",
+    )
+    reply, _ = conversation_result(persisted)
+
+    assert reply.submitted_order_id is None
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
 
 
 def test_extraction_does_not_mutate_persisted_response():
@@ -203,8 +406,57 @@ def test_completed_resumed_request_recovers_signal_without_other_services():
     reply, processor = conversation_result(persisted, outcome="completed")
 
     assert reply.submitted_order_id == ORDER_ID
+    assert reply.reply == SUBMISSION_CONFIRMATION
     assert reply.resumed is True
     assert len(processor.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Should I confirm this order?",
+        "Please confirm your order.",
+        "Would you like me to submit the order?",
+        "Your order is ready for confirmation.",
+    ],
+)
+def test_confirmation_prompts_are_not_blocked(text):
+    reply, _ = conversation_result(response(text=text, tool_calls=[]))
+    assert reply.reply == text
+    assert reply.submitted_order_id is None
+
+
+def test_authoritative_existing_submitted_order_status_is_allowed_as_read():
+    persisted = response(
+        order_status_tool_call(),
+        text=STATUS_MESSAGE,
+    )
+    reply, _ = conversation_result(persisted)
+
+    assert reply.reply == STATUS_MESSAGE
+    assert reply.submitted_order_id is None
+
+
+@pytest.mark.parametrize(
+    "persisted",
+    [
+        response(text=STATUS_MESSAGE, tool_calls=[]),
+        response(
+            order_status_tool_call(),
+            text=(
+                f"Your order {ORDER_ID} has been submitted to the restaurant."
+            ),
+        ),
+        response(
+            order_status_tool_call(message="Different authoritative status"),
+            text=STATUS_MESSAGE,
+        ),
+    ],
+)
+def test_fabricated_or_paraphrased_submitted_status_is_not_trusted(persisted):
+    reply, _ = conversation_result(persisted)
+    assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
+    assert reply.submitted_order_id is None
 
 
 def test_reply_constructor_remains_backward_compatible():
