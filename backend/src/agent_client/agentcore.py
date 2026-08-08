@@ -180,7 +180,7 @@ class AgentCoreRuntimeClient:
 
     @staticmethod
     def _payload(request: AgentInvocationRequest) -> dict[str, Any]:
-        return {
+        payload = {
             "message": request.message,
             "user_id": request.user_id,
             "agent_session_id": request.agent_session_id,
@@ -191,6 +191,11 @@ class AgentCoreRuntimeClient:
             "customer_phone": request.customer_phone,
             "channel": request.channel,
         }
+        if request.expected_write_tool:
+            payload["expected_write_tool"] = request.expected_write_tool
+        if request.available_options:
+            payload["available_options"] = request.available_options
+        return payload
 
     @staticmethod
     def _read_response(response: dict[str, Any]) -> dict[str, Any]:

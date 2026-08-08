@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from src.agent_client.schemas import AgentInvocationRequest
 from src.agent.context import AgentRequestContext
+from src.agent.response_grounding import AssistantClaimAssessment, ground_agent_response
 from src.api.schemas import ChatResponse, ToolCallResult
 from src.services.customer_service import CustomerService
 
@@ -86,12 +87,15 @@ class AgentRequestProcessor:
         })
         try:
             started = time.perf_counter()
+            grounding_state = self._whatsapp_grounding_state(context)
             invocation = self.agent_client_provider().invoke(AgentInvocationRequest(
                 message=payload.message, user_id=context.user_id,
                 agent_session_id=context.agent_session_id, request_id=record["request_id"],
                 branch_id=payload.branch_id, customer_id=context.customer_id,
                 customer_name=context.customer_name, customer_phone=context.customer_phone,
                 channel=context.channel,
+                expected_write_tool=grounding_state.get("expected_write_tool"),
+                available_options=grounding_state.get("available_options"),
             ))
             self.logger.info("Agent runtime invocation completed", extra={
                 "event": "agentcore_invocation_completed", "http_request_id": http_request_id,
@@ -99,6 +103,11 @@ class AgentRequestProcessor:
                 "response_time_ms": round((time.perf_counter() - started) * 1000, 2),
             })
             response = self.response_builder(context, identity_state, invocation).model_dump(exclude_none=True)
+            self._persist_whatsapp_grounding_state(
+                context,
+                invocation,
+                prior_expected_write_tool=grounding_state.get("expected_write_tool"),
+            )
             record = requests.complete(record["request_id"], response)
             self.logger.info(
                 "Agent request processing completed",
@@ -122,6 +131,76 @@ class AgentRequestProcessor:
                 return AgentProcessingResult(requests.get(record["request_id"]) or record, context, identity_state, "ambiguous")
             record = requests.fail(record["request_id"], error_code="AGENT_INVOCATION_FAILED", message="The request could not be completed.")
             return AgentProcessingResult(record, context, identity_state, "failed")
+
+    def _whatsapp_grounding_state(self, context) -> dict[str, Any]:
+        if context.channel != "whatsapp":
+            return {}
+        state = self.services_provider().agent_sessions.get_whatsapp_order_state(
+            context.customer_id or context.user_id,
+            context.agent_session_id,
+        )
+        items = state.get("offered_menu_items") if isinstance(state, dict) else None
+        if not isinstance(items, list) or not items:
+            return {}
+        options = [
+            {"id": str(item["product_id"]), "label": str(item.get("name") or item["product_id"])}
+            for item in items
+            if isinstance(item, dict) and item.get("product_id")
+        ]
+        return {
+            "expected_write_tool": "start_cart_item_customization",
+            "available_options": options,
+        } if options else {}
+
+    def _persist_whatsapp_grounding_state(
+        self,
+        context,
+        invocation,
+        *,
+        prior_expected_write_tool: str | None = None,
+    ) -> None:
+        if context.channel != "whatsapp":
+            return
+        raw = invocation.raw_result
+        calls = raw.get("tool_calls", []) if isinstance(raw, dict) else getattr(raw, "tool_calls", [])
+        expected_write_tool = (
+            raw.get("expected_write_tool")
+            if isinstance(raw, dict)
+            else getattr(raw, "expected_write_tool", None)
+        )
+        sessions = self.services_provider().agent_sessions
+        for call in reversed(list(calls or [])):
+            tool_name = call.get("tool_name") if isinstance(call, dict) else getattr(call, "tool_name", None)
+            success = call.get("success") if isinstance(call, dict) else getattr(call, "success", False)
+            result = call.get("result") if isinstance(call, dict) else getattr(call, "result", None)
+            if not success or not isinstance(result, dict) or result.get("success") is not True:
+                continue
+            if tool_name == "start_cart_item_customization":
+                sessions.clear_whatsapp_order_state(
+                    context.customer_id or context.user_id,
+                    context.agent_session_id,
+                )
+                return
+            if tool_name == "search_menu":
+                data = result.get("data")
+                items = data.get("items") if isinstance(data, dict) else None
+                offered = [
+                    item for item in items or []
+                    if isinstance(item, dict) and item.get("product_id")
+                ]
+                if (
+                    offered
+                    and prior_expected_write_tool is None
+                    and expected_write_tool == "start_cart_item_customization"
+                ):
+                    sessions.save_whatsapp_order_state(
+                        context.customer_id or context.user_id,
+                        context.agent_session_id,
+                        offered_menu_items=offered,
+                        shown_menu_item_ids=[str(item["product_id"]) for item in offered],
+                        menu_has_more=bool(data.get("has_more")),
+                    )
+                return
 
 
 def build_identity_resolver(services_provider: Callable[[], Any]):
@@ -204,8 +283,26 @@ def build_response_builder(services_provider: Callable[[], Any]):
                 state["orders"] = services.orders.get_order_status(context.user_id).model_dump(exclude_none=True).get("data", {}).get("orders", [])
             except Exception:
                 pass
+        response_text = grounded or invocation.text
+        if context.channel == "whatsapp":
+            assessment_payload = raw.get("claim_assessment")
+            assessment = (
+                AssistantClaimAssessment.model_validate(assessment_payload)
+                if assessment_payload is not None
+                else AssistantClaimAssessment(
+                    claims_transactional_progression=True,
+                    claimed_actions=["other_transactional_progression"],
+                )
+            )
+            response_text = ground_agent_response(
+                text=invocation.text,
+                tool_calls=calls,
+                claim_assessment=assessment,
+                no_write_authorized=bool(raw.get("no_write_authorized", False)),
+                informational_turn=bool(raw.get("informational_turn", False)),
+            ).text
         return ChatResponse(
-            text=grounded or invocation.text, session_id=context.agent_session_id,
+            text=response_text, session_id=context.agent_session_id,
             user_id=context.user_id, customer_id=context.customer_id,
             customer=identity_state["customer"], data=state, tool_calls=calls,
             write_succeeded=write_succeeded, state=state, buttons=buttons,

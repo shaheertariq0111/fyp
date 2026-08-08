@@ -263,10 +263,21 @@ class IdentityServices:
         self.orders = SimpleNamespace(
             get_order_status=lambda user_id: ToolResponse.ok(data={"orders": []}, user_message="orders")
         )
-        self.agent_sessions = SimpleNamespace(resolve=self.resolve)
+        self.whatsapp_order_state = {}
+        self.agent_sessions = SimpleNamespace(
+            resolve=self.resolve,
+            get_whatsapp_order_state=lambda customer_id, session_id: self.whatsapp_order_state,
+            save_whatsapp_order_state=self.save_whatsapp_order_state,
+            clear_whatsapp_order_state=lambda customer_id, session_id: self.whatsapp_order_state.clear(),
+        )
         self.agent_requests = MemoryAgentRequestService()
         self.conversation_history = MemoryConversationHistoryService()
         self.whatsapp_receipt_activation = None
+
+    def save_whatsapp_order_state(self, customer_id, session_id, **kwargs):
+        self.whatsapp_order_state = {
+            "offered_menu_items": kwargs["offered_menu_items"],
+        }
 
     def resolve(self, **kwargs):
         return {
@@ -737,6 +748,19 @@ def client():
 
 
 def stub_agent_client(monkeypatch, raw_result, text: str | None = None, captured: dict | None = None):
+    default_assessment = {
+        "claims_transactional_progression": False,
+        "claimed_actions": [],
+    }
+    if isinstance(raw_result, dict):
+        raw_result.setdefault("claim_assessment", default_assessment)
+        raw_result.setdefault("no_write_authorized", True)
+    else:
+        if not hasattr(raw_result, "claim_assessment"):
+            setattr(raw_result, "claim_assessment", default_assessment)
+        if not hasattr(raw_result, "no_write_authorized"):
+            setattr(raw_result, "no_write_authorized", True)
+
     class FakeAgentRuntimeClient:
         def invoke(self, request):
             if captured is not None:
@@ -1379,7 +1403,13 @@ def test_agentflo_whatsapp_retries_cached_reply_without_reprocessing(monkeypatch
             invocations.append(request)
             return AgentInvocationResult(
                 text="Cached authoritative reply.",
-                raw_result=SimpleNamespace(),
+                raw_result=SimpleNamespace(
+                    claim_assessment={
+                        "claims_transactional_progression": False,
+                        "claimed_actions": [],
+                    },
+                    no_write_authorized=True,
+                ),
             )
 
     monkeypatch.setattr(main, "get_services", lambda: services)
@@ -3045,7 +3075,13 @@ def test_chat_preserves_non_menu_waiting_text(monkeypatch):
     model_text = "Let me check that for you. Please give me a moment."
     stub_agent_client(
         monkeypatch,
-        SimpleNamespace(tool_calls=[]),
+        SimpleNamespace(
+            tool_calls=[],
+            claim_assessment={
+                "claims_transactional_progression": False,
+                "claimed_actions": [],
+            },
+        ),
         text=model_text,
     )
 
@@ -3113,11 +3149,17 @@ def test_agentflo_whatsapp_cancel_phrase_uses_main_agent_not_order_coordinator(m
     assert captured["channel"] == "whatsapp"
 
 
-def test_chat_preserves_order_confirmation_text_without_backend_order_result(monkeypatch):
+def test_chat_blocks_order_confirmation_text_without_backend_order_result(monkeypatch):
     model_text = "Your order is confirmed and will be delivered."
     stub_agent_client(
         monkeypatch,
-        SimpleNamespace(tool_calls=[]),
+        SimpleNamespace(
+            tool_calls=[],
+            claim_assessment={
+                "claims_transactional_progression": True,
+                "claimed_actions": ["order_submitted"],
+            },
+        ),
         text=model_text,
     )
 
@@ -3136,17 +3178,26 @@ def test_chat_preserves_order_confirmation_text_without_backend_order_result(mon
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == model_text
+    assert completed["text"] == (
+        "I couldn't verify that change, so I haven't treated it as completed. "
+        "Please tell me what you'd like to do next, or ask me to check the current cart."
+    )
 
 
-def test_chat_preserves_llm_generated_whatsapp_cart_summary_without_backend_result(monkeypatch):
+def test_chat_blocks_llm_generated_whatsapp_cart_summary_without_backend_result(monkeypatch):
     model_text = (
         "Order summary: one large pepperoni pizza with extra cheese. "
         "Total: PKR 2,900. Reply confirm to place it."
     )
     stub_agent_client(
         monkeypatch,
-        SimpleNamespace(tool_calls=[]),
+        SimpleNamespace(
+            tool_calls=[],
+            claim_assessment={
+                "claims_transactional_progression": True,
+                "claimed_actions": ["cart_progressed"],
+            },
+        ),
         text=model_text,
     )
 
@@ -3165,7 +3216,10 @@ def test_chat_preserves_llm_generated_whatsapp_cart_summary_without_backend_resu
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == model_text
+    assert completed["text"] == (
+        "I couldn't verify that change, so I haven't treated it as completed. "
+        "Please tell me what you'd like to do next, or ask me to check the current cart."
+    )
 
 
 def test_whatsapp_support_intent_uses_main_agent_not_support_coordinator(monkeypatch):
@@ -3219,7 +3273,13 @@ def test_chat_preserves_whatsapp_ticket_text_without_backend_result(monkeypatch)
     model_text = "I've logged your complaint and opened a support ticket."
     stub_agent_client(
         monkeypatch,
-        SimpleNamespace(tool_calls=[]),
+        SimpleNamespace(
+            tool_calls=[],
+            claim_assessment={
+                "claims_transactional_progression": False,
+                "claimed_actions": [],
+            },
+        ),
         text=model_text,
     )
 
@@ -3241,11 +3301,17 @@ def test_chat_preserves_whatsapp_ticket_text_without_backend_result(monkeypatch)
     assert completed["text"] == model_text
 
 
-def test_chat_preserves_whatsapp_transaction_text_without_backend_result(monkeypatch):
+def test_chat_blocks_whatsapp_transaction_text_without_backend_result(monkeypatch):
     model_text = "I've added the invented pizza to your cart."
     stub_agent_client(
         monkeypatch,
-        SimpleNamespace(tool_calls=[]),
+        SimpleNamespace(
+            tool_calls=[],
+            claim_assessment={
+                "claims_transactional_progression": True,
+                "claimed_actions": ["item_added"],
+            },
+        ),
         text=model_text,
     )
 
@@ -3264,7 +3330,33 @@ def test_chat_preserves_whatsapp_transaction_text_without_backend_result(monkeyp
         submitted.json()["request_id"],
     )
 
-    assert completed["text"] == model_text
+    assert completed["text"] == (
+        "I couldn't verify that change, so I haven't treated it as completed. "
+        "Please tell me what you'd like to do next, or ask me to check the current cart."
+    )
+
+
+def test_old_runtime_missing_grounding_metadata_fails_closed():
+    context = AgentRequestContext(
+        user_id="user", agent_session_id="session",
+        customer_id="user", channel="whatsapp",
+    )
+    response = main._chat_response_from_invocation(
+        context,
+        {
+            "customer": {"customer_id": "user", "phone_verified": True},
+            "session": {"session_id": "session", "channel": "whatsapp"},
+        },
+        AgentInvocationResult(
+            text="Everything is locked in and checkout is ready.",
+            raw_result={"tool_calls": []},
+        ),
+    )
+
+    assert response.text == (
+        "I couldn't verify that change, so I haven't treated it as completed. "
+        "Please tell me what you'd like to do next, or ask me to check the current cart."
+    )
 
 
 def test_chat_preserves_authoritative_submitted_order_cancel_protection():
@@ -3282,6 +3374,11 @@ def test_chat_preserves_authoritative_submitted_order_cancel_protection():
     invocation = AgentInvocationResult(
         text=text,
         raw_result={
+            "claim_assessment": {
+                "claims_transactional_progression": False,
+                "claimed_actions": [],
+            },
+            "no_write_authorized": True,
             "tool_calls": [{
                 "tool_name": "discard_active_cart",
                 "success": True,
@@ -3455,6 +3552,8 @@ def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
         "customer_phone": None,
         "channel": "web",
         "request_id": "req-1",
+        "expected_write_tool": None,
+        "available_options": None,
     }
 
 

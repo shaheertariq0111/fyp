@@ -18,6 +18,7 @@ WhatsAppTurnAction = Literal[
     "answer_customization_step",
     "checkout",
     "cancel_cart",
+    "transactional_change",
     "order_status",
     "support_ticket",
     "general_chat",
@@ -60,6 +61,11 @@ produces every factual response.
 selected_option may contain only an ID supplied in available_options. If the
 message is ambiguous, unrelated to the allowed actions, or confidence is low,
 return clarify with confidence below 0.85.
+
+transactional_change means a clear request to mutate restaurant state that is
+not represented by a more specific allowed action, such as changing fulfillment,
+an address, quantity, an existing selection, or cancelling an order. It grants
+no mutation authority and never identifies a successful change.
 """.strip()
 
 

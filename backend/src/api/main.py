@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
 from src.agent.dependencies import get_services
+from src.agent.response_grounding import AssistantClaimAssessment, ground_agent_response
 from src.agent_client import get_agent_runtime_client
 from src.api.schemas import (
     ActionRequest,
@@ -681,7 +682,37 @@ def _chat_response_from_invocation(
     if write_succeeded:
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
-    response_text = _menu_grounded_response_from_tool_calls(tool_calls) or invocation.text
+    if context.channel == "whatsapp":
+        assessment_payload = (
+            result.get("claim_assessment")
+            if isinstance(result, dict)
+            else getattr(result, "claim_assessment", None)
+        )
+        assessment = (
+            AssistantClaimAssessment.model_validate(assessment_payload)
+            if assessment_payload is not None
+            else AssistantClaimAssessment(
+                claims_transactional_progression=True,
+                claimed_actions=["other_transactional_progression"],
+            )
+        )
+        response_text = ground_agent_response(
+            text=invocation.text,
+            tool_calls=tool_calls,
+            claim_assessment=assessment,
+            no_write_authorized=(
+                result.get("no_write_authorized", False)
+                if isinstance(result, dict)
+                else getattr(result, "no_write_authorized", False)
+            ),
+            informational_turn=(
+                result.get("informational_turn", False)
+                if isinstance(result, dict)
+                else getattr(result, "informational_turn", False)
+            ),
+        ).text
+    else:
+        response_text = _menu_grounded_response_from_tool_calls(tool_calls) or invocation.text
     return ChatResponse(
         text=response_text,
         session_id=context.agent_session_id,

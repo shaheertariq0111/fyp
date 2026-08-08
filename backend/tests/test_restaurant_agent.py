@@ -156,7 +156,10 @@ def test_system_prompt_requires_tool_grounding():
     assert "Ask only for the backend-required next input" in normalized_prompt
     assert "Never refuse to collect a delivery address" in normalized_prompt
     assert "hello I would like to order a pepperoni pizza" in normalized_prompt
-    assert "choose the item and size" in normalized_prompt
+    assert "ask the customer to choose the item" in normalized_prompt
+    assert "The selection identifies only the product" in normalized_prompt
+    assert "Do not ask for or infer size, crust" in normalized_prompt
+    assert "every subsequent customization question" in normalized_prompt
     assert "MENU GROUNDING" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert (
         "For any customer question about menu items, prices, sizes, availability,"
