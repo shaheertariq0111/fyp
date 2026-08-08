@@ -206,11 +206,16 @@ def build_whatsapp_identity(inbound: WhatsAppInboundMessage, services_provider: 
     identity_hash = hashlib.sha256(("|".join(identity_parts) or str(uuid.uuid4())).encode()).hexdigest()[:32]
     customer_id = session_id = f"whatsapp-{identity_hash}"
     if normalized_phone is not None or inbound.customer_name is not None:
-        services_provider().customers.update_profile(
+        profile_result = services_provider().customers.update_profile(
             customer_id, whatsapp_profile_name=inbound.customer_name,
             phone_number=normalized_phone, channel="whatsapp", phone_verified=normalized_phone is not None,
             name_source="whatsapp_profile",
         )
+        if profile_result.success:
+            profile = profile_result.data.get("customer") or {}
+            actual_customer_id = profile.get("customer_id")
+            if isinstance(actual_customer_id, str) and actual_customer_id:
+                customer_id = actual_customer_id
     return customer_id, session_id
 
 

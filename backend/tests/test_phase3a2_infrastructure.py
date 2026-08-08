@@ -711,7 +711,7 @@ def test_voice_worker_application_data_iam_is_complete_and_exactly_scoped():
             },
         ),
         "ResolveAndPersistAgentSessions": (
-            {"dynamodb:PutItem", "dynamodb:Scan"},
+            {"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Scan"},
             VOICE_WORKER_TABLE_ARNS["agent_sessions"],
         ),
         "RefreshCartResponseState": (

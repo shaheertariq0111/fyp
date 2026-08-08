@@ -12,8 +12,11 @@ from src.services.whatsapp_conversation_service import (
     WhatsAppConversationReply,
     WhatsAppConversationService,
     authoritative_order_submission_from_response,
+    build_whatsapp_identity,
     submitted_order_id_from_response,
 )
+from src.models.tool_responses import ToolResponse
+from src.api.whatsapp import WhatsAppInboundMessage
 
 
 ORDER_ID = "ORD-STRUCTURED-123"
@@ -29,6 +32,65 @@ STATUS_MESSAGE = (
     f"Order ID: {ORDER_ID}\n"
     "Status: Submitted to restaurant"
 )
+
+
+class IdentityCustomers:
+    def __init__(self, canonical_customer_id):
+        self.canonical_customer_id = canonical_customer_id
+
+    def update_profile(self, customer_id, **_kwargs):
+        return ToolResponse.ok(
+            data={"customer": {"customer_id": self.canonical_customer_id}},
+            user_message="saved",
+        )
+
+
+def identity_inbound():
+    return WhatsAppInboundMessage(
+        text="hello",
+        customer_number="+15550123456",
+        customer_name="Customer",
+        sender_id="sender-safe",
+        message_id="message-safe",
+    )
+
+
+def test_shared_whatsapp_identity_uses_canonical_customer_and_stable_session():
+    services = SimpleNamespace(customers=IdentityCustomers("cust-canonical"))
+
+    customer_id, session_id = build_whatsapp_identity(
+        identity_inbound(), lambda: services
+    )
+
+    assert customer_id == "cust-canonical"
+    assert session_id.startswith("whatsapp-")
+    assert len(session_id) == len("whatsapp-") + 32
+
+
+def test_shared_whatsapp_identity_keeps_synthetic_customer_for_new_phone():
+    services = SimpleNamespace(customers=IdentityCustomers(None))
+    services.customers.update_profile = lambda customer_id, **_kwargs: ToolResponse.ok(
+        data={"customer": {"customer_id": customer_id}},
+        user_message="saved",
+    )
+
+    customer_id, session_id = build_whatsapp_identity(
+        identity_inbound(), lambda: services
+    )
+
+    assert customer_id == session_id
+    assert customer_id.startswith("whatsapp-")
+
+
+def test_text_and_shared_whatsapp_identity_use_same_resolution(monkeypatch):
+    from src.api import main
+
+    services = SimpleNamespace(customers=IdentityCustomers("cust-canonical"))
+    monkeypatch.setattr(main, "get_services", lambda: services)
+
+    assert main._whatsapp_identity(identity_inbound()) == build_whatsapp_identity(
+        identity_inbound(), lambda: services
+    )
 
 
 def tool_call(

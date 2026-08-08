@@ -64,8 +64,11 @@ from src.services.agent_request_processor import AgentRequestProcessor
 from src.repositories.whatsapp_voice_job_repository import WhatsAppVoiceJobRepository
 from src.services.voice_queue_service import VoiceQueueService
 from src.services.whatsapp_voice_job_service import WhatsAppVoiceJobService
-from src.services.whatsapp_conversation_service import WhatsAppConversationService
-from src.services.whatsapp_conversation_service import WhatsAppDeliveryOutcome
+from src.services.whatsapp_conversation_service import (
+    WhatsAppConversationService,
+    WhatsAppDeliveryOutcome,
+    build_whatsapp_identity,
+)
 from src.services.customer_service import CustomerService
 from src.services.ticket_service import (
     AdminTicketError,
@@ -1336,39 +1339,7 @@ def _process_chat_request(
 def _whatsapp_identity(
     inbound: WhatsAppInboundMessage,
 ) -> tuple[str, str]:
-    normalized_phone = (
-        CustomerService.normalize_phone(inbound.customer_number)
-        if inbound.customer_number is not None
-        else None
-    )
-    identity_parts = (
-        [normalized_phone]
-        if normalized_phone is not None
-        else [
-            part
-            for part in (inbound.sender_id, inbound.message_id)
-            if part is not None
-        ]
-    )
-    identity_seed = "|".join(identity_parts) or str(uuid.uuid4())
-    identity_hash = hashlib.sha256(identity_seed.encode()).hexdigest()[:32]
-    customer_id = f"whatsapp-{identity_hash}"
-    session_id = f"whatsapp-{identity_hash}"
-
-    if normalized_phone is not None or inbound.customer_name is not None:
-        profile_result = get_services().customers.update_profile(
-            customer_id,
-            whatsapp_profile_name=inbound.customer_name,
-            phone_number=normalized_phone,
-            channel="whatsapp",
-            phone_verified=normalized_phone is not None,
-        )
-        if profile_result.success:
-            profile = profile_result.data.get("customer") or {}
-            actual_customer_id = profile.get("customer_id")
-            if isinstance(actual_customer_id, str) and actual_customer_id:
-                customer_id = actual_customer_id
-    return customer_id, session_id
+    return build_whatsapp_identity(inbound, get_services)
 
 
 def _agentflo_failure_response() -> dict[str, Any]:

@@ -90,8 +90,26 @@ class AgentRequestProcessor:
             "actor_id": context.user_id, "channel": context.channel,
         })
         try:
-            started = time.perf_counter()
             grounding_state = self._whatsapp_grounding_state(context)
+        except Exception as exc:
+            self.logger.error("Agent pre-invocation state load failed", extra={
+                "event": "agent_pre_invocation_state_failed",
+                "http_request_id": http_request_id,
+                "request_id": record["request_id"],
+                "channel": context.channel,
+                "error_code": "AGENT_SESSION_STATE_LOAD_FAILED",
+                "exception_type": type(exc).__name__,
+            })
+            record = requests.fail(
+                record["request_id"],
+                error_code="AGENT_SESSION_STATE_LOAD_FAILED",
+                message="The request could not be completed.",
+            )
+            return AgentProcessingResult(
+                record, context, identity_state, "failed"
+            )
+        try:
+            started = time.perf_counter()
             invocation = self.agent_client_provider().invoke(AgentInvocationRequest(
                 message=payload.message, user_id=context.user_id,
                 agent_session_id=context.agent_session_id, request_id=record["request_id"],

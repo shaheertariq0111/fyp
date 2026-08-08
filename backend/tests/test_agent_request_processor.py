@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from botocore.exceptions import ClientError
+
 from src.services.agent_request_processor import (
     AgentRequestProcessor,
     PreparedAgentRequest,
@@ -50,6 +52,62 @@ def test_completed_request_returns_persisted_structured_response_without_agentco
     assert result.outcome == "completed"
     assert result.record is record
     assert result.record["response"] is response
+
+
+def test_pre_invocation_session_state_failure_is_not_logged_as_agentcore_failure(
+    caplog,
+):
+    class Requests:
+        def claim_invocation(self, _request_id):
+            return True
+
+        def fail(self, request_id, **_kwargs):
+            return {"request_id": request_id, "status": "failed"}
+
+    class Sessions:
+        def get_whatsapp_order_state(self, *_args):
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "private"}},
+                "GetItem",
+            )
+
+    requests = Requests()
+    processor = AgentRequestProcessor(
+        services_provider=lambda: SimpleNamespace(
+            agent_requests=requests,
+            agent_sessions=Sessions(),
+        ),
+        agent_client_provider=ForbiddenCall(),
+        identity_resolver=ForbiddenCall(),
+        response_builder=ForbiddenCall(),
+    )
+    prepared = PreparedAgentRequest(
+        payload=SimpleNamespace(message="safe", branch_id=None),
+        record={"request_id": "request-safe", "status": "processing"},
+        context=SimpleNamespace(
+            channel="whatsapp",
+            user_id="customer-safe",
+            customer_id="customer-safe",
+            agent_session_id="session-safe",
+            customer_name=None,
+            customer_phone=None,
+        ),
+        identity_state={},
+    )
+
+    with caplog.at_level("ERROR"):
+        result = processor.invoke_prepared(prepared)
+
+    assert result.outcome == "failed"
+    assert any(
+        getattr(record, "event", None) == "agent_pre_invocation_state_failed"
+        for record in caplog.records
+    )
+    assert not any(
+        getattr(record, "event", None) == "agentcore_invocation_failed"
+        for record in caplog.records
+    )
+    assert "private" not in caplog.text
 
 
 def test_search_results_persist_expected_item_selection_write_and_options():

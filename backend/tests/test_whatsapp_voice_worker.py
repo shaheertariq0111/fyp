@@ -15,8 +15,11 @@ from src.services.whatsapp_voice_service import WhatsAppVoiceService
 from src.services.whatsapp_conversation_service import (
     UNGROUNDED_ORDER_SUBMISSION_FALLBACK,
     WhatsAppConversationReply,
+    WhatsAppConversationService,
     WhatsAppDeliveryOutcome,
+    build_whatsapp_identity,
 )
+from src.models.tool_responses import ToolResponse
 from src.services.whatsapp_voice_reply_service import VoiceReplyOutcome
 from src.services.whatsapp_voice_receipt_activation_service import (
     WhatsAppVoiceReceiptActivationResult,
@@ -189,6 +192,98 @@ def test_worker_legacy_job_without_audio_id_fails_terminally():
 
     assert error.value.error_code == "AGENTFLO_MEDIA_AUDIO_ID_REQUIRED"
     assert error.value.retryable is False
+
+
+def test_voice_transcription_prepares_and_invokes_with_canonical_identity():
+    canonical_customer_id = "cust-canonical"
+    session_id = "whatsapp-7e6421960eef56e5a4717dd8c7ead542"
+
+    class Customers:
+        def update_profile(self, customer_id, **_kwargs):
+            assert customer_id == session_id
+            return ToolResponse.ok(
+                data={"customer": {"customer_id": canonical_customer_id}},
+                user_message="saved",
+            )
+
+    class History:
+        def store_inbound_whatsapp_message(self, **_kwargs):
+            return None
+
+        def store_outbound_whatsapp_message(self, **_kwargs):
+            return None
+
+    class Processor:
+        def __init__(self):
+            self.prepared = None
+            self.invoked = False
+
+        def prepare(self, payload, **_kwargs):
+            assert payload.customer_id == canonical_customer_id
+            assert payload.session_id == session_id
+            self.prepared = SimpleNamespace(
+                record={"request_id": "request-safe"},
+                context=SimpleNamespace(
+                    customer_id=canonical_customer_id,
+                    agent_session_id=session_id,
+                ),
+            )
+            return self.prepared
+
+        def invoke_prepared(self, prepared, **_kwargs):
+            assert prepared is self.prepared
+            self.invoked = True
+            return SimpleNamespace(
+                record={
+                    "request_id": "request-safe",
+                    "status": "completed",
+                    "response": {"text": "canonical voice reply", "tool_calls": []},
+                },
+                context=prepared.context,
+                outcome="completed",
+            )
+
+    services = SimpleNamespace(
+        customers=Customers(),
+        conversation_history=History(),
+        agent_requests=SimpleNamespace(get=lambda _request_id: None),
+    )
+    processor = Processor()
+    conversations = WhatsAppConversationService(
+        services_provider=lambda: services,
+        processor=processor,
+        identity_builder=lambda inbound: build_whatsapp_identity(
+            inbound, lambda: services
+        ),
+        gateway_provider=lambda: SimpleNamespace(configured=False),
+    )
+    jobs = RecordingTransitions()
+    worker = WhatsAppVoiceWorker(
+        settings=SimpleNamespace(
+            receipt_activation_enabled=False,
+            whatsapp_voice_reply_enabled=False,
+        ),
+        jobs=jobs,
+        queue=SimpleNamespace(),
+        voice=SimpleNamespace(transcribe=lambda _audio: "hello"),
+        conversations=conversations,
+    )
+    record = {
+        "job_id": voice_job_id("canonical-identity"),
+        "state": "queued",
+        "version": 1,
+        "customer_number": "+15550123456",
+        "sender_id": "sender-safe",
+        "audio_id": "audio-safe",
+    }
+
+    assert worker._process(record, OwnedHeartbeat()) is True
+    assert processor.invoked is True
+    transcribed = next(
+        kwargs for state, kwargs in jobs.calls if state == "transcribed"
+    )
+    assert transcribed["values"]["customer_id"] == canonical_customer_id
+    assert transcribed["values"]["session_id"] == session_id
 
 
 def test_job_scoped_aws_access_denied_is_logged_and_does_not_escape(caplog):

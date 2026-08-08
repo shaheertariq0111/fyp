@@ -1045,6 +1045,7 @@ Resources:
           - Sid: ResolveAndPersistAgentSessions
             Effect: Allow
             Action:
+              - dynamodb:GetItem
               - dynamodb:PutItem
               - dynamodb:Scan
             Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AgentSessionsTableName}

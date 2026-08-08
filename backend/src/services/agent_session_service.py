@@ -50,7 +50,14 @@ class AgentSessionService:
         force_new: bool = False,
         allow_requested_session_creation: bool = False,
     ) -> dict:
-        existing = None if force_new or not requested_session_id else self.repository.get(requested_session_id)
+        if force_new or not requested_session_id:
+            existing = None
+        elif customer_id:
+            existing = self.repository.get_owned(customer_id, requested_session_id)
+        else:
+            # Identity-less legacy callers still need to recover the owning
+            # customer from the session record.
+            existing = self.repository.get(requested_session_id)
         effective_customer_id = customer_id or (existing or {}).get("customer_id")
         customer = self.customers.ensure_customer(effective_customer_id, channel)
         now = self._now()
