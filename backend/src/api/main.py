@@ -27,11 +27,7 @@ from pydantic import ValidationError
 from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
 from src.agent.dependencies import get_services
-from src.agent.response_grounding import (
-    AssistantClaimAssessment,
-    ground_agent_response,
-    ground_classifier_unavailable_response,
-)
+from src.agent.response_grounding import AssistantClaimAssessment, ground_agent_response
 from src.agent_client import get_agent_runtime_client
 from src.api.schemas import (
     ActionRequest,
@@ -690,42 +686,44 @@ def _chat_response_from_invocation(
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
     if context.channel == "whatsapp":
-        def result_value(key, default=None):
-            return (
-                result.get(key, default)
+        assessment_payload = (
+            result.get("claim_assessment")
+            if isinstance(result, dict)
+            else getattr(result, "claim_assessment", None)
+        )
+        assessment = (
+            AssistantClaimAssessment.model_validate(assessment_payload)
+            if assessment_payload is not None
+            else AssistantClaimAssessment(
+                claims_transactional_progression=True,
+                claimed_actions=["other_transactional_progression"],
+            )
+        )
+        response_text = ground_agent_response(
+            text=invocation.text,
+            tool_calls=tool_calls,
+            claim_assessment=assessment,
+            no_write_authorized=(
+                result.get("no_write_authorized", False)
                 if isinstance(result, dict)
-                else getattr(result, key, default)
-            )
-        expected_write_tool = result_value("expected_write_tool")
-        required_effect = result_value("required_effect")
-        available_options = result_value("available_options")
-        assessment_payload = result_value("claim_assessment")
-        if result_value("semantic_classifier_available") is False:
-            response_text = ground_classifier_unavailable_response(
-                tool_calls=tool_calls,
-                expected_write_tool=expected_write_tool,
-                required_effect=required_effect,
-                available_options=available_options,
-            ).text
-        else:
-            assessment = (
-                AssistantClaimAssessment.model_validate(assessment_payload)
-                if assessment_payload is not None
-                else AssistantClaimAssessment(
-                    claims_transactional_progression=True,
-                    claimed_actions=["other_transactional_progression"],
-                )
-            )
-            response_text = ground_agent_response(
-                text=invocation.text,
-                tool_calls=tool_calls,
-                claim_assessment=assessment,
-                no_write_authorized=bool(result_value("no_write_authorized", False)),
-                informational_turn=bool(result_value("informational_turn", False)),
-                expected_write_tool=expected_write_tool,
-                required_effect=required_effect,
-                available_options=available_options,
-            ).text
+                else getattr(result, "no_write_authorized", False)
+            ),
+            informational_turn=(
+                result.get("informational_turn", False)
+                if isinstance(result, dict)
+                else getattr(result, "informational_turn", False)
+            ),
+            expected_write_tool=(
+                result.get("expected_write_tool")
+                if isinstance(result, dict)
+                else getattr(result, "expected_write_tool", None)
+            ),
+            required_effect=(
+                result.get("required_effect")
+                if isinstance(result, dict)
+                else getattr(result, "required_effect", None)
+            ),
+        ).text
     else:
         response_text = _menu_grounded_response_from_tool_calls(tool_calls) or invocation.text
     return ChatResponse(

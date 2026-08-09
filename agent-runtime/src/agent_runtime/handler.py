@@ -8,12 +8,12 @@ from typing import Any
 
 from src.agent.order_intent import classify_order_intent
 from src.agent.response_grounding import (
+    AssistantClaimAssessment,
     GroundedAssistantMemoryBuffer,
     SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
     assess_assistant_claims,
     ground_authoritative_tool_response,
     ground_agent_response,
-    ground_classifier_unavailable_response,
     tool_evidence_payload,
     run_semantic_classifier,
 )
@@ -198,7 +198,6 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 ]
                 raw_text = agent_result_text(result)
                 claim_assessment = None
-                semantic_classifier_available = None
                 grounded_text = raw_text
                 no_write_authorized = False
                 informational_turn = False
@@ -231,39 +230,27 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                                     available_options=request.available_options,
                                 ),
                             )
-                        except Exception as exc:
-                            semantic_classifier_available = False
-                            logger.warning(
-                                "Semantic classifier unavailable for grounding",
-                                extra={
-                                    "event": "semantic_classifier_unavailable",
-                                    "classifier_name": "grounding_assessment",
-                                    "exception_type": type(exc).__name__,
-                                },
+                        except Exception:
+                            claim_assessment = AssistantClaimAssessment(
+                                claims_transactional_progression=True,
+                                claimed_actions=["other_transactional_progression"],
+                                customer_requests_required_effect=bool(required_effect),
                             )
-                            grounded = ground_classifier_unavailable_response(
-                                tool_calls=tool_calls,
-                                expected_write_tool=expected_write_tool,
-                                required_effect=required_effect,
-                                available_options=request.available_options,
-                            )
-                        else:
-                            semantic_classifier_available = True
-                            no_write_authorized = not (
-                                required_effect
-                                and claim_assessment.customer_requests_required_effect
-                            )
-                            informational_turn = claim_assessment.informational_turn
-                            grounded = ground_agent_response(
-                                text=raw_text,
-                                tool_calls=tool_calls,
-                                claim_assessment=claim_assessment,
-                                no_write_authorized=no_write_authorized,
-                                informational_turn=informational_turn,
-                                expected_write_tool=expected_write_tool,
-                                required_effect=required_effect,
-                                available_options=request.available_options,
-                            )
+                        no_write_authorized = not (
+                            required_effect
+                            and claim_assessment.customer_requests_required_effect
+                        )
+                        informational_turn = claim_assessment.informational_turn
+                        grounded = ground_agent_response(
+                            text=raw_text,
+                            tool_calls=tool_calls,
+                            claim_assessment=claim_assessment,
+                            no_write_authorized=no_write_authorized,
+                            informational_turn=informational_turn,
+                            expected_write_tool=expected_write_tool,
+                            required_effect=required_effect,
+                            available_options=request.available_options,
+                        )
                     logger.info(
                         "WhatsApp response grounded",
                         extra={
@@ -347,7 +334,6 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             if request.channel == "whatsapp" and request.available_options
             else None
         ),
-        semantic_classifier_available=semantic_classifier_available,
         grounding_source=grounding_source,
     )
     return response.model_dump(exclude_none=True)
