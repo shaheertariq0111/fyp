@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import re
 
-from src.models.tool_responses import GroundingEvidence, ToolResponse
+from src.models.tool_responses import (
+    GroundingEvidence,
+    ToolResponse,
+    TransactionalTarget,
+)
 from src.repositories.cart_repository import CartVersionConflictError
 
 
@@ -56,6 +60,11 @@ class CartService:
         if not menu_item.get("available"):
             return ToolResponse.error(error_code="ITEM_UNAVAILABLE",
                                       user_message="That item is currently unavailable.")
+        selected_item_target = TransactionalTarget(
+            effect="item_selected",
+            entity_type="menu_item",
+            entity_id=item_id,
+        )
         groups = self._groups(menu_item)
         now = self._now()
         cart_id = self._id("CART")
@@ -106,6 +115,7 @@ class CartService:
                 grounding=GroundingEvidence(
                     authoritative_domains=["cart"],
                     transactional_effects=["item_selected"],
+                    transactional_targets=[selected_item_target],
                     exact_customer_text=(
                         "Should these items use the same customization or be "
                         "customized separately?"
@@ -123,8 +133,13 @@ class CartService:
                                    grounding=GroundingEvidence(
                                        authoritative_domains=["cart"],
                                        transactional_effects=["item_selected"],
+                                       transactional_targets=[selected_item_target],
                                    ))
-        return self._next_choice_response(cart, effects=["item_selected"])
+        return self._next_choice_response(
+            cart,
+            effects=["item_selected"],
+            targets=[selected_item_target],
+        )
 
     def set_customization_mode(
         self, user_id: str, cart_id: str, mode: str
@@ -867,7 +882,7 @@ class CartService:
             grounding=GroundingEvidence(authoritative_domains=["cart"]),
         )
 
-    def _next_choice_response(self, cart, effects=None):
+    def _next_choice_response(self, cart, effects=None, targets=None):
         item = next(
             entry for entry in cart["items"]
             if entry["cart_item_id"] == cart["active_cart_item_id"]
@@ -900,6 +915,7 @@ class CartService:
             grounding=GroundingEvidence(
                 authoritative_domains=["cart", "menu"],
                 transactional_effects=effects or [],
+                transactional_targets=targets or [],
                 exact_customer_text=active_choice["choice_prompt"],
             ),
         )

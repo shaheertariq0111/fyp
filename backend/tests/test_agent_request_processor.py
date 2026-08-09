@@ -5,7 +5,9 @@ from botocore.exceptions import ClientError
 from src.services.agent_request_processor import (
     AgentRequestProcessor,
     PreparedAgentRequest,
+    build_response_builder,
 )
+from src.agent.response_grounding import UNGROUNDED_TRANSACTION_FALLBACK
 
 
 class ForbiddenCall:
@@ -366,6 +368,98 @@ def test_successful_expected_write_clears_persisted_menu_selection_state():
     )
 
     assert sessions.state == {}
+
+
+def test_rejected_authoritative_target_preserves_persisted_requirement():
+    class Sessions:
+        state = {
+            "offered_menu_items": [{"product_id": "item-1", "name": "First"}],
+            "whatsapp_required_effect": "item_selected",
+        }
+
+        def clear_whatsapp_order_state(self, customer_id, session_id):
+            self.state = {}
+
+    sessions = Sessions()
+    processor = AgentRequestProcessor(
+        services_provider=lambda: SimpleNamespace(agent_sessions=sessions),
+        agent_client_provider=ForbiddenCall(),
+        identity_resolver=ForbiddenCall(),
+        response_builder=ForbiddenCall(),
+    )
+    processor._persist_whatsapp_grounding_state(
+        SimpleNamespace(
+            channel="whatsapp", customer_id="customer-1",
+            user_id="user-1", agent_session_id="session-1",
+        ),
+        SimpleNamespace(raw_result={
+            "required_effect": "item_selected",
+            "tool_calls": [{
+                "tool_name": "any_selection_capability",
+                "success": True,
+                "result": {
+                    "success": True,
+                    "grounding": {
+                        "transactional_effects": ["item_selected"],
+                        "transactional_targets": [{
+                            "effect": "item_selected",
+                            "entity_type": "menu_item",
+                            "entity_id": "item-99",
+                        }],
+                    },
+                },
+            }],
+        }),
+        prior_required_effect="item_selected",
+    )
+
+    assert sessions.state["whatsapp_required_effect"] == "item_selected"
+
+
+def test_response_builder_does_not_reauthorize_rejected_exact_target():
+    services = SimpleNamespace(
+        carts=SimpleNamespace(get_active_cart=ForbiddenCall()),
+        orders=SimpleNamespace(get_order_status=ForbiddenCall()),
+    )
+    response = build_response_builder(lambda: services)(
+        SimpleNamespace(
+            channel="whatsapp",
+            user_id="customer-1",
+            customer_id="customer-1",
+            agent_session_id="session-1",
+        ),
+        {"customer": {}},
+        SimpleNamespace(
+            text=UNGROUNDED_TRANSACTION_FALLBACK,
+            raw_result={
+                "grounding_source": "ungrounded_transaction_fallback",
+                "required_effect": "item_selected",
+                "available_options": [
+                    {"id": "item-1", "label": "First Item"},
+                    {"id": "item-2", "label": "Second Item"},
+                ],
+                "tool_calls": [{
+                    "tool_name": "any_selection_capability",
+                    "success": True,
+                    "is_write": True,
+                    "result": {
+                        "success": True,
+                        "grounding": {
+                            "transactional_effects": ["item_selected"],
+                            "transactional_targets": [{
+                                "effect": "item_selected",
+                                "entity_type": "menu_item",
+                                "entity_id": "item-99",
+                            }],
+                            "exact_customer_text": "Choose a size.",
+                        },
+                    },
+                }],
+            },
+        ),
+    )
+
+    assert response.text == UNGROUNDED_TRANSACTION_FALLBACK
 
 
 def test_informational_search_does_not_replace_pending_item_choices():

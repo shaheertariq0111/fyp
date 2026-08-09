@@ -263,6 +263,82 @@ def test_natural_tool_response_uses_one_post_agent_semantic_call(
     assert len(semantic_calls) == 1
 
 
+@pytest.mark.parametrize("classifier_selected_option", [None, "item-2"])
+def test_authoritative_selection_target_wins_over_classifier_speculation(
+    monkeypatch,
+    classifier_selected_option,
+):
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    raw = "Great choice. Which size would you like?"
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(
+        handler,
+        "invoke_restaurant_agent",
+        lambda message, **kwargs: SimpleNamespace(
+            message={"content": [{"text": raw}]},
+            tool_calls=[{
+                "tool_name": "any_selection_capability",
+                "success": True,
+                "is_write": True,
+                "result": {
+                    "success": True,
+                    "data": {"cart": {"status": "customizing_item"}},
+                    "user_message": "Choose a size.",
+                    "grounding": {
+                        "authoritative_domains": ["cart"],
+                        "transactional_effects": ["item_selected"],
+                        "transactional_targets": [{
+                            "effect": "item_selected",
+                            "entity_type": "menu_item",
+                            "entity_id": "item-1",
+                        }],
+                    },
+                },
+                "error_code": None,
+            }],
+        ),
+    )
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: raw)
+    semantic_calls = []
+
+    def assess(**kwargs):
+        semantic_calls.append(kwargs)
+        return AssistantClaimAssessment(
+            claims_transactional_progression=True,
+            claimed_actions=["item_selected"],
+            customer_requests_required_effect=True,
+            selected_option=classifier_selected_option,
+        )
+
+    monkeypatch.setattr(handler, "assess_assistant_claims", assess)
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        channel="whatsapp",
+        required_effect="item_selected",
+        available_options=[
+            {"id": "item-1", "label": "First Item"},
+            {"id": "item-2", "label": "Second Item"},
+        ],
+    ))
+
+    assert response["text"] == raw
+    assert response.get("required_effect") is None
+    assert response["available_options"] == [
+        {"id": "item-1", "label": "First Item"},
+        {"id": "item-2", "label": "Second Item"},
+    ]
+    assert response["grounding_source"] == "conversation"
+    assert len(semantic_calls) == 1
+
+
 def test_whatsapp_get_menu_item_preserves_supported_natural_continuation(monkeypatch):
     class FakeAgent:
         def __init__(self, session_manager):
