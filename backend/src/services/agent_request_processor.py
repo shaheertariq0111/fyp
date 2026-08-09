@@ -245,7 +245,11 @@ class AgentRequestProcessor:
                 menu_has_more = bool(
                     isinstance(data, dict) and data.get("has_more")
                 )
-        if prior_required_effect and prior_required_effect in successful_effects:
+        if (
+            prior_required_effect
+            and prior_required_effect in successful_effects
+            and required_effect != prior_required_effect
+        ):
             sessions.clear_whatsapp_order_state(
                 context.customer_id or context.user_id,
                 context.agent_session_id,
@@ -356,6 +360,7 @@ def build_response_builder(services_provider: Callable[[], Any]):
                 tool_calls=calls,
                 expected_write_tool=raw.get("expected_write_tool"),
                 required_effect=raw.get("required_effect"),
+                available_options=raw.get("available_options"),
             )
             if authoritative is not None:
                 response_text = authoritative.text
@@ -377,6 +382,7 @@ def build_response_builder(services_provider: Callable[[], Any]):
                     informational_turn=bool(raw.get("informational_turn", False)),
                     expected_write_tool=raw.get("expected_write_tool"),
                     required_effect=raw.get("required_effect"),
+                    available_options=raw.get("available_options"),
                 ).text
         return ChatResponse(
             text=response_text, session_id=context.agent_session_id,
