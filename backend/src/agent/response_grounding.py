@@ -112,6 +112,7 @@ UNGROUNDED_TRANSACTION_FALLBACK = (
 FAILED_TRANSACTION_FALLBACK = (
     "I couldn't complete that change. Your authoritative order state was not advanced."
 )
+AUTHORITATIVE_WRITE_FALLBACK = "That change was completed successfully."
 
 ASSISTANT_CLAIM_SYSTEM_PROMPT = """
 Perform one semantic grounding assessment for a customer turn and the assistant
@@ -395,6 +396,67 @@ def ground_authoritative_tool_response(
                 ),
             )
     return None
+
+
+def ground_classifier_unavailable_response(
+    *,
+    tool_calls: list[Any],
+    expected_write_tool: str | None = None,
+    required_effect: TransactionalEffect | None = None,
+    available_options: list[dict[str, str]] | None = None,
+) -> GroundedAgentResponse:
+    """Ground safely from tool evidence when semantic assessment is unavailable."""
+    calls = list(tool_calls or [])
+    if not any(bool(_value(call, "is_write")) for call in calls):
+        return GroundedAgentResponse(
+            UNGROUNDED_TRANSACTION_FALLBACK,
+            "ungrounded_transaction_fallback",
+            expected_write_tool,
+            required_effect,
+        )
+    authoritative = ground_authoritative_tool_response(
+        tool_calls=calls,
+        expected_write_tool=expected_write_tool,
+        required_effect=required_effect,
+        available_options=available_options,
+    )
+    if authoritative is not None:
+        return authoritative
+    for call in reversed(calls):
+        if not bool(_value(call, "is_write")) or not _call_succeeded(call):
+            continue
+        user_message = _clean_text(_result(call).get("user_message"))
+        logger.info(
+            "Safe authoritative write fallback used",
+            extra={
+                "event": "safe_authoritative_write_fallback_used",
+                "required_effect": required_effect,
+                "supported_effects": sorted(_supported_write_effects(calls)),
+                "authoritative_user_message_present": bool(user_message),
+                "grounding_source": "safe_authoritative_write_fallback",
+            },
+        )
+        return GroundedAgentResponse(
+            user_message or AUTHORITATIVE_WRITE_FALLBACK,
+            "safe_authoritative_write_fallback",
+            _expected_action_after_calls(
+                calls,
+                expected_write_tool,
+                required_effect,
+                available_options,
+            ),
+            _required_effect_after_calls(
+                calls,
+                required_effect,
+                available_options,
+            ),
+        )
+    return GroundedAgentResponse(
+        UNGROUNDED_TRANSACTION_FALLBACK,
+        "ungrounded_transaction_fallback",
+        expected_write_tool,
+        required_effect,
+    )
 
 
 def ground_agent_response(
