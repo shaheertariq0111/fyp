@@ -13,6 +13,9 @@ from src.agent.response_grounding import (
     ground_authoritative_tool_response,
 )
 from src.api.schemas import ChatResponse, ToolCallResult
+from src.models.tool_responses import (
+    apply_legacy_item_selection_compatibility,
+)
 from src.services.customer_service import CustomerService
 
 
@@ -119,6 +122,7 @@ class AgentRequestProcessor:
                 customer_name=context.customer_name, customer_phone=context.customer_phone,
                 channel=context.channel,
                 expected_write_tool=grounding_state.get("expected_write_tool"),
+                required_effect=grounding_state.get("required_effect"),
                 available_options=grounding_state.get("available_options"),
             ))
             self.logger.info("Agent runtime invocation completed", extra={
@@ -131,6 +135,7 @@ class AgentRequestProcessor:
                 context,
                 invocation,
                 prior_expected_write_tool=grounding_state.get("expected_write_tool"),
+                prior_required_effect=grounding_state.get("required_effect"),
             )
             record = requests.complete(record["request_id"], response)
             self.logger.info(
@@ -172,8 +177,15 @@ class AgentRequestProcessor:
             for item in items
             if isinstance(item, dict) and item.get("product_id")
         ]
+        required_effect, expected_write_tool = (
+            apply_legacy_item_selection_compatibility(
+                state.get("whatsapp_required_effect"),
+                has_legacy_offered_options=bool(options),
+            )
+        )
         return {
-            "expected_write_tool": "start_cart_item_customization",
+            "expected_write_tool": expected_write_tool,
+            "required_effect": required_effect,
             "available_options": options,
         } if options else {}
 
@@ -183,6 +195,7 @@ class AgentRequestProcessor:
         invocation,
         *,
         prior_expected_write_tool: str | None = None,
+        prior_required_effect: str | None = None,
     ) -> None:
         if context.channel != "whatsapp":
             return
@@ -193,39 +206,68 @@ class AgentRequestProcessor:
             if isinstance(raw, dict)
             else getattr(raw, "expected_write_tool", None)
         )
+        raw_required_effect = (
+            raw.get("required_effect")
+            if isinstance(raw, dict)
+            else getattr(raw, "required_effect", None)
+        )
+        required_effect, _legacy_expected_write_tool = (
+            apply_legacy_item_selection_compatibility(
+                raw_required_effect,
+                expected_write_tool=expected_write_tool,
+            )
+        )
         sessions = self.services_provider().agent_sessions
+        successful_effects: set[str] = set()
+        declared_requirement: str | None = None
+        offered_options: list[dict[str, str]] = []
+        menu_has_more = False
         for call in reversed(list(calls or [])):
-            tool_name = call.get("tool_name") if isinstance(call, dict) else getattr(call, "tool_name", None)
             success = call.get("success") if isinstance(call, dict) else getattr(call, "success", False)
             result = call.get("result") if isinstance(call, dict) else getattr(call, "result", None)
             if not success or not isinstance(result, dict) or result.get("success") is not True:
                 continue
-            if tool_name == "start_cart_item_customization":
-                sessions.clear_whatsapp_order_state(
-                    context.customer_id or context.user_id,
-                    context.agent_session_id,
-                )
-                return
-            if tool_name == "search_menu":
-                data = result.get("data")
-                items = data.get("items") if isinstance(data, dict) else None
-                offered = [
-                    item for item in items or []
-                    if isinstance(item, dict) and item.get("product_id")
+            evidence = result.get("grounding")
+            if not isinstance(evidence, dict):
+                continue
+            successful_effects.update(
+                str(effect)
+                for effect in evidence.get("transactional_effects", [])
+            )
+            if declared_requirement is None and evidence.get("required_next_effect"):
+                declared_requirement = str(evidence["required_next_effect"])
+                offered_options = [
+                    option
+                    for option in evidence.get("offered_options", [])
+                    if isinstance(option, dict) and option.get("id") and option.get("label")
                 ]
-                if (
-                    offered
-                    and prior_expected_write_tool is None
-                    and expected_write_tool == "start_cart_item_customization"
-                ):
-                    sessions.save_whatsapp_order_state(
-                        context.customer_id or context.user_id,
-                        context.agent_session_id,
-                        offered_menu_items=offered,
-                        shown_menu_item_ids=[str(item["product_id"]) for item in offered],
-                        menu_has_more=bool(data.get("has_more")),
-                    )
-                return
+                data = result.get("data")
+                menu_has_more = bool(
+                    isinstance(data, dict) and data.get("has_more")
+                )
+        if prior_required_effect and prior_required_effect in successful_effects:
+            sessions.clear_whatsapp_order_state(
+                context.customer_id or context.user_id,
+                context.agent_session_id,
+            )
+            return
+        if (
+            offered_options
+            and prior_required_effect is None
+            and required_effect == declared_requirement
+        ):
+            offered = [
+                {"product_id": option["id"], "name": option["label"]}
+                for option in offered_options
+            ]
+            sessions.save_whatsapp_order_state(
+                context.customer_id or context.user_id,
+                context.agent_session_id,
+                offered_menu_items=offered,
+                shown_menu_item_ids=[option["id"] for option in offered_options],
+                menu_has_more=menu_has_more,
+                required_effect=declared_requirement,
+            )
 
 
 def build_identity_resolver(services_provider: Callable[[], Any]):
@@ -313,6 +355,7 @@ def build_response_builder(services_provider: Callable[[], Any]):
             authoritative = ground_authoritative_tool_response(
                 tool_calls=calls,
                 expected_write_tool=raw.get("expected_write_tool"),
+                required_effect=raw.get("required_effect"),
             )
             if authoritative is not None:
                 response_text = authoritative.text
@@ -333,6 +376,7 @@ def build_response_builder(services_provider: Callable[[], Any]):
                     no_write_authorized=bool(raw.get("no_write_authorized", False)),
                     informational_turn=bool(raw.get("informational_turn", False)),
                     expected_write_tool=raw.get("expected_write_tool"),
+                    required_effect=raw.get("required_effect"),
                 ).text
         return ChatResponse(
             text=response_text, session_id=context.agent_session_id,

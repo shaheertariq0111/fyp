@@ -38,6 +38,13 @@ def make_test_settings(**overrides):
 def test_test_environment_allows_empty_bedrock_model():
     settings = make_test_settings()
     assert settings.environment == "test"
+    assert settings.customer_menu_result_limit == 5
+
+
+@pytest.mark.parametrize("value", [0, 21])
+def test_customer_menu_result_limit_has_safe_operational_bounds(value):
+    with pytest.raises(ValidationError):
+        make_test_settings(customer_menu_result_limit=value)
 
 
 def test_bedrock_model_settings_do_not_require_backend_session_secret():

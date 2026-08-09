@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from src.agent.order_intent import OrderIntentClassification
 from src.agent.response_grounding import AssistantClaimAssessment
 from src.agent.whatsapp_turn_intent import WhatsAppTurnInterpretation
+from src.models.tool_responses import TransactionalEffect
 
 
 class RuntimeRequest(BaseModel):
@@ -26,6 +27,7 @@ class RuntimeRequest(BaseModel):
     allowed_actions: list[str] = Field(default_factory=list)
     available_options: list[dict[str, str]] = Field(default_factory=list)
     expected_write_tool: str | None = None
+    required_effect: TransactionalEffect | None = None
 
 
 class ToolCallResult(BaseModel):
@@ -46,4 +48,5 @@ class RuntimeResponse(BaseModel):
     no_write_authorized: bool | None = None
     informational_turn: bool | None = None
     expected_write_tool: str | None = None
+    required_effect: TransactionalEffect | None = None
     grounding_source: str | None = None

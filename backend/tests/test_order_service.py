@@ -555,6 +555,12 @@ def test_order_status_response_includes_agent_active_order_guidance():
         "next_action": "ask_fulfillment_method",
         "required_input": "fulfillment_method",
     }]
+    assert {fact.path: fact.value for fact in response.grounding.immutable_facts} == {
+        "order.order_id": order_id,
+        "order.status": "awaiting_fulfillment_method",
+        "order.total": 10,
+        "order.currency": "CUR",
+    }
 
 
 def test_saved_customer_address_can_be_reused_as_order_snapshot():
@@ -706,6 +712,9 @@ def test_takeaway_confirmation_summary_uses_authoritative_prices():
     assert response.data["subtotal"] == 3800
     assert response.data["total"] == 3800
     assert response.user_message == response.agent["confirmation_summary"]
+    assert response.grounding.authoritative_domains == ["order"]
+    assert response.grounding.transactional_effects == ["fulfillment_saved"]
+    assert response.grounding.exact_customer_text == response.user_message
     assert "1) Pepperoni Pizza" in response.user_message
     assert "Quantity: 2" in response.user_message
     assert "Unit price: Rs 1,250.00" in response.user_message
@@ -1221,6 +1230,10 @@ def test_multiple_active_orders_require_customer_to_choose_order_id():
     assert first_order_id in response.user_message
     assert second_order_id in response.user_message
     assert "Please provide the Order ID" in response.user_message
+    immutable = {fact.path: fact.value for fact in response.grounding.immutable_facts}
+    assert immutable["orders[0].order_id"] in {first_order_id, second_order_id}
+    assert immutable["orders[1].order_id"] in {first_order_id, second_order_id}
+    assert immutable["orders[0].order_id"] != immutable["orders[1].order_id"]
 
 
 def test_explicit_older_order_id_returns_status_for_owner():
@@ -1242,6 +1255,9 @@ def test_explicit_older_order_id_returns_status_for_owner():
         "Status: Completed"
     )
     assert response.agent["status_message"] == response.user_message
+    assert {fact.path: fact.value for fact in response.grounding.immutable_facts}[
+        "order.status"
+    ] == "completed"
 
 
 def test_explicit_order_id_does_not_reveal_another_customers_order():

@@ -1,9 +1,11 @@
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
 from src.agent.response_grounding import (
+    ASSISTANT_CLAIM_SYSTEM_PROMPT,
     AssistantClaimAssessment,
     GroundedAssistantMemoryBuffer,
     UNGROUNDED_TRANSACTION_FALLBACK,
@@ -11,6 +13,7 @@ from src.agent.response_grounding import (
     ground_authoritative_tool_response,
     ground_agent_response,
 )
+from src.models.tool_responses import TransactionalEffect
 
 
 def tool_call(
@@ -20,6 +23,8 @@ def tool_call(
     is_write=False,
     user_message=None,
     data=None,
+    grounding=None,
+    next_action=None,
 ):
     result = {
         "success": success,
@@ -27,6 +32,10 @@ def tool_call(
     }
     if user_message is not None:
         result["user_message"] = user_message
+    if grounding is not None:
+        result["grounding"] = grounding
+    if next_action is not None:
+        result["next_action"] = next_action
     return SimpleNamespace(
         tool_name=tool_name,
         success=success,
@@ -50,6 +59,15 @@ def test_assistant_claim_classifier_uses_only_untrusted_messages_and_schema():
     result = assess_assistant_claims(
         customer_message="save that",
         assistant_message="Your customization is saved.",
+        tool_evidence=[{
+            "grounding": {
+                "authoritative_domains": ["cart"],
+                "transactional_effects": ["customization_saved"],
+            },
+            "data": {"cart": {"status": "customizing_item"}},
+        }],
+        required_effect="item_selected",
+        available_options=[{"id": "item-1", "label": "First Item"}],
         agent=StructuredAgent(),
     )
 
@@ -57,11 +75,20 @@ def test_assistant_claim_classifier_uses_only_untrusted_messages_and_schema():
     assert calls[0][1]["structured_output_model"] is AssistantClaimAssessment
     assert "save that" in calls[0][0]
     assert "Your customization is saved." in calls[0][0]
+    assert "customization_saved" in calls[0][0]
+    assert "item_selected" in calls[0][0]
+    assert "item-1" in calls[0][0]
 
 
-def test_search_selection_grounding_asks_only_for_item_and_sets_expected_action():
+def test_assistant_claim_prompt_defines_every_transactional_effect():
+    for effect in get_args(TransactionalEffect):
+        assert effect in ASSISTANT_CLAIM_SYSTEM_PROMPT
+
+
+def test_search_selection_grounding_preserves_supported_bounded_model_response():
+    text = "1. First Item - 10\n2. Second Item - 12\nWhich item would you like?"
     result = ground_agent_response(
-        text="Choose item 1 or 2 and tell me the size and crust.",
+        text=text,
         tool_calls=[tool_call(
             "search_menu",
             data={
@@ -70,15 +97,89 @@ def test_search_selection_grounding_asks_only_for_item_and_sets_expected_action(
                     {"item_id": "item-2", "name": "Second Item", "price": 12},
                 ]
             },
+            grounding={
+                "authoritative_domains": ["menu"],
+                "required_next_effect": "item_selected",
+                "offered_options": [
+                    {"id": "item-1", "label": "First Item"},
+                    {"id": "item-2", "label": "Second Item"},
+                ],
+                "presentation": {"max_items": 5},
+            },
         )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+            presented_authoritative_item_count=2,
+        ),
     )
 
-    assert "1. First Item" in result.text
-    assert "2. Second Item" in result.text
+    assert result.text == text
     assert result.text.endswith("Which item would you like?")
     assert "size" not in result.text.lower()
     assert "crust" not in result.text.lower()
-    assert result.expected_transactional_action == "start_cart_item_customization"
+    assert result.required_next_effect == "item_selected"
+
+
+def test_pending_effect_blocks_requested_prose_progression_without_evidence():
+    result = ground_agent_response(
+        text="Great, which size would you like?",
+        tool_calls=[],
+        required_effect="item_selected",
+        available_options=[{"id": "item-1", "label": "First Item"}],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            customer_requests_required_effect=True,
+            selected_option="item-1",
+        ),
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.required_next_effect == "item_selected"
+
+
+def test_successful_effect_satisfies_and_clears_pending_requirement():
+    result = ground_agent_response(
+        text="Great, which size would you like?",
+        tool_calls=[tool_call(
+            "any_selection_capability",
+            success=True,
+            is_write=True,
+            grounding={
+                "authoritative_domains": ["cart"],
+                "transactional_effects": ["item_selected"],
+            },
+        )],
+        required_effect="item_selected",
+        available_options=[{"id": "item-1", "label": "First Item"}],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            customer_requests_required_effect=True,
+            selected_option="item-1",
+        ),
+    )
+
+    assert result.text == "Great, which size would you like?"
+    assert result.required_next_effect is None
+
+
+def test_informational_detour_preserves_pending_requirement():
+    result = ground_agent_response(
+        text="It contains vegetables.",
+        tool_calls=[],
+        required_effect="item_selected",
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            customer_requests_required_effect=False,
+            informational_turn=True,
+        ),
+    )
+
+    assert result.text == "It contains vegetables."
+    assert result.required_next_effect == "item_selected"
 
 
 def test_claimed_progression_without_write_evidence_fails_closed():
@@ -111,20 +212,18 @@ def test_successful_write_uses_authoritative_progression_message():
     assert result.source == "successful_write"
 
 
-def test_authoritative_tool_fast_path_supports_current_state_reads():
+def test_generic_authoritative_read_does_not_force_a_fast_path_response():
     result = ground_authoritative_tool_response(
         tool_calls=[tool_call(
             "get_active_cart",
             user_message="Your cart is currently empty.",
             data={"cart": None},
+            grounding={"authoritative_domains": ["cart"]},
         )],
         expected_write_tool="start_cart_item_customization",
     )
 
-    assert result is not None
-    assert result.text == "Your cart is currently empty."
-    assert result.source == "authoritative_read"
-    assert result.expected_transactional_action == "start_cart_item_customization"
+    assert result is None
 
 
 def test_authoritative_tool_fast_path_rejects_insufficient_read_evidence():
@@ -157,25 +256,34 @@ def test_successful_required_write_consumes_pending_transition():
     result = ground_agent_response(
         text="The model invented progression.",
         tool_calls=[tool_call(
-            "start_cart_item_customization",
+            "any_selection_capability",
             is_write=True,
             user_message="Which size would you like?",
+            grounding={
+                "transactional_effects": ["item_selected"],
+                "exact_customer_text": "Which size would you like?",
+            },
         )],
         expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
     )
 
     assert result.text == "Which size would you like?"
-    assert result.source == "successful_write"
-    assert result.expected_transactional_action is None
+    assert result.source == "exact_artifact"
+    assert result.required_next_effect is None
 
 
 def test_successful_required_write_takes_priority_over_follow_up_read():
     result = ground_authoritative_tool_response(
         tool_calls=[
             tool_call(
-                "start_cart_item_customization",
+                "any_selection_capability",
                 is_write=True,
                 user_message="Which size would you like?",
+                grounding={
+                    "transactional_effects": ["item_selected"],
+                    "exact_customer_text": "Which size would you like?",
+                },
             ),
             tool_call(
                 "get_active_cart",
@@ -184,12 +292,13 @@ def test_successful_required_write_takes_priority_over_follow_up_read():
             ),
         ],
         expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
     )
 
     assert result is not None
     assert result.text == "Which size would you like?"
-    assert result.source == "successful_write"
-    assert result.expected_transactional_action is None
+    assert result.source == "exact_artifact"
+    assert result.required_next_effect is None
 
 
 def test_failed_required_write_preserves_pending_transition():
@@ -306,6 +415,7 @@ def test_authoritative_state_claim_requires_authoritative_read_evidence():
         claimed_actions=[],
         depends_on_authoritative_state=True,
         authoritative_state_domains=["cart"],
+        authoritative_claims_supported=True,
     )
 
     missing = ground_agent_response(
@@ -319,13 +429,14 @@ def test_authoritative_state_claim_requires_authoritative_read_evidence():
             "get_active_cart",
             user_message="Your cart is currently empty.",
             data={"cart": None},
+            grounding={"authoritative_domains": ["cart"]},
         )],
         claim_assessment=assessment,
     )
 
     assert missing.text == UNGROUNDED_TRANSACTION_FALLBACK
-    assert observed.text == "Your cart is currently empty."
-    assert observed.source == "authoritative_read"
+    assert observed.text == "The model paraphrased the cart from memory."
+    assert observed.source == "conversation"
 
 
 def test_contradictory_claim_classification_is_rejected():
@@ -349,25 +460,29 @@ def test_malformed_classifier_output_is_rejected():
         )
 
 
-def test_informational_menu_read_uses_authoritative_fast_path():
+def test_informational_menu_read_preserves_supported_model_presentation():
     text = "Cheese burst adds a cheese-filled layer to the crust."
     result = ground_agent_response(
         text=text,
         tool_calls=[tool_call(
             "search_menu",
             data={"items": [{"product_id": "item-1", "name": "Menu Item", "price": 10}]},
+            grounding={"authoritative_domains": ["menu"]},
         )],
         claim_assessment=AssistantClaimAssessment(
             claims_transactional_progression=False,
             claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+            presented_authoritative_item_count=1,
         ),
         no_write_authorized=True,
         informational_turn=True,
     )
 
-    assert result.text.endswith("Which item would you like?")
-    assert "Menu Item" in result.text
-    assert result.source == "menu_search"
+    assert result.text == text
+    assert result.source == "conversation"
 
 
 def test_informational_read_does_not_erase_pending_transition():
@@ -377,22 +492,26 @@ def test_informational_read_does_not_erase_pending_transition():
         tool_calls=[tool_call(
             "search_menu",
             data={"items": [{"product_id": "item-1", "name": "Menu Item", "price": 10}]},
+            grounding={"authoritative_domains": ["menu"]},
         )],
         claim_assessment=AssistantClaimAssessment(
             claims_transactional_progression=False,
             claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
         ),
         no_write_authorized=True,
         informational_turn=True,
         expected_write_tool="start_cart_item_customization",
     )
 
-    assert result.text.endswith("Which item would you like?")
-    assert result.source == "menu_search"
+    assert result.text == text
+    assert result.source == "conversation"
     assert result.expected_transactional_action == "start_cart_item_customization"
 
 
-def test_get_menu_item_fast_path_preserves_pending_transition():
+def test_get_menu_item_evidence_does_not_force_a_fast_path_response():
     result = ground_authoritative_tool_response(
         tool_calls=[tool_call(
             "get_menu_item",
@@ -404,14 +523,12 @@ def test_get_menu_item_fast_path_preserves_pending_transition():
                     "price": 10,
                 }
             },
+            grounding={"authoritative_domains": ["menu"]},
         )],
         expected_write_tool="start_cart_item_customization",
     )
 
-    assert result is not None
-    assert "Authoritative description." in result.text
-    assert result.source == "menu_item"
-    assert result.expected_transactional_action == "start_cart_item_customization"
+    assert result is None
 
 
 @pytest.mark.parametrize(
@@ -425,6 +542,11 @@ def test_get_menu_item_fast_path_preserves_pending_transition():
     ],
 )
 def test_active_order_authoritative_reads_do_not_advance_state(question, answer, tool_name):
+    domain = (
+        "restaurant_policy"
+        if tool_name == "retrieve_restaurant_knowledge"
+        else "menu"
+    )
     call = tool_call(
         tool_name,
         data=(
@@ -445,12 +567,7 @@ def test_active_order_authoritative_reads_do_not_advance_state(question, answer,
     )
 
     assert question
-    if tool_name == "retrieve_restaurant_knowledge":
-        assert result.text == answer
-    elif tool_name == "get_menu_item":
-        assert result.text == "Menu Item - 10"
-    else:
-        assert result.text.endswith("Which item would you like?")
+    assert result.text == answer
     assert not any(getattr(current, "is_write", False) for current in [call])
 
 
@@ -496,12 +613,21 @@ def test_memory_commit_failure_never_persists_raw_assistant_and_next_turn_is_saf
 
 
 def test_full_normal_order_write_sequence_remains_authoritatively_grounded():
+    search_text = "Menu Item is available for 10. Which item would you like?"
     search = ground_agent_response(
-        text="Choose an item and an invented customization.",
+        text=search_text,
         tool_calls=[tool_call(
             "search_menu",
             data={"items": [{"item_id": "item-1", "name": "Menu Item", "price": 10}]},
+            grounding={"authoritative_domains": ["menu"]},
         )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+        ),
     )
     sequence = [
         ("start_cart_item_customization", "Choose a size."),
@@ -524,7 +650,610 @@ def test_full_normal_order_write_sequence_remains_authoritatively_grounded():
         for name, message in sequence
     ]
 
-    assert search.source == "menu_search"
+    assert search.source == "conversation"
     assert search.text.endswith("Which item would you like?")
     assert [result.text for result in grounded] == [message for _, message in sequence]
     assert all(result.source == "successful_write" for result in grounded)
+
+
+MAX_CUSTOMER_FACING_MENU_ITEMS = 5
+
+
+def test_broad_menu_browse_has_a_bounded_customer_facing_result_set():
+    items = [
+        {
+            "item_id": f"item-{index}",
+            "name": f"Menu Choice {index}",
+            "price": 10 + index,
+        }
+        for index in range(MAX_CUSTOMER_FACING_MENU_ITEMS + 3)
+    ]
+
+    bounded_text = "\n".join(
+        f"{index + 1}. {item['name']} - {item['price']}"
+        for index, item in enumerate(items[:MAX_CUSTOMER_FACING_MENU_ITEMS])
+    )
+    result = ground_agent_response(
+        text=bounded_text,
+        tool_calls=[tool_call(
+            "search_menu",
+            data={"items": items},
+            grounding={
+                "authoritative_domains": ["menu"],
+                "presentation": {"max_items": MAX_CUSTOMER_FACING_MENU_ITEMS},
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+            presented_authoritative_item_count=MAX_CUSTOMER_FACING_MENU_ITEMS,
+        ),
+    )
+
+    presented = [line for line in result.text.splitlines() if line[:1].isdigit()]
+    assert 0 < len(presented) <= MAX_CUSTOMER_FACING_MENU_ITEMS
+
+
+def test_model_presentation_that_violates_declared_limit_fails_closed():
+    result = ground_agent_response(
+        text="The model presented too many authoritative entities.",
+        tool_calls=[tool_call(
+            "any_read_capability",
+            data={"items": [{"item_id": str(index)} for index in range(6)]},
+            grounding={
+                "authoritative_domains": ["menu"],
+                "presentation": {"max_items": 5},
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+            presented_authoritative_item_count=6,
+        ),
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+
+
+@pytest.mark.parametrize(
+    ("customer_message", "model_reply"),
+    [
+        ("Thanks for checking that.", "You're welcome!"),
+        ("Hello again.", "Hi! How can I help?"),
+        ("Could you clarify what you meant?", "Of course—what should I clarify?"),
+        ("How has your day been?", "It's going well, thank you!"),
+    ],
+)
+def test_ordinary_conversation_is_not_replaced_by_an_existing_order_read(
+    customer_message,
+    model_reply,
+):
+    result = ground_agent_response(
+        text=model_reply,
+        tool_calls=[tool_call(
+            "get_order_status",
+            user_message="You have an order being prepared.",
+            data={"orders": [{"order_id": "ORD-EXISTING", "status": "preparing"}]},
+            grounding={"authoritative_domains": ["order"]},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+        no_write_authorized=True,
+    )
+
+    assert customer_message
+    assert result.text == model_reply
+    assert result.source == "conversation"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "backend_message", "model_reply"),
+    [
+        (
+            "handle_cart_upsell",
+            "The add-on was added.",
+            "Nice choice. Would you like anything else?",
+        ),
+        (
+            "create_pending_order_from_cart",
+            "The order is ready for fulfillment details.",
+            "Great—would you prefer delivery or takeaway?",
+        ),
+    ],
+)
+def test_generic_success_evidence_does_not_require_canned_backend_presentation(
+    tool_name,
+    backend_message,
+    model_reply,
+):
+    domain = "cart" if tool_name == "handle_cart_upsell" else "order"
+    effect = "item_added" if tool_name == "handle_cart_upsell" else "checkout_started"
+    result = ground_agent_response(
+        text=model_reply,
+        tool_calls=[tool_call(
+            tool_name,
+            is_write=True,
+            user_message=backend_message,
+            data={"cart": {"status": "ready"}},
+            grounding={
+                "authoritative_domains": [domain],
+                "transactional_effects": [effect],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
+
+    assert result.text == model_reply
+
+
+def test_menu_item_evidence_allows_a_natural_grounded_continuation():
+    model_reply = (
+        "The Garden Flatbread is 14 and includes roasted vegetables. "
+        "Would you like to customize it?"
+    )
+    result = ground_agent_response(
+        text=model_reply,
+        tool_calls=[tool_call(
+            "get_menu_item",
+            data={
+                "item": {
+                    "item_id": "item-1",
+                    "name": "Garden Flatbread",
+                    "description": "Includes roasted vegetables.",
+                    "price": 14,
+                }
+            },
+            grounding={"authoritative_domains": ["menu"]},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+        ),
+        no_write_authorized=True,
+    )
+
+    assert result.text == model_reply
+    assert "14" in result.text
+
+
+@pytest.mark.parametrize(
+    ("model_claim", "claimed_action"),
+    [
+        ("I added that item to your cart.", "item_added"),
+        ("Checkout is now started.", "checkout_started"),
+        ("Your order was submitted successfully.", "order_submitted"),
+    ],
+)
+def test_unsupported_transactional_progression_fails_closed(
+    model_claim,
+    claimed_action,
+):
+    result = ground_agent_response(
+        text=model_claim,
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=True,
+            claimed_actions=[claimed_action],
+        ),
+        no_write_authorized=True,
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.source == "ungrounded_transaction_fallback"
+
+
+def test_supported_transactional_effect_allows_natural_model_presentation():
+    text = "Perfect, that choice is saved. Would you like anything else?"
+    result = ground_agent_response(
+        text=text,
+        tool_calls=[tool_call(
+            "any_write_capability",
+            is_write=True,
+            user_message="The customization was saved.",
+            data={"cart": {"status": "item_ready"}},
+            grounding={
+                "authoritative_domains": ["cart"],
+                "transactional_effects": ["customization_saved"],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=True,
+            claimed_actions=["customization_saved"],
+        ),
+    )
+
+    assert result.text == text
+    assert result.source == "conversation"
+
+
+def test_successful_unrelated_effect_does_not_authorize_model_progression():
+    result = ground_agent_response(
+        text="Your order was submitted.",
+        tool_calls=[tool_call(
+            "any_write_capability",
+            is_write=True,
+            user_message="The fulfillment method was saved.",
+            data={"order": {"status": "awaiting_delivery_address"}},
+            grounding={
+                "authoritative_domains": ["order"],
+                "transactional_effects": ["fulfillment_saved"],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=True,
+            claimed_actions=["order_submitted"],
+        ),
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+
+
+def test_supported_and_fabricated_effects_in_one_response_fail_closed():
+    result = ground_agent_response(
+        text="The item was added and the order was submitted.",
+        tool_calls=[tool_call(
+            "any_write_capability",
+            is_write=True,
+            grounding={"transactional_effects": ["item_added"]},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=True,
+            claimed_actions=["item_added", "order_submitted"],
+        ),
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+
+
+def test_supported_and_fabricated_authoritative_facts_fail_closed():
+    result = ground_agent_response(
+        text="Order ORD-REAL is preparing and its total is 1.",
+        tool_calls=[tool_call(
+            "any_order_read",
+            grounding={
+                "authoritative_domains": ["order"],
+                "immutable_facts": [
+                    {"path": "order.order_id", "value": "ORD-REAL"},
+                    {"path": "order.status", "value": "preparing"},
+                    {"path": "order.total", "value": 25},
+                ],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["order"],
+            authoritative_claims_supported=True,
+            claimed_immutable_facts=[
+                {"path": "order.order_id", "value": "ORD-REAL"},
+                {"path": "order.total", "value": 1},
+            ],
+        ),
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+
+
+def test_natural_order_status_requires_immutable_facts_to_be_preserved():
+    call = tool_call(
+        "any_order_read",
+        grounding={
+            "authoritative_domains": ["order"],
+            "immutable_facts": [
+                {"path": "order.order_id", "value": "ORD-REAL"},
+                {"path": "order.status", "value": "preparing"},
+                {"path": "order.total", "value": 25},
+            ],
+        },
+    )
+    assessment = AssistantClaimAssessment(
+        claims_transactional_progression=False,
+        depends_on_authoritative_state=True,
+        authoritative_state_domains=["order"],
+        authoritative_claims_supported=True,
+        claimed_immutable_facts=[
+            {"path": "order.order_id", "value": "ORD-REAL"},
+            {"path": "order.status", "value": "preparing"},
+            {"path": "order.total", "value": 25},
+        ],
+    )
+
+    result = ground_agent_response(
+        text="Order ORD-REAL is currently preparing with a total of 25.",
+        tool_calls=[call],
+        claim_assessment=assessment,
+    )
+
+    assert result.text == "Order ORD-REAL is currently preparing with a total of 25."
+
+
+@pytest.mark.parametrize(
+    "claimed_fact",
+    [
+        {"path": "order.order_id", "value": "ORD-FABRICATED"},
+        {"path": "order.total", "value": 1},
+        {"path": "order.unknown", "value": "invented"},
+    ],
+)
+def test_fabricated_or_unknown_immutable_fact_fails_closed(claimed_fact):
+    result = ground_agent_response(
+        text="The assistant asserted one critical order fact.",
+        tool_calls=[tool_call(
+            "any_order_read",
+            grounding={
+                "authoritative_domains": ["order"],
+                "immutable_facts": [
+                    {"path": "order.order_id", "value": "ORD-REAL"},
+                    {"path": "order.total", "value": 25},
+                ],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["order"],
+            authoritative_claims_supported=True,
+            claimed_immutable_facts=[claimed_fact],
+        ),
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+
+
+def test_unclaimed_immutable_fact_may_be_omitted_from_natural_response():
+    result = ground_agent_response(
+        text="Your order is still being handled.",
+        tool_calls=[tool_call(
+            "any_order_read",
+            grounding={
+                "authoritative_domains": ["order"],
+                "immutable_facts": [
+                    {"path": "order.order_id", "value": "ORD-REAL"},
+                    {"path": "order.total", "value": 25},
+                ],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["order"],
+            authoritative_claims_supported=True,
+            claimed_immutable_facts=[],
+        ),
+    )
+
+    assert result.text == "Your order is still being handled."
+
+
+def test_multiple_order_indexed_immutable_paths_are_verified():
+    result = ground_agent_response(
+        text="The first order is preparing and the second is completed.",
+        tool_calls=[tool_call(
+            "any_order_read",
+            grounding={
+                "authoritative_domains": ["order"],
+                "immutable_facts": [
+                    {"path": "orders[0].order_id", "value": "ORD-ONE"},
+                    {"path": "orders[0].status", "value": "preparing"},
+                    {"path": "orders[1].order_id", "value": "ORD-TWO"},
+                    {"path": "orders[1].status", "value": "completed"},
+                ],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["order"],
+            authoritative_claims_supported=True,
+            claimed_immutable_facts=[
+                {"path": "orders[0].status", "value": "preparing"},
+                {"path": "orders[1].status", "value": "completed"},
+            ],
+        ),
+    )
+
+    assert result.text == "The first order is preparing and the second is completed."
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "backend_message", "data"),
+    [
+        (
+            "choose_takeaway",
+            "Total: PKR 2,450. Please confirm.",
+            {"order": {"order_id": "ORD-AUTH", "total": 2450, "status": "pending_confirmation"}},
+        ),
+        (
+            "confirm_order",
+            "Order ORD-AUTH was submitted. Total: PKR 2,450.",
+            {"order": {"order_id": "ORD-AUTH", "total": 2450, "status": "submitted_to_restaurant"}},
+        ),
+    ],
+)
+def test_critical_transaction_artifacts_remain_authoritative(
+    tool_name,
+    backend_message,
+    data,
+):
+    result = ground_agent_response(
+        text="Order ORD-FABRICATED is complete for PKR 1.",
+        tool_calls=[tool_call(
+            tool_name,
+            is_write=True,
+            user_message=backend_message,
+            data=data,
+            grounding={
+                "authoritative_domains": ["order"],
+                "transactional_effects": [
+                    "order_submitted"
+                    if tool_name == "confirm_order"
+                    else "fulfillment_saved"
+                ],
+                "exact_customer_text": backend_message,
+            },
+        )],
+    )
+
+    assert result.text == backend_message
+    assert "ORD-FABRICATED" not in result.text
+    assert data["order"]["status"] in {
+        "pending_confirmation",
+        "submitted_to_restaurant",
+    }
+
+
+def test_exact_artifact_remains_complete_during_harmless_side_conversation():
+    artifact = "Order ORD-EXACT total: PKR 2,450. Please confirm."
+    result = ground_agent_response(
+        text="Happy to explain later. The total looks different to me.",
+        tool_calls=[tool_call(
+            "any_confirmation_capability",
+            is_write=True,
+            user_message=artifact,
+            grounding={
+                "authoritative_domains": ["order"],
+                "transactional_effects": ["fulfillment_saved"],
+                "exact_customer_text": artifact,
+            },
+        )],
+    )
+
+    assert result.text == artifact
+
+
+def test_conversation_continuity_preserves_natural_and_authoritative_boundaries():
+    prior_status = ground_agent_response(
+        text="The model invented a status.",
+        tool_calls=[tool_call(
+            "get_order_status",
+            user_message="Order ORD-PRIOR has been submitted.",
+            data={"order": {"order_id": "ORD-PRIOR", "status": "submitted_to_restaurant"}},
+            grounding={
+                "authoritative_domains": ["order"],
+                "exact_customer_text": "Order ORD-PRIOR has been submitted.",
+            },
+        )],
+    )
+    acknowledgement = ground_agent_response(
+        text="You're welcome!",
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+        no_write_authorized=True,
+    )
+    menu_browse = ground_agent_response(
+        text="Here are a few current choices.",
+        tool_calls=[tool_call(
+            "search_menu",
+            data={"items": [
+                {"item_id": f"choice-{index}", "name": f"Choice {index}", "price": index + 10}
+                for index in range(MAX_CUSTOMER_FACING_MENU_ITEMS + 2)
+            ]},
+            grounding={
+                "authoritative_domains": ["menu"],
+                "presentation": {"max_items": MAX_CUSTOMER_FACING_MENU_ITEMS},
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
+    item_selection = ground_agent_response(
+        text="Choice 0 is 10. Shall we customize it?",
+        tool_calls=[tool_call(
+            "get_menu_item",
+            data={"item": {"item_id": "choice-0", "name": "Choice 0", "price": 10}},
+            grounding={"authoritative_domains": ["menu"]},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+        ),
+        no_write_authorized=True,
+    )
+    customization = ground_agent_response(
+        text="The model must not rewrite exact options.",
+        tool_calls=[tool_call(
+            "start_cart_item_customization",
+            is_write=True,
+            user_message="Choose one size:\n1. Small — PKR 10\n2. Large — PKR 15",
+            data={"cart": {"status": "customizing_item"}},
+        )],
+    )
+    upsell = ground_agent_response(
+        text="The model must not rewrite this priced upsell.",
+        tool_calls=[tool_call(
+            "handle_cart_upsell",
+            is_write=True,
+            user_message="Would you like a side for PKR 4?",
+            data={"cart": {"status": "awaiting_upsell_decision"}},
+        )],
+    )
+    checkout = ground_agent_response(
+        text="All set—delivery or takeaway?",
+        tool_calls=[tool_call(
+            "create_pending_order_from_cart",
+            is_write=True,
+            user_message="The order is ready for fulfillment details.",
+            data={"order": {"order_id": "ORD-NEW", "status": "awaiting_fulfillment_method"}},
+            grounding={
+                "authoritative_domains": ["order"],
+                "transactional_effects": ["checkout_started"],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
+    fulfillment = ground_agent_response(
+        text="The model invented a different total.",
+        tool_calls=[tool_call(
+            "choose_takeaway",
+            is_write=True,
+            user_message="Order ORD-NEW total: PKR 14. Please confirm.",
+            data={"order": {"order_id": "ORD-NEW", "total": 14, "status": "pending_confirmation"}},
+        )],
+    )
+    submission = ground_agent_response(
+        text="The model invented a different order ID.",
+        tool_calls=[tool_call(
+            "confirm_order",
+            is_write=True,
+            user_message="Order ORD-NEW was submitted. Total: PKR 14.",
+            data={"order": {"order_id": "ORD-NEW", "total": 14, "status": "submitted_to_restaurant"}},
+        )],
+    )
+
+    presented_menu_lines = [
+        line for line in menu_browse.text.splitlines() if line[:1].isdigit()
+    ]
+    assert prior_status.text == "Order ORD-PRIOR has been submitted."
+    assert acknowledgement.text == "You're welcome!"
+    assert len(presented_menu_lines) <= MAX_CUSTOMER_FACING_MENU_ITEMS
+    assert item_selection.text == "Choice 0 is 10. Shall we customize it?"
+    assert customization.text == "Choose one size:\n1. Small — PKR 10\n2. Large — PKR 15"
+    assert upsell.text == "Would you like a side for PKR 4?"
+    assert checkout.text == "All set—delivery or takeaway?"
+    assert fulfillment.text == "Order ORD-NEW total: PKR 14. Please confirm."
+    assert submission.text == "Order ORD-NEW was submitted. Total: PKR 14."

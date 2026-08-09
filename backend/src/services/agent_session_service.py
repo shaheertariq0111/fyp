@@ -8,6 +8,7 @@ from typing import Callable
 from pydantic_core import PydanticCustomError
 
 from src.models.ticket import MAX_DESCRIPTION_LENGTH, normalize_ticket_timestamp
+from src.models.tool_responses import TransactionalEffect
 from src.repositories.agent_session_repository import SupportStateConflictError
 
 
@@ -149,6 +150,7 @@ class AgentSessionService:
         menu_query: str | None = None,
         shown_menu_item_ids: list[str] | None = None,
         menu_has_more: bool = False,
+        required_effect: TransactionalEffect,
     ) -> dict:
         if not isinstance(offered_menu_items, list) or not offered_menu_items:
             raise ValueError("offered menu items are required")
@@ -165,6 +167,7 @@ class AgentSessionService:
             menu_query=menu_query,
             shown_menu_item_ids=stored_shown_ids,
             menu_has_more=menu_has_more,
+            required_effect=required_effect,
             updated_at=updated_at,
         )
         return {
@@ -172,6 +175,7 @@ class AgentSessionService:
             "whatsapp_menu_query": menu_query or "",
             "shown_menu_item_ids": stored_shown_ids,
             "whatsapp_menu_has_more": menu_has_more,
+            "whatsapp_required_effect": required_effect,
             "whatsapp_order_state_updated_at": updated_at,
         }
 

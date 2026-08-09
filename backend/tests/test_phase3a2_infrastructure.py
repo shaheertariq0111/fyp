@@ -711,7 +711,7 @@ def test_voice_worker_application_data_iam_is_complete_and_exactly_scoped():
             },
         ),
         "ResolveAndPersistAgentSessions": (
-            {"dynamodb:GetItem", "dynamodb:PutItem"},
+            {"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"},
             VOICE_WORKER_TABLE_ARNS["agent_sessions"],
         ),
         "RefreshCartResponseState": (
@@ -738,7 +738,17 @@ def test_voice_worker_application_data_iam_is_complete_and_exactly_scoped():
         "WhatsAppVoiceWorkerDynamoDbPolicy",
         "ResolveAndPersistAgentSessions",
     )
-    assert "dynamodb:Scan" not in session_statement["Action"]
+    assert session_statement["Action"] == [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+    ]
+    for forbidden_action in (
+        "dynamodb:Scan",
+        "dynamodb:Query",
+        "dynamodb:*",
+    ):
+        assert forbidden_action not in session_statement["Action"]
     assert session_statement["Resource"] == VOICE_WORKER_TABLE_ARNS[
         "agent_sessions"
     ]

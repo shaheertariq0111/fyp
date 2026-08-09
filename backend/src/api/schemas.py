@@ -1,6 +1,14 @@
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+
+def _public_tool_result(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    public = dict(value)
+    public.pop("grounding", None)
+    return public
 
 
 class ChatRequest(BaseModel):
@@ -59,6 +67,10 @@ class ToolCallResult(BaseModel):
     is_write: bool
     result: dict[str, Any] | None = None
     error_code: str | None = None
+
+    @field_serializer("result")
+    def serialize_public_result(self, result: dict[str, Any] | None):
+        return _public_tool_result(result)
 
 
 class ActionRequest(BaseModel):

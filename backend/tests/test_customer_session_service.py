@@ -56,6 +56,7 @@ class MemoryAgentSessionRepository:
                 "whatsapp_menu_query",
                 "shown_menu_item_ids",
                 "whatsapp_menu_has_more",
+                "whatsapp_required_effect",
                 "whatsapp_order_state_updated_at",
             )
             if key in session
@@ -70,6 +71,7 @@ class MemoryAgentSessionRepository:
         menu_query,
         shown_menu_item_ids,
         menu_has_more,
+        required_effect,
         updated_at,
     ):
         session = self.data[agent_session_id]
@@ -78,6 +80,7 @@ class MemoryAgentSessionRepository:
         session["whatsapp_menu_query"] = menu_query or ""
         session["shown_menu_item_ids"] = shown_menu_item_ids
         session["whatsapp_menu_has_more"] = menu_has_more
+        session["whatsapp_required_effect"] = required_effect
         session["whatsapp_order_state_updated_at"] = updated_at
 
     def clear_whatsapp_order_state(self, customer_id, agent_session_id):
@@ -87,6 +90,7 @@ class MemoryAgentSessionRepository:
         session.pop("whatsapp_menu_query", None)
         session.pop("shown_menu_item_ids", None)
         session.pop("whatsapp_menu_has_more", None)
+        session.pop("whatsapp_required_effect", None)
         session.pop("whatsapp_order_state_updated_at", None)
 
 
@@ -344,6 +348,7 @@ def test_whatsapp_menu_choices_are_persisted_for_the_next_message():
         "cust-whatsapp",
         session["agent_session_id"],
         offered_menu_items=choices,
+        required_effect="item_selected",
     )
 
     state = sessions.get_whatsapp_order_state(
@@ -354,6 +359,7 @@ def test_whatsapp_menu_choices_are_persisted_for_the_next_message():
     assert state["shown_menu_item_ids"] == [
         "pepperoni-hot", "pepperoni-passion"
     ]
+    assert state["whatsapp_required_effect"] == "item_selected"
 
     sessions.clear_whatsapp_order_state(
         "cust-whatsapp",

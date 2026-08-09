@@ -14,7 +14,7 @@ from src.agent import tools as agent_tools
 from src.agent.context import AgentRequestContext, request_context
 from src.agent_client import AgentInvocationResult
 from src.api import main
-from src.api.schemas import ToolCallResult
+from src.api.schemas import ChatResponse, ToolCallResult
 from src.infrastructure.logging import JsonFormatter
 from src.models.tool_responses import ToolResponse
 from src.services.cart_service import CartService
@@ -2827,6 +2827,12 @@ def test_chat_menu_tool_without_menu_data_does_not_replace_invocation_text(monke
 
 
 def test_chat_menu_response_is_grounded_in_search_tool_results(monkeypatch):
+    model_text = (
+        "Here are two current options:\n"
+        "1. Classic Pepperoni Pizza - small PKR 899, large PKR 1599\n"
+        "2. Pepperoni Feast - from PKR 1299\n"
+        "Which item would you like?"
+    )
     stub_agent_client(
         monkeypatch,
         SimpleNamespace(
@@ -2857,11 +2863,23 @@ def test_chat_menu_response_is_grounded_in_search_tool_results(monkeypatch):
                     },
                     "user_message": "I found current menu options.",
                     "next_action": "present_menu_results",
+                    "grounding": {
+                        "authoritative_domains": ["menu"],
+                        "presentation": {"max_items": 5},
+                    },
                 },
                 "error_code": None,
-            }]
+            }],
+            claim_assessment={
+                "claims_transactional_progression": False,
+                "claimed_actions": [],
+                "depends_on_authoritative_state": True,
+                "authoritative_state_domains": ["menu"],
+                "authoritative_claims_supported": True,
+                "presented_authoritative_item_count": 2,
+            },
         ),
-        text="Please hold, I'll check and retrieve that information.",
+        text=model_text,
     )
 
     test_client = client()
@@ -2878,12 +2896,7 @@ def test_chat_menu_response_is_grounded_in_search_tool_results(monkeypatch):
         test_client,
         submitted.json()["request_id"],
     )
-    assert completed["text"] == (
-        "Here are the current menu options I found:\n"
-        "1. Classic Pepperoni Pizza - small PKR 899, large PKR 1599\n"
-        "2. Pepperoni Feast - from PKR 1299\n"
-        "Which item would you like?"
-    )
+    assert completed["text"] == model_text
     assert completed["tool_calls"][0]["tool_name"] == "search_menu"
 
 
@@ -3518,6 +3531,71 @@ def test_whatsapp_order_status_without_confirmed_order_uses_agent_response(monke
     assert completed["text"] == "Please wait while I retrieve that information."
 
 
+def test_public_chat_and_status_serialization_remove_internal_grounding_metadata():
+    call = ToolCallResult(
+        tool_name="search_menu",
+        success=True,
+        is_write=False,
+        result={
+            "success": True,
+            "data": {
+                "items": [{"product_id": "item-1"}],
+                "presentation": {"layout": "business-owned"},
+                "offered_options": [{"id": "domain-option"}],
+                "immutable_facts": [{"name": "domain-owned"}],
+            },
+            "grounding": {
+                "authoritative_domains": ["menu"],
+                "transactional_effects": [],
+                "required_next_effect": "item_selected",
+                "offered_options": [{"id": "item-1", "label": "First"}],
+                "presentation": {"max_items": 5},
+            },
+        },
+    )
+    chat = ChatResponse(
+        text="Safe",
+        session_id="session-1",
+        user_id="user-1",
+        tool_calls=[call],
+    ).model_dump()
+    status = main._status_response_from_record({
+        "request_id": "request-1",
+        "status": "completed",
+        "response": {
+            "text": "Safe",
+            "session_id": "session-1",
+            "user_id": "user-1",
+            "tool_calls": [{
+                "tool_name": call.tool_name,
+                "success": call.success,
+                "is_write": call.is_write,
+                "result": call.result,
+                "error_code": call.error_code,
+            }],
+        },
+    }).model_dump()
+
+    for payload in (chat, status):
+        serialized = str(payload["tool_calls"])
+        assert "grounding" not in serialized
+        assert "authoritative_domains" not in serialized
+        assert "transactional_effects" not in serialized
+        assert "required_next_effect" not in serialized
+        assert payload["tool_calls"][0]["result"]["data"]["items"]
+        assert payload["tool_calls"][0]["result"]["data"]["presentation"] == {
+            "layout": "business-owned"
+        }
+        assert payload["tool_calls"][0]["result"]["data"]["offered_options"] == [
+            {"id": "domain-option"}
+        ]
+        assert payload["tool_calls"][0]["result"]["data"]["immutable_facts"] == [
+            {"name": "domain-owned"}
+        ]
+
+    assert call.result["grounding"]["required_next_effect"] == "item_selected"
+
+
 def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
     captured = {}
 
@@ -3552,8 +3630,9 @@ def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
         "customer_phone": None,
         "channel": "web",
         "request_id": "req-1",
-        "expected_write_tool": None,
-        "available_options": None,
+            "expected_write_tool": None,
+            "required_effect": None,
+            "available_options": None,
     }
 
 

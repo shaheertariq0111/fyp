@@ -14,6 +14,8 @@ from src.services.support_flow_service import SupportFlowService
 
 
 class MenuStub:
+    customer_result_limit = 5
+
     def search_menu(self, **kwargs):
         return ToolResponse.ok(data=kwargs, user_message="ok")
 
@@ -1046,13 +1048,23 @@ def test_menu_link_injects_trusted_context(monkeypatch):
     }
 
 
-def test_search_menu_tool_uses_agent_requested_result_limit(monkeypatch):
+def test_search_menu_tool_caps_agent_requested_result_limit(monkeypatch):
     container = SimpleNamespace(menu=MenuStub())
     monkeypatch.setattr(tools, "get_services", lambda: container)
 
     result = tools.search_menu(query="recommend", max_results=12)
 
-    assert result["data"]["limit"] == 12
+    assert result["data"]["limit"] == 5
+
+
+def test_search_menu_tool_uses_configured_customer_limit(monkeypatch):
+    menu = MenuStub()
+    menu.customer_result_limit = 3
+    monkeypatch.setattr(tools, "get_services", lambda: SimpleNamespace(menu=menu))
+
+    result = tools.search_menu(query="recommend", max_results=12)
+
+    assert result["data"]["limit"] == 3
 
 
 def test_get_active_cart_uses_trusted_user_and_session(monkeypatch):

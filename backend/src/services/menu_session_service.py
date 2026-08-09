@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
-from src.models.tool_responses import ToolResponse
+from src.models.tool_responses import GroundingEvidence, ToolResponse
 
 
 class MenuSessionService:
@@ -36,8 +36,15 @@ class MenuSessionService:
         if item_id:
             query["item_id"] = item_id
         url = f"{str(self.settings.menu_site_base_url)}?{urlencode(query)}"
-        return ToolResponse.ok(data={"url": url, "expires_at": session["expires_at"]},
-                               user_message="Your secure menu link is ready.", next_action="open_menu")
+        return ToolResponse.ok(
+            data={"url": url, "expires_at": session["expires_at"]},
+            user_message="Your secure menu link is ready.",
+            next_action="open_menu",
+            grounding=GroundingEvidence(
+                authoritative_domains=["menu"],
+                transactional_effects=["menu_session_created"],
+            ),
+        )
 
     def resolve_token(self, session_token: str) -> ToolResponse:
         token_hash = self._hash(session_token, self.settings.session_token_secret)
@@ -48,4 +55,8 @@ class MenuSessionService:
         public = {key: session.get(key) for key in
                   ("restaurant_id", "branch_id", "preselected_item_id", "agent_session_id",
                    "user_id", "customer_id")}
-        return ToolResponse.ok(data=public, user_message="Menu session resolved.")
+        return ToolResponse.ok(
+            data=public,
+            user_message="Menu session resolved.",
+            grounding=GroundingEvidence(authoritative_domains=["menu"]),
+        )

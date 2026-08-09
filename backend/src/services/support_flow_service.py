@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from src.models.ticket import MAX_DESCRIPTION_LENGTH
-from src.models.tool_responses import ToolResponse
+from src.models.tool_responses import GroundingEvidence, ToolResponse
 from src.repositories.agent_session_repository import (
     SessionNotFoundError,
     SupportStateConflictError,
@@ -253,6 +253,10 @@ class SupportFlowService:
                 "entity": "pending_support",
                 "pending_support_intent": None,
             },
+            grounding=GroundingEvidence(
+                authoritative_domains=["support"],
+                transactional_effects=["support_request_cancelled"],
+            ),
         )
 
     def _clear_submitted_state(

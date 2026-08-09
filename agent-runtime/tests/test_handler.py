@@ -66,6 +66,7 @@ def reset_fake_memory():
 
 
 def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkeypatch):
+    raw = "1. First Item - 10\n2. Second Item - 12\nWhich item would you like?"
     class FakeAgent:
         def __init__(self, session_manager):
             self.session_manager = session_manager
@@ -80,7 +81,7 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
         handler,
         "invoke_restaurant_agent",
         lambda message, **kwargs: SimpleNamespace(
-            message={"content": [{"text": "Choose the item and size."}]},
+            message={"content": [{"text": raw}]},
             tool_calls=[{
                 "tool_name": "search_menu",
                 "success": True,
@@ -91,6 +92,15 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
                         {"item_id": "item-1", "name": "First Item", "price": 10},
                         {"item_id": "item-2", "name": "Second Item", "price": 12},
                     ]},
+                    "grounding": {
+                        "authoritative_domains": ["menu"],
+                        "required_next_effect": "item_selected",
+                        "offered_options": [
+                            {"id": "item-1", "label": "First Item"},
+                            {"id": "item-2", "label": "Second Item"},
+                        ],
+                        "presentation": {"max_items": 5},
+                    },
                 },
                 "error_code": None,
             }],
@@ -99,17 +109,29 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
     monkeypatch.setattr(
         handler,
         "agent_result_text",
-        lambda result: "Choose the item and size.",
+        lambda result: raw,
     )
     monkeypatch.setattr(
         handler,
         "classify_whatsapp_turn",
-        lambda **kwargs: pytest.fail("authoritative search must bypass turn classification"),
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="menu_browse",
+            confidence=0.99,
+            informational_only=True,
+            wants_to_order=False,
+        ),
     )
     monkeypatch.setattr(
         handler,
         "assess_assistant_claims",
-        lambda **kwargs: pytest.fail("authoritative search must bypass claim classification"),
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+            presented_authoritative_item_count=2,
+        ),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
@@ -122,15 +144,131 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
         "role": "assistant",
         "content": [{"text": response["text"]}],
     }
-    assert response["grounding_source"] == "menu_search"
+    assert response["grounding_source"] == "conversation"
+    assert response["required_effect"] == "item_selected"
+    assert response["expected_write_tool"] == "start_cart_item_customization"
 
 
-def test_whatsapp_get_menu_item_uses_authoritative_fast_path(monkeypatch):
+@pytest.mark.parametrize(
+    ("tool_name", "is_write", "grounding", "depends_on_domain"),
+    [
+        (
+            "any_menu_search",
+            False,
+            {
+                "authoritative_domains": ["menu"],
+                "required_next_effect": "item_selected",
+                "offered_options": [{"id": "item-1", "label": "First Item"}],
+                "presentation": {"max_items": 5},
+            },
+            "menu",
+        ),
+        (
+            "any_order_read",
+            False,
+            {
+                "authoritative_domains": ["order"],
+                "immutable_facts": [
+                    {"path": "order.order_id", "value": "ORD-ONE"},
+                    {"path": "order.status", "value": "preparing"},
+                ],
+            },
+            "order",
+        ),
+        (
+            "any_cart_write",
+            True,
+            {
+                "authoritative_domains": ["cart"],
+                "transactional_effects": ["item_added"],
+            },
+            None,
+        ),
+    ],
+)
+def test_natural_tool_response_uses_one_post_agent_semantic_call(
+    monkeypatch,
+    tool_name,
+    is_write,
+    grounding,
+    depends_on_domain,
+):
     class FakeAgent:
         def __init__(self, session_manager):
             self.session_manager = session_manager
 
-    raw = "The model added unsupported details."
+    raw = "Here is the supported natural response."
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(
+        handler,
+        "invoke_restaurant_agent",
+        lambda message, **kwargs: SimpleNamespace(
+            message={"content": [{"text": raw}]},
+            tool_calls=[{
+                "tool_name": tool_name,
+                "success": True,
+                "is_write": is_write,
+                "result": {
+                    "success": True,
+                    "data": {"items": [{"product_id": "item-1"}]},
+                    "user_message": "Backend fallback.",
+                    "grounding": grounding,
+                },
+                "error_code": None,
+            }],
+        ),
+    )
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: raw)
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("separate turn classifier must not run")
+        ),
+    )
+    semantic_calls = []
+
+    def one_semantic_call(**kwargs):
+        semantic_calls.append(kwargs)
+        return AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            depends_on_authoritative_state=depends_on_domain is not None,
+            authoritative_state_domains=(
+                [depends_on_domain] if depends_on_domain else []
+            ),
+            authoritative_claims_supported=depends_on_domain is not None,
+            presented_authoritative_item_count=(
+                1 if tool_name == "any_menu_search" else 0
+            ),
+            claimed_immutable_facts=(
+                [
+                    {"path": "order.order_id", "value": "ORD-ONE"},
+                    {"path": "order.status", "value": "preparing"},
+                ]
+                if tool_name == "any_order_read"
+                else []
+            ),
+        )
+
+    monkeypatch.setattr(handler, "assess_assistant_claims", one_semantic_call)
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(channel="whatsapp"))
+
+    assert response["text"] == raw
+    assert len(semantic_calls) == 1
+
+
+def test_whatsapp_get_menu_item_preserves_supported_natural_continuation(monkeypatch):
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    raw = "First Item is 10. Would you like to customize it?"
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
@@ -153,6 +291,7 @@ def test_whatsapp_get_menu_item_uses_authoritative_fast_path(monkeypatch):
                         "description": "Authoritative description.",
                         "price": 10,
                     }},
+                    "grounding": {"authoritative_domains": ["menu"]},
                 },
                 "error_code": None,
             }],
@@ -162,12 +301,24 @@ def test_whatsapp_get_menu_item_uses_authoritative_fast_path(monkeypatch):
     monkeypatch.setattr(
         handler,
         "classify_whatsapp_turn",
-        lambda **kwargs: pytest.fail("authoritative item read must bypass classification"),
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="menu_item_detail",
+            confidence=0.99,
+            informational_only=True,
+            wants_to_order=False,
+            target_items=["First Item"],
+        ),
     )
     monkeypatch.setattr(
         handler,
         "assess_assistant_claims",
-        lambda **kwargs: pytest.fail("authoritative item read must bypass classification"),
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+        ),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
@@ -176,10 +327,10 @@ def test_whatsapp_get_menu_item_uses_authoritative_fast_path(monkeypatch):
         expected_write_tool="start_cart_item_customization",
     ))
 
-    assert response["text"] == "First Item - 10\nAuthoritative description."
+    assert response["text"] == raw
     assert response["expected_write_tool"] == "start_cart_item_customization"
-    assert response["grounding_source"] == "menu_item"
-    assert raw not in str(FakeMemorySessionManager.created[0].history)
+    assert response["grounding_source"] == "conversation"
+    assert raw in str(FakeMemorySessionManager.created[0].history)
     assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == response["text"]
 
 
@@ -238,6 +389,97 @@ def test_transactional_customer_can_receive_conversational_continuation(monkeypa
     assert FakeMemorySessionManager.created[0].history[-1] == {
         "role": "assistant",
         "content": [{"text": text}],
+    }
+
+
+@pytest.mark.parametrize(
+    ("customer_message", "authoritative_tool"),
+    [
+        ("I'd like to start a separate order now.", "get_order_status"),
+        (
+            "Leave that earlier purchase alone and help me buy something else.",
+            "get_active_cart",
+        ),
+        (
+            "Can we make another order independently of the one already submitted?",
+            "get_order_status",
+        ),
+    ],
+)
+def test_explicit_new_transaction_intent_is_not_hijacked_by_existing_orders(
+    monkeypatch,
+    customer_message,
+    authoritative_tool,
+):
+    model_reply = "Absolutely—what would you like for the new order?"
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def fake_invoke(message, **kwargs):
+        agent = kwargs["agent"]
+        agent.session_manager.append_message(
+            {"role": "assistant", "content": [{"text": model_reply}]},
+            agent,
+        )
+        return SimpleNamespace(
+            message={"content": [{"text": model_reply}]},
+            tool_calls=[{
+                "tool_name": authoritative_tool,
+                "success": True,
+                "is_write": False,
+                "result": {
+                    "success": True,
+                    "user_message": "Your existing order is being prepared.",
+                    "data": {
+                        "orders": [{
+                            "order_id": "ORD-EXISTING",
+                            "status": "submitted_to_restaurant",
+                        }]
+                    },
+                },
+                "error_code": None,
+            }],
+        )
+
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: model_reply)
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="transactional_change",
+            confidence=0.99,
+            informational_only=False,
+            wants_to_order=True,
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        message=customer_message,
+        channel="whatsapp",
+    ))
+
+    assert response["text"] == model_reply
+    assert response["tool_calls"][0]["tool_name"] == authoritative_tool
+    assert FakeMemorySessionManager.created[0].history[-1] == {
+        "role": "assistant",
+        "content": [{"text": model_reply}],
     }
 
 
@@ -310,7 +552,7 @@ def test_two_turn_search_selection_blocks_prose_progression_across_production_pa
         observed_histories.append(list(agent.session_manager.history))
         agent.session_manager.append_message({"role": "user", "content": [{"text": message}]}, agent)
         if message == "show me the menu":
-            raw = "Choose the item and size."
+            raw = "1. Pepperoni Hot - 10\n2. Second Item - 12\nWhich item would you like?"
             calls = [{
                 "tool_name": "search_menu",
                 "success": True,
@@ -321,6 +563,15 @@ def test_two_turn_search_selection_blocks_prose_progression_across_production_pa
                         {"product_id": "item-1", "name": "Pepperoni Hot", "price": 10},
                         {"product_id": "item-2", "name": "Second Item", "price": 12},
                     ]},
+                        "grounding": {
+                            "authoritative_domains": ["menu"],
+                            "required_next_effect": "item_selected",
+                            "offered_options": [
+                                {"id": "item-1", "label": "Pepperoni Hot"},
+                                {"id": "item-2", "label": "Second Item"},
+                            ],
+                            "presentation": {"max_items": 5},
+                    },
                 },
                 "error_code": None,
             }]
@@ -355,6 +606,22 @@ def test_two_turn_search_selection_blocks_prose_progression_across_production_pa
         lambda **kwargs: AssistantClaimAssessment(
             claims_transactional_progression=False,
             claimed_actions=[],
+            depends_on_authoritative_state=(kwargs["assistant_message"].startswith("1.")),
+            authoritative_state_domains=(
+                ["menu"] if kwargs["assistant_message"].startswith("1.") else []
+            ),
+            authoritative_claims_supported=(kwargs["assistant_message"].startswith("1.")),
+            presented_authoritative_item_count=(
+                2 if kwargs["assistant_message"].startswith("1.") else 0
+            ),
+            customer_requests_required_effect=(
+                kwargs["assistant_message"].startswith("You selected")
+            ),
+            selected_option=(
+                "item-1"
+                if kwargs["assistant_message"].startswith("You selected")
+                else None
+            ),
         ),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
@@ -392,6 +659,7 @@ def test_two_turn_search_selection_blocks_prose_progression_across_production_pa
 
     assert first["text"].endswith("Which item would you like?")
     assert first["expected_write_tool"] == "start_cart_item_customization"
+    assert first["required_effect"] == "item_selected"
     assert observed_histories[1][-1]["content"][0]["text"] == first["text"]
     assert second["tool_calls"] == []
     assert second["text"] == UNGROUNDED_TRANSACTION_FALLBACK
@@ -542,7 +810,7 @@ def test_write_outcome_commits_only_authoritative_message(monkeypatch, success, 
     assert response["grounding_source"] == ("successful_write" if success else "failed_write")
 
 
-def test_authoritative_cart_read_bypasses_classifiers(monkeypatch):
+def test_unsupported_cart_claim_fails_closed_despite_cart_read(monkeypatch):
     class FakeAgent:
         def __init__(self, session_manager):
             self.session_manager = session_manager
@@ -562,6 +830,7 @@ def test_authoritative_cart_read_bypasses_classifiers(monkeypatch):
                     "success": True,
                     "user_message": "Your cart is currently empty.",
                     "data": {"cart": None},
+                    "grounding": {"authoritative_domains": ["cart"]},
                 },
                 "error_code": None,
             }],
@@ -571,12 +840,23 @@ def test_authoritative_cart_read_bypasses_classifiers(monkeypatch):
     monkeypatch.setattr(
         handler,
         "classify_whatsapp_turn",
-        lambda **kwargs: pytest.fail("authoritative cart read must bypass classification"),
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="general_chat",
+            confidence=0.99,
+            informational_only=False,
+            wants_to_order=False,
+        ),
     )
     monkeypatch.setattr(
         handler,
         "assess_assistant_claims",
-        lambda **kwargs: pytest.fail("authoritative cart read must bypass classification"),
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["cart"],
+            authoritative_claims_supported=False,
+        ),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
@@ -585,9 +865,9 @@ def test_authoritative_cart_read_bypasses_classifiers(monkeypatch):
         expected_write_tool="start_cart_item_customization",
     ))
 
-    assert response["text"] == "Your cart is currently empty."
+    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
     assert response["expected_write_tool"] == "start_cart_item_customization"
-    assert response["grounding_source"] == "authoritative_read"
+    assert response["grounding_source"] == "ungrounded_transaction_fallback"
     assert raw not in str(FakeMemorySessionManager.created[0].history)
 
 

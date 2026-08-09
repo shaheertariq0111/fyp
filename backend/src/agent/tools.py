@@ -119,8 +119,10 @@ def search_menu(query: str | None = None, category: str | None = None,
     "deal", or an item name. Use category only when you know the exact menu
     category id returned by menu data, such as "classic-flavors".
     """
-    limit = max(1, max_results) if max_results is not None else None
-    return _result("search_menu", lambda: get_services().menu.search_menu(
+    menu = get_services().menu
+    configured_limit = menu.customer_result_limit
+    limit = min(max(1, max_results or configured_limit), configured_limit)
+    return _result("search_menu", lambda: menu.search_menu(
         query=query, category=category, tags=tags, max_price=max_price,
         available_only=available_only, limit=limit,
     ))

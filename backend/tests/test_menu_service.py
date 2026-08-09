@@ -56,6 +56,27 @@ def test_search_menu_limit_caps_returned_items_after_sorting():
         "item-7", "item-6", "item-5", "item-4", "item-3",
     ]
     assert result.data["has_more"] is True
+    assert result.grounding.authoritative_domains == ["menu"]
+    assert result.grounding.presentation.max_items == 5
+
+
+def test_configured_customer_result_limit_bounds_default_search_page():
+    menu = MenuService(
+        MemoryMenuRepository([
+            item("item-1", name="First", starting_price=10),
+            item("item-2", name="Second", starting_price=11),
+            item("item-3", name="Third", starting_price=12),
+        ], []),
+        customer_result_limit=2,
+    )
+
+    result = menu.search_menu()
+
+    assert len(result.data["items"]) == 2
+    assert result.data["has_more"] is True
+    assert result.grounding.presentation.max_items == 2
+    assert result.grounding.required_next_effect == "item_selected"
+    assert len(result.grounding.offered_options) == 2
 
 
 def test_search_menu_excludes_items_already_shown():
