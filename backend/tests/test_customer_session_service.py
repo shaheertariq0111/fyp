@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 
 from src.services.agent_session_service import AgentSessionService
 from src.services.customer_service import CustomerService
@@ -369,6 +370,69 @@ def test_whatsapp_menu_choices_are_persisted_for_the_next_message():
         "cust-whatsapp",
         session["agent_session_id"],
     ) == {}
+
+
+def test_expired_whatsapp_grounding_contract_logs_safe_clear_reason(monkeypatch):
+    _, sessions = services()
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    clock_calls = 0
+
+    def one_shot_clock():
+        nonlocal clock_calls
+        clock_calls += 1
+        if clock_calls > 1:
+            raise AssertionError("diagnostic logging called the clock again")
+        return now
+
+    session = sessions.resolve(
+        requested_session_id="whatsapp-session",
+        customer_id="cust-whatsapp",
+        channel="whatsapp",
+        allow_requested_session_creation=True,
+    )["session"]
+    sessions.clock = one_shot_clock
+    stored = sessions.repository.data[session["agent_session_id"]]
+    stored.update({
+        "offered_menu_items": [{"product_id": "private-item"}],
+        "whatsapp_required_effect": "private malformed state payload",
+        "whatsapp_order_state_updated_at": (
+            now - timedelta(minutes=31)
+        ).isoformat(),
+    })
+    clear_calls = []
+    original_clear = sessions.repository.clear_whatsapp_order_state
+
+    def counted_clear(customer_id, agent_session_id):
+        clear_calls.append((customer_id, agent_session_id))
+        return original_clear(customer_id, agent_session_id)
+
+    sessions.repository.clear_whatsapp_order_state = counted_clear
+    logged_events = []
+    monkeypatch.setattr(
+        "src.services.agent_session_service.logger.info",
+        lambda _message, *, extra=None: logged_events.append(extra or {}),
+    )
+
+    assert sessions.get_whatsapp_order_state(
+        "cust-whatsapp",
+        session["agent_session_id"],
+    ) == {}
+    assert clock_calls == 1
+    assert clear_calls == [("cust-whatsapp", session["agent_session_id"])]
+
+    transition = next(
+        event
+        for event in logged_events
+        if event.get("event") == "whatsapp_grounding_state_transition"
+    )
+    assert transition["state_action"] == "contract_cleared_expired_or_invalid"
+    assert transition["state_clear_reason"] == "expired"
+    assert transition["existing_option_count"] == 1
+    assert transition["required_effect_present"] is False
+    assert transition["required_effect"] is None
+    assert "private malformed state payload" not in str(transition)
+    assert "private-item" not in str(transition)
+    assert "offered_menu_items" not in transition
 
 
 def test_expired_idle_session_rotates():

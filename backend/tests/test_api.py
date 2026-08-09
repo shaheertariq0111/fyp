@@ -3349,7 +3349,7 @@ def test_chat_blocks_whatsapp_transaction_text_without_backend_result(monkeypatc
     )
 
 
-def test_old_runtime_missing_grounding_metadata_fails_closed():
+def test_old_runtime_missing_grounding_metadata_fails_closed(caplog):
     context = AgentRequestContext(
         user_id="user", agent_session_id="session",
         customer_id="user", channel="whatsapp",
@@ -3370,6 +3370,20 @@ def test_old_runtime_missing_grounding_metadata_fails_closed():
         "I couldn't verify that change, so I haven't treated it as completed. "
         "Please tell me what you'd like to do next, or ask me to check the current cart."
     )
+    completed = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "backend_grounding_completed"
+    )
+    assert completed.assessment_origin == "boundary_missing_synthetic"
+    assert completed.assessment_transport_status == "missing"
+    assert completed.backend_grounding_rejection_reason == (
+        "unsupported_transactional_effect"
+    )
+    public = response.model_dump()
+    assert "grounding_rejection_reason" not in public
+    assert "assessment_origin" not in public
+    assert "semantic_classifier_status" not in public
 
 
 def test_chat_preserves_authoritative_submitted_order_cancel_protection():

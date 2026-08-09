@@ -1,11 +1,14 @@
 from types import SimpleNamespace
 
 from botocore.exceptions import ClientError
+import pytest
 
 from src.services.agent_request_processor import (
     AgentRequestProcessor,
     PreparedAgentRequest,
+    build_response_builder,
 )
+from src.agent.response_grounding import UNGROUNDED_TRANSACTION_FALLBACK
 
 
 class ForbiddenCall:
@@ -238,7 +241,7 @@ def test_successful_invocation_still_claims_and_completes_request():
     assert requests.record["invocation_state"] == "completed"
 
 
-def test_search_results_persist_expected_item_selection_write_and_options():
+def test_search_results_persist_expected_item_selection_write_and_options(caplog):
     class Sessions:
         def __init__(self):
             self.state = {}
@@ -300,6 +303,24 @@ def test_search_results_persist_expected_item_selection_write_and_options():
             {"id": "item-2", "label": "Second Item"},
         ],
     }
+    loaded = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "whatsapp_grounding_state_loaded"
+    )
+    assert loaded.contract_present is True
+    assert loaded.required_effect_present is True
+    assert loaded.required_effect == "item_selected"
+    assert loaded.available_option_count == 2
+    transition = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "whatsapp_grounding_state_transition"
+    )
+    assert transition.state_action == "contract_created"
+    assert transition.contract_created is True
+    assert transition.contract_replaced is False
+    assert transition.produced_option_count == 2
 
 
 def test_legacy_whatsapp_menu_state_is_inferred_only_at_orchestration_boundary():
@@ -329,7 +350,7 @@ def test_legacy_whatsapp_menu_state_is_inferred_only_at_orchestration_boundary()
     }
 
 
-def test_successful_expected_write_clears_persisted_menu_selection_state():
+def test_successful_expected_write_clears_persisted_menu_selection_state(caplog):
     class Sessions:
         state = {
             "offered_menu_items": [{"product_id": "item-1", "name": "First"}],
@@ -366,9 +387,17 @@ def test_successful_expected_write_clears_persisted_menu_selection_state():
     )
 
     assert sessions.state == {}
+    transition = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "whatsapp_grounding_state_transition"
+    )
+    assert transition.state_action == "contract_cleared_required_effect_satisfied"
+    assert transition.state_cleared is True
+    assert transition.state_clear_reason == "required_effect_satisfied"
 
 
-def test_informational_search_does_not_replace_pending_item_choices():
+def test_informational_search_does_not_replace_pending_item_choices(caplog):
     original = [{"product_id": "item-1", "name": "Original Item"}]
 
     class Sessions:
@@ -413,6 +442,204 @@ def test_informational_search_does_not_replace_pending_item_choices():
         }),
         prior_expected_write_tool="start_cart_item_customization",
         prior_required_effect="item_selected",
+        prior_available_option_count=1,
     )
 
     assert sessions.state["offered_menu_items"] == original
+    transition = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "whatsapp_grounding_state_transition"
+    )
+    assert transition.state_action == "contract_retained_existing_requirement"
+    assert transition.contract_retained is True
+    assert transition.contract_replaced is False
+    assert transition.existing_option_count == 1
+    assert transition.produced_option_count == 1
+
+
+def _grounding_response_builder():
+    return build_response_builder(lambda: SimpleNamespace(
+        carts=SimpleNamespace(get_active_cart=ForbiddenCall()),
+        orders=SimpleNamespace(get_order_status=ForbiddenCall()),
+    ))
+
+
+def _grounding_context():
+    return SimpleNamespace(
+        channel="whatsapp",
+        user_id="customer-1",
+        customer_id="customer-1",
+        agent_session_id="session-1",
+    )
+
+
+def test_backend_grounding_logs_runtime_agreement_without_public_diagnostics(caplog):
+    response = _grounding_response_builder()(
+        _grounding_context(),
+        {"customer": {}},
+        SimpleNamespace(
+            text="How can I help?",
+            raw_result={
+                "tool_calls": [],
+                "claim_assessment": {
+                    "claims_transactional_progression": False,
+                },
+                "grounding_source": "conversation",
+                "assessment_origin": "model",
+                "semantic_classifier_status": "completed",
+            },
+        ),
+    )
+
+    completed = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "backend_grounding_completed"
+    )
+    assert response.text == "How can I help?"
+    assert completed.runtime_backend_grounding_agree is True
+    assert completed.backend_changed_runtime_text is False
+    public = response.model_dump()
+    assert "grounding_rejection_reason" not in public
+    assert "assessment_origin" not in public
+    assert "semantic_classifier_status" not in public
+
+
+def test_backend_grounding_logs_runtime_disagreement_without_changing_text(caplog):
+    response = _grounding_response_builder()(
+        _grounding_context(),
+        {"customer": {}},
+        SimpleNamespace(
+            text="How can I help?",
+            raw_result={
+                "tool_calls": [],
+                "claim_assessment": {
+                    "claims_transactional_progression": False,
+                },
+                "grounding_source": "exact_artifact",
+                "assessment_origin": "model",
+                "semantic_classifier_status": "completed",
+            },
+        ),
+    )
+
+    mismatch = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "grounding_decision_mismatch"
+    )
+    assert response.text == "How can I help?"
+    assert mismatch.runtime_grounding_source == "exact_artifact"
+    assert mismatch.backend_grounding_source == "conversation"
+    assert mismatch.backend_changed_runtime_text is False
+
+
+def test_backend_grounding_labels_missing_assessment_synthetic_origin(caplog):
+    response = _grounding_response_builder()(
+        _grounding_context(),
+        {"customer": {}},
+        SimpleNamespace(
+            text="Untrusted old-runtime response",
+            raw_result={"tool_calls": [], "grounding_source": "conversation"},
+        ),
+    )
+
+    issue = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "grounding_boundary_metadata_issue"
+        and getattr(record, "boundary_metadata_issue", None)
+        == "claim_assessment_missing"
+    )
+    completed = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "backend_grounding_completed"
+    )
+    assert response.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert issue.assessment_origin == "boundary_missing_synthetic"
+    assert completed.assessment_origin == "boundary_missing_synthetic"
+    assert completed.backend_grounding_rejection_reason == (
+        "unsupported_transactional_effect"
+    )
+
+
+def test_backend_grounding_logs_malformed_assessment_before_existing_failure(caplog):
+    with pytest.raises(Exception):
+        _grounding_response_builder()(
+            _grounding_context(),
+            {"customer": {}},
+            SimpleNamespace(
+                text="Untrusted malformed response",
+                raw_result={
+                    "tool_calls": [],
+                    "claim_assessment": {
+                        "claims_transactional_progression": False,
+                        "claimed_actions": ["item_added"],
+                    },
+                    "grounding_source": "conversation",
+                },
+            ),
+        )
+
+    issue = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "grounding_boundary_metadata_issue"
+        and getattr(record, "boundary_metadata_issue", None)
+        == "claim_assessment_invalid"
+    )
+    assert issue.exception_type == "ValidationError"
+    assert not hasattr(issue, "exception_message")
+
+
+def test_grounding_state_requirement_mismatch_logs_no_persistence_change(caplog):
+    class Sessions:
+        def save_whatsapp_order_state(self, *_args, **_kwargs):
+            raise AssertionError("mismatched contract must not be persisted")
+
+        def clear_whatsapp_order_state(self, *_args, **_kwargs):
+            raise AssertionError("mismatched contract must not clear state")
+
+    processor = AgentRequestProcessor(
+        services_provider=lambda: SimpleNamespace(agent_sessions=Sessions()),
+        agent_client_provider=ForbiddenCall(),
+        identity_resolver=ForbiddenCall(),
+        response_builder=ForbiddenCall(),
+    )
+    processor._persist_whatsapp_grounding_state(
+        SimpleNamespace(
+            channel="whatsapp",
+            customer_id="customer-1",
+            user_id="user-1",
+            agent_session_id="session-1",
+        ),
+        SimpleNamespace(raw_result={
+            "required_effect": "checkout_started",
+            "tool_calls": [{
+                "tool_name": "menu_capability",
+                "success": True,
+                "result": {
+                    "success": True,
+                    "grounding": {
+                        "required_next_effect": "item_selected",
+                        "offered_options": [
+                            {"id": "private-item", "label": "Private Item"},
+                        ],
+                    },
+                },
+            }],
+        }),
+    )
+
+    transition = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "whatsapp_grounding_state_transition"
+    )
+    assert transition.state_action == "contract_not_persisted_requirement_mismatch"
+    assert transition.contract_created is False
+    assert transition.contract_replaced is False
+    assert transition.state_cleared is False
+    assert not hasattr(transition, "offered_options")

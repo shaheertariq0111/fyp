@@ -261,6 +261,9 @@ def test_natural_tool_response_uses_one_post_agent_semantic_call(
 
     assert response["text"] == raw
     assert len(semantic_calls) == 1
+    assert response["assessment_origin"] == "model"
+    assert response["semantic_classifier_status"] == "completed"
+    assert "grounding_rejection_reason" not in response
 
 
 def test_whatsapp_get_menu_item_preserves_supported_natural_continuation(monkeypatch):
@@ -703,13 +706,20 @@ def test_assistant_classifier_exception_fails_closed_before_memory_commit(monkey
     response = handler.invoke(runtime_payload(channel="whatsapp"))
 
     assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
+    assert response["grounding_rejection_reason"] == (
+        "unsupported_transactional_effect"
+    )
+    assert response["assessment_origin"] == "exception_synthetic"
+    assert response["semantic_classifier_status"] == "failed"
     assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == (
         UNGROUNDED_TRANSACTION_FALLBACK
     )
     assert "selections are now locked" not in str(FakeMemorySessionManager.created[0].history)
 
 
-def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(monkeypatch):
+def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(
+    monkeypatch,
+):
     class FakeAgent:
         def __init__(self, session_manager):
             self.session_manager = session_manager
@@ -744,6 +754,12 @@ def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(
     monkeypatch.setattr(handler, "assess_assistant_claims", slow_claim_classifier)
     monkeypatch.setattr(handler, "SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+    logged_events = []
+    monkeypatch.setattr(
+        handler.logger,
+        "info",
+        lambda _message, *, extra=None: logged_events.append(extra or {}),
+    )
 
     started = time.perf_counter()
     response = handler.invoke(runtime_payload(channel="whatsapp"))
@@ -752,10 +768,33 @@ def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(
     assert elapsed < 0.15
     assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
     assert response["grounding_source"] == "ungrounded_transaction_fallback"
+    assert response["grounding_rejection_reason"] == (
+        "unsupported_transactional_effect"
+    )
+    assert response["assessment_origin"] == "timeout_synthetic"
+    assert response["semantic_classifier_status"] == "timed_out"
     assert raw not in str(FakeMemorySessionManager.created[0].history)
     assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == (
         UNGROUNDED_TRANSACTION_FALLBACK
     )
+    grounded_event = next(
+        event
+        for event in logged_events
+        if event.get("event") == "whatsapp_grounding_completed"
+    )
+    for prohibited_field in (
+        "customer_message",
+        "assistant_message",
+        "customer_name",
+        "phone_number",
+        "order_id",
+        "ticket_id",
+        "product_id",
+        "option_id",
+        "immutable_fact_values",
+        "exception_message",
+    ):
+        assert prohibited_field not in grounded_event
 
 
 @pytest.mark.parametrize(
@@ -808,6 +847,14 @@ def test_write_outcome_commits_only_authoritative_message(monkeypatch, success, 
     assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == user_message
     assert "every customization" not in str(FakeMemorySessionManager.created[0].history)
     assert response["grounding_source"] == ("successful_write" if success else "failed_write")
+    assert response["semantic_classifier_status"] == (
+        "not_run_authoritative_fast_path"
+    )
+    assert "assessment_origin" not in response
+    if success:
+        assert "grounding_rejection_reason" not in response
+    else:
+        assert response["grounding_rejection_reason"] == "authoritative_write_failed"
 
 
 def test_unsupported_cart_claim_fails_closed_despite_cart_read(monkeypatch):
