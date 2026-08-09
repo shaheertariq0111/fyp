@@ -832,6 +832,57 @@ def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(
     assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == (
         UNGROUNDED_TRANSACTION_FALLBACK
     )
+    assert response["semantic_classifier_available"] is False
+
+
+def test_successful_checkout_uses_authoritative_message_when_classifier_unavailable(
+    monkeypatch,
+):
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    raw = "The model added unsupported details about checkout."
+    authoritative_message = "Your pending order is ready for confirmation."
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(
+        handler,
+        "invoke_restaurant_agent",
+        lambda message, **kwargs: SimpleNamespace(
+            message={"content": [{"text": raw}]},
+            tool_calls=[{
+                "tool_name": "create_pending_order_from_cart",
+                "success": True,
+                "is_write": True,
+                "result": {
+                    "success": True,
+                    "user_message": authoritative_message,
+                    "grounding": {
+                        "transactional_effects": ["checkout_started"],
+                    },
+                },
+                "error_code": None,
+            }],
+        ),
+    )
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: raw)
+    monkeypatch.setattr(
+        handler,
+        "run_semantic_classifier",
+        lambda **kwargs: (_ for _ in ()).throw(TimeoutError("unavailable")),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(channel="whatsapp"))
+
+    assert response["text"] == authoritative_message
+    assert response["grounding_source"] == "safe_authoritative_write_fallback"
+    assert response["semantic_classifier_available"] is False
+    assert raw not in str(FakeMemorySessionManager.created[0].history)
 
 
 @pytest.mark.parametrize(

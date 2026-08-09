@@ -12,6 +12,7 @@ from src.agent.response_grounding import (
     assess_assistant_claims,
     ground_authoritative_tool_response,
     ground_agent_response,
+    ground_classifier_unavailable_response,
 )
 from src.models.tool_responses import TransactionalEffect
 
@@ -426,6 +427,139 @@ def test_failed_write_never_uses_model_success_prose():
 
     assert result.text == "Please choose one of the available options."
     assert result.source == "failed_write"
+
+
+def test_classifier_unavailable_uses_successful_checkout_write_message(caplog):
+    caplog.set_level("INFO", logger="src.agent.response_grounding")
+    result = ground_classifier_unavailable_response(
+        tool_calls=[tool_call(
+            "create_pending_order_from_cart",
+            is_write=True,
+            user_message="Your pending order is ready for confirmation.",
+            grounding={"transactional_effects": ["checkout_started"]},
+        )],
+    )
+
+    assert result.text == "Your pending order is ready for confirmation."
+    assert result.source == "safe_authoritative_write_fallback"
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "safe_authoritative_write_fallback_used"
+    )
+    assert record.authoritative_user_message_present is True
+    assert "Your pending order" not in caplog.text
+
+
+def test_classifier_unavailable_uses_generic_success_for_effect_only_write():
+    result = ground_classifier_unavailable_response(
+        tool_calls=[tool_call(
+            "any_write_capability",
+            is_write=True,
+            grounding={"transactional_effects": ["customization_saved"]},
+        )],
+    )
+
+    assert result.text == "That change was completed successfully."
+    assert result.source == "safe_authoritative_write_fallback"
+
+
+def test_classifier_unavailable_without_successful_write_fails_closed():
+    result = ground_classifier_unavailable_response(tool_calls=[])
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.source == "ungrounded_transaction_fallback"
+
+
+def test_classifier_unavailable_no_write_exact_artifact_fails_closed():
+    result = ground_classifier_unavailable_response(
+        tool_calls=[tool_call(
+            "any_read_capability",
+            grounding={"exact_customer_text": "Authoritative read text."},
+        )],
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.source == "ungrounded_transaction_fallback"
+
+
+def test_classifier_unavailable_preserves_failed_write_behavior():
+    result = ground_classifier_unavailable_response(
+        tool_calls=[tool_call(
+            "any_write_capability",
+            success=False,
+            is_write=True,
+            user_message="That change could not be completed.",
+        )],
+    )
+
+    assert result.text == "That change could not be completed."
+    assert result.source == "failed_write"
+
+
+def test_classifier_unavailable_accepts_valid_required_transaction_target():
+    result = ground_classifier_unavailable_response(
+        tool_calls=[tool_call(
+            "any_selection_capability",
+            is_write=True,
+            user_message="Choose the next customization.",
+            grounding={
+                "transactional_effects": ["item_selected"],
+                "transactional_targets": [transaction_target()],
+            },
+        )],
+        required_effect="item_selected",
+        available_options=[{"id": "item-1", "label": "First Item"}],
+    )
+
+    assert result.text == "Choose the next customization."
+    assert result.source == "safe_authoritative_write_fallback"
+    assert result.required_next_effect is None
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        [],
+        [transaction_target("item-99")],
+        [{"effect": "item_selected", "entity_type": "menu_item"}],
+    ],
+)
+def test_classifier_unavailable_cannot_bypass_required_target_validation(targets):
+    result = ground_classifier_unavailable_response(
+        tool_calls=[tool_call(
+            "any_selection_capability",
+            is_write=True,
+            user_message="Choose the next customization.",
+            grounding={
+                "transactional_effects": ["item_selected"],
+                "transactional_targets": targets,
+            },
+        )],
+        required_effect="item_selected",
+        available_options=[{"id": "item-1", "label": "First Item"}],
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.source == "ungrounded_transaction_fallback"
+    assert result.required_next_effect == "item_selected"
+
+
+def test_classifier_unavailable_prefers_exact_authoritative_artifact():
+    result = ground_classifier_unavailable_response(
+        tool_calls=[tool_call(
+            "any_write_capability",
+            is_write=True,
+            user_message="Safe write message.",
+            grounding={
+                "transactional_effects": ["customization_saved"],
+                "exact_customer_text": "Exact authoritative text.",
+            },
+        )],
+    )
+
+    assert result.text == "Exact authoritative text."
+    assert result.source == "exact_artifact"
 
 
 def test_successful_required_write_consumes_pending_transition():

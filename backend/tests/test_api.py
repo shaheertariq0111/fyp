@@ -3372,6 +3372,51 @@ def test_old_runtime_missing_grounding_metadata_fails_closed():
     )
 
 
+def test_chat_second_pass_preserves_classifier_unavailable_write_fallback(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_refresh_authoritative_state",
+        lambda user_id, session_id, state: state,
+    )
+    context = AgentRequestContext(
+        user_id="user",
+        agent_session_id="session",
+        customer_id="user",
+        channel="whatsapp",
+    )
+    response = main._chat_response_from_invocation(
+        context,
+        {
+            "customer": {"customer_id": "user", "phone_verified": True},
+            "session": {"session_id": "session", "channel": "whatsapp"},
+        },
+        AgentInvocationResult(
+            text="Your pending order is ready for confirmation.",
+            raw_result={
+                "semantic_classifier_available": False,
+                "grounding_source": "safe_authoritative_write_fallback",
+                "tool_calls": [{
+                    "tool_name": "create_pending_order_from_cart",
+                    "success": True,
+                    "is_write": True,
+                    "result": {
+                        "success": True,
+                        "user_message": (
+                            "Your pending order is ready for confirmation."
+                        ),
+                        "grounding": {
+                            "transactional_effects": ["checkout_started"],
+                        },
+                    },
+                    "error_code": None,
+                }],
+            },
+        ),
+    )
+
+    assert response.text == "Your pending order is ready for confirmation."
+
+
 def test_chat_preserves_authoritative_submitted_order_cancel_protection():
     context = AgentRequestContext(
         user_id="user",
