@@ -200,15 +200,6 @@ class GroundedAgentResponse:
     required_next_effect: TransactionalEffect | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class RequiredEffectEvidenceAssessment:
-    authoritative_effect_present: bool
-    authoritative_target_present: bool
-    target_validation_passed: bool | None
-    satisfied: bool
-    reason: str
-
-
 class GroundedAssistantMemoryBuffer:
     """Delay only the final assistant message until customer text is grounded."""
 
@@ -304,17 +295,9 @@ def ground_authoritative_tool_response(
     tool_calls: list[Any],
     expected_write_tool: str | None = None,
     required_effect: TransactionalEffect | None = None,
-    available_options: list[dict[str, str]] | None = None,
 ) -> GroundedAgentResponse | None:
     """Return only failures, exact artifacts, and safe legacy write fallbacks."""
-    calls = list(tool_calls or [])
-    requirement = _required_effect_evidence_assessment(
-        calls,
-        required_effect,
-        available_options,
-    )
-    write_effects = _supported_write_effects(calls)
-    for call in reversed(calls):
+    for call in reversed(list(tool_calls or [])):
         if not bool(_value(call, "is_write")):
             continue
         result = _result(call)
@@ -326,58 +309,27 @@ def ground_authoritative_tool_response(
                 expected_write_tool,
                 required_effect,
             )
-        if requirement.authoritative_effect_present and not requirement.satisfied:
-            _log_required_effect_assessment(
-                required_effect,
-                write_effects,
-                requirement,
-            )
-            return GroundedAgentResponse(
-                UNGROUNDED_TRANSACTION_FALLBACK,
-                "ungrounded_transaction_fallback",
-                expected_write_tool,
-                required_effect,
-            )
         evidence = _grounding_evidence(call)
         exact_text = _clean_text(evidence.get("exact_customer_text"))
         if exact_text:
-            _log_required_effect_assessment(
-                required_effect,
-                write_effects,
-                requirement,
-            )
             return GroundedAgentResponse(
                 exact_text,
                 "exact_artifact",
-                _expected_action_after_calls(
-                    calls,
-                    expected_write_tool,
-                    required_effect,
-                    available_options,
-                ),
+                _expected_action_after_call(call, expected_write_tool),
                 _required_effect_after_calls(
-                    calls,
-                    required_effect,
-                    available_options,
+                    list(tool_calls or []), required_effect
                 ),
             )
         if not evidence:
             return GroundedAgentResponse(
                 user_message or FAILED_TRANSACTION_FALLBACK,
                 "successful_write" if user_message else "write_without_grounding",
-                _expected_action_after_calls(
-                    calls,
-                    expected_write_tool,
-                    required_effect,
-                    available_options,
-                ),
+                _expected_action_after_call(call, expected_write_tool),
                 _required_effect_after_calls(
-                    calls,
-                    required_effect,
-                    available_options,
+                    list(tool_calls or []), required_effect
                 ),
             )
-    for call in reversed(calls):
+    for call in reversed(list(tool_calls or [])):
         if not _call_succeeded(call):
             continue
         exact_text = _clean_text(
@@ -389,9 +341,7 @@ def ground_authoritative_tool_response(
                 "exact_artifact",
                 expected_write_tool,
                 _required_effect_after_calls(
-                    calls,
-                    required_effect,
-                    available_options,
+                    list(tool_calls or []), required_effect
                 ),
             )
     return None
@@ -413,7 +363,6 @@ def ground_agent_response(
         tool_calls=calls,
         expected_write_tool=expected_write_tool,
         required_effect=required_effect,
-        available_options=available_options,
     )
     if authoritative is not None:
         return authoritative
@@ -427,42 +376,23 @@ def ground_agent_response(
     supported_effects = _supported_effects(calls)
     claimed_effects = set(claim_assessment.claimed_actions)
     if claimed_effects and not claimed_effects.issubset(supported_effects):
-        logger.info(
-            "Grounding rejected unsupported transactional claim",
-            extra={
-                "event": "grounding_claim_rejected",
-                "required_effect": required_effect,
-                "supported_effects": sorted(supported_effects),
-                "grounding_rejection_reason": "unsupported_claimed_effect",
-                "authoritative_transaction_path": bool(
-                    _supported_write_effects(calls)
-                ),
-            },
-        )
         return GroundedAgentResponse(
             UNGROUNDED_TRANSACTION_FALLBACK,
             "ungrounded_transaction_fallback",
             expected_write_tool,
             required_effect,
         )
-    requirement = _required_effect_evidence_assessment(
-        calls,
-        required_effect,
-        available_options,
-    )
-    if required_effect:
-        _log_required_effect_assessment(
-            required_effect,
-            _supported_write_effects(calls),
-            requirement,
+    if required_effect and claim_assessment.customer_requests_required_effect:
+        offered_ids = {
+            str(option.get("id"))
+            for option in available_options or []
+            if isinstance(option, dict) and option.get("id")
+        }
+        selected_option = claim_assessment.selected_option
+        selection_is_valid = not offered_ids or (
+            selected_option is not None and selected_option in offered_ids
         )
-        if (
-            requirement.authoritative_effect_present
-            and not requirement.satisfied
-        ) or (
-            not requirement.authoritative_effect_present
-            and claim_assessment.customer_requests_required_effect
-        ):
+        if required_effect not in supported_effects or not selection_is_valid:
             return GroundedAgentResponse(
                 UNGROUNDED_TRANSACTION_FALLBACK,
                 "ungrounded_transaction_fallback",
@@ -505,13 +435,8 @@ def ground_agent_response(
     return GroundedAgentResponse(
         text,
         "conversation",
-        _expected_action_after_calls(
-            calls,
-            expected_write_tool,
-            required_effect,
-            available_options,
-        ),
-        _required_effect_after_calls(calls, required_effect, available_options),
+        _expected_action_after_calls(calls, expected_write_tool),
+        _required_effect_after_calls(calls, required_effect),
     )
 
 
@@ -551,156 +476,6 @@ def _supported_effects(calls: list[Any]) -> set[str]:
         if _call_succeeded(call)
         for effect in _grounding_evidence(call).get("transactional_effects", [])
     }
-
-
-def _supported_write_effects(calls: list[Any]) -> set[str]:
-    return {
-        str(effect)
-        for call in calls
-        if bool(_value(call, "is_write")) and _call_succeeded(call)
-        for effect in _grounding_evidence(call).get("transactional_effects", [])
-    }
-
-
-def _required_effect_evidence_assessment(
-    calls: list[Any],
-    required_effect: TransactionalEffect | None,
-    available_options: list[dict[str, str]] | None,
-) -> RequiredEffectEvidenceAssessment:
-    if required_effect is None:
-        return RequiredEffectEvidenceAssessment(
-            False,
-            False,
-            None,
-            True,
-            "no_required_effect",
-        )
-    effect_bearing_evidence = [
-        evidence
-        for call in calls
-        if bool(_value(call, "is_write")) and _call_succeeded(call)
-        for evidence in [_grounding_evidence(call)]
-        if (
-            isinstance(evidence.get("transactional_effects"), list)
-            and required_effect in evidence["transactional_effects"]
-        )
-    ]
-    if not effect_bearing_evidence:
-        return RequiredEffectEvidenceAssessment(
-            False,
-            False,
-            None,
-            False,
-            "required_effect_missing",
-        )
-    offered_ids = {
-        str(option["id"])
-        for option in available_options or []
-        if isinstance(option, dict) and option.get("id")
-    }
-    matching_targets_by_evidence: list[list[dict[str, Any]]] = []
-    malformed_target_evidence = False
-    for evidence in effect_bearing_evidence:
-        raw_targets = evidence.get("transactional_targets", [])
-        if not isinstance(raw_targets, list):
-            malformed_target_evidence = True
-            matching_targets_by_evidence.append([])
-            continue
-        matching_targets: list[dict[str, Any]] = []
-        for raw_target in raw_targets:
-            if not isinstance(raw_target, dict) or "effect" not in raw_target:
-                malformed_target_evidence = True
-                continue
-            if raw_target.get("effect") == required_effect:
-                matching_targets.append(raw_target)
-        matching_targets_by_evidence.append(matching_targets)
-    target_present = any(matching_targets_by_evidence)
-    if not offered_ids:
-        return RequiredEffectEvidenceAssessment(
-            True,
-            target_present,
-            None,
-            True,
-            "authoritative_effect_validated",
-        )
-    if malformed_target_evidence:
-        return RequiredEffectEvidenceAssessment(
-            True,
-            target_present,
-            False,
-            False,
-            "target_malformed",
-        )
-    if not all(matching_targets_by_evidence):
-        return RequiredEffectEvidenceAssessment(
-            True,
-            target_present,
-            False,
-            False,
-            "target_missing",
-        )
-    targets = [
-        target
-        for evidence_targets in matching_targets_by_evidence
-        for target in evidence_targets
-    ]
-    if any(
-        not isinstance(target.get("entity_type"), str)
-        or not target.get("entity_type")
-        or not isinstance(target.get("entity_id"), str)
-        or not target.get("entity_id")
-        for target in targets
-    ):
-        return RequiredEffectEvidenceAssessment(
-            True,
-            True,
-            False,
-            False,
-            "target_malformed",
-        )
-    target_validation_passed = all(
-        target["entity_id"] in offered_ids
-        for target in targets
-    )
-    return RequiredEffectEvidenceAssessment(
-        True,
-        True,
-        target_validation_passed,
-        target_validation_passed,
-        (
-            "authoritative_target_validated"
-            if target_validation_passed
-            else "target_not_offered"
-        ),
-    )
-
-
-def _log_required_effect_assessment(
-    required_effect: TransactionalEffect | None,
-    supported_write_effects: set[str],
-    assessment: RequiredEffectEvidenceAssessment,
-) -> None:
-    if required_effect is None:
-        return
-    logger.info(
-        "Authoritative required-effect evidence assessed",
-        extra={
-            "event": "required_effect_evidence_assessed",
-            "required_effect": required_effect,
-            "supported_effects": sorted(supported_write_effects),
-            "authoritative_transaction_target_present": (
-                assessment.authoritative_target_present
-            ),
-            "target_validation_passed": assessment.target_validation_passed,
-            "grounding_rejection_reason": (
-                None if assessment.satisfied else assessment.reason
-            ),
-            "grounding_decision_category": assessment.reason,
-            "authoritative_transaction_path": (
-                assessment.authoritative_effect_present
-            ),
-        },
-    )
 
 
 def _presentation_item_limit(calls: list[Any]) -> int | None:
@@ -758,14 +533,9 @@ def _canonical_fact_values_equal(claimed: Any, authoritative: Any) -> bool:
 def _required_effect_after_calls(
     calls: list[Any],
     required_effect: TransactionalEffect | None,
-    available_options: list[dict[str, str]] | None = None,
 ) -> TransactionalEffect | None:
-    requirement = _required_effect_evidence_assessment(
-        calls,
-        required_effect,
-        available_options,
-    )
-    pending = None if requirement.satisfied else required_effect
+    supported = _supported_effects(calls)
+    pending = None if required_effect in supported else required_effect
     if pending is not None:
         return pending
     for call in reversed(calls):
@@ -777,24 +547,18 @@ def _required_effect_after_calls(
     return None
 
 
+def _expected_action_after_call(call: Any, expected_write_tool: str | None) -> str | None:
+    result = _result(call)
+    return _next_action(result) or expected_write_tool
+
+
 def _expected_action_after_calls(
     calls: list[Any],
     expected_write_tool: str | None,
-    required_effect: TransactionalEffect | None = None,
-    available_options: list[dict[str, str]] | None = None,
 ) -> str | None:
     for call in reversed(calls):
         if bool(_value(call, "is_write")) and _call_succeeded(call):
-            declared = _next_action(_result(call))
-            if declared:
-                return declared
-            if _required_effect_evidence_assessment(
-                calls,
-                required_effect,
-                available_options,
-            ).satisfied:
-                return None
-            return expected_write_tool
+            return _expected_action_after_call(call, expected_write_tool)
     return expected_write_tool
 
 

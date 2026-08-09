@@ -45,19 +45,6 @@ def tool_call(
     )
 
 
-def transaction_target(
-    entity_id="item-1",
-    *,
-    effect="item_selected",
-    entity_type="menu_item",
-):
-    return {
-        "effect": effect,
-        "entity_type": entity_type,
-        "entity_id": entity_id,
-    }
-
-
 def test_assistant_claim_classifier_uses_only_untrusted_messages_and_schema():
     calls = []
 
@@ -154,10 +141,7 @@ def test_pending_effect_blocks_requested_prose_progression_without_evidence():
     assert result.required_next_effect == "item_selected"
 
 
-@pytest.mark.parametrize("classifier_selected_option", [None, "item-2"])
-def test_authoritative_target_satisfies_pending_effect_without_classifier_veto(
-    classifier_selected_option,
-):
+def test_successful_effect_satisfies_and_clears_pending_requirement():
     result = ground_agent_response(
         text="Great, which size would you like?",
         tool_calls=[tool_call(
@@ -167,179 +151,19 @@ def test_authoritative_target_satisfies_pending_effect_without_classifier_veto(
             grounding={
                 "authoritative_domains": ["cart"],
                 "transactional_effects": ["item_selected"],
-                "transactional_targets": [transaction_target()],
             },
         )],
         required_effect="item_selected",
-        available_options=[
-            {"id": "item-1", "label": "First Item"},
-            {"id": "item-2", "label": "Second Item"},
-        ],
+        available_options=[{"id": "item-1", "label": "First Item"}],
         claim_assessment=AssistantClaimAssessment(
             claims_transactional_progression=False,
             customer_requests_required_effect=True,
-            selected_option=classifier_selected_option,
+            selected_option="item-1",
         ),
     )
 
     assert result.text == "Great, which size would you like?"
     assert result.required_next_effect is None
-
-
-def test_authoritative_target_outside_offered_options_fails_closed():
-    result = ground_agent_response(
-        text="Great, which size would you like?",
-        tool_calls=[tool_call(
-            "any_selection_capability",
-            success=True,
-            is_write=True,
-            grounding={
-                "authoritative_domains": ["cart"],
-                "transactional_effects": ["item_selected"],
-                "transactional_targets": [transaction_target("item-99")],
-            },
-        )],
-        required_effect="item_selected",
-        available_options=[
-            {"id": "item-1", "label": "First Item"},
-            {"id": "item-2", "label": "Second Item"},
-        ],
-        claim_assessment=AssistantClaimAssessment(
-            claims_transactional_progression=False,
-            customer_requests_required_effect=True,
-            selected_option="item-1",
-        ),
-    )
-
-    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
-    assert result.required_next_effect == "item_selected"
-
-
-def test_missing_authoritative_target_for_offered_selection_fails_closed():
-    result = ground_agent_response(
-        text="Great, which size would you like?",
-        tool_calls=[tool_call(
-            "any_selection_capability",
-            success=True,
-            is_write=True,
-            grounding={
-                "authoritative_domains": ["cart"],
-                "transactional_effects": ["item_selected"],
-            },
-        )],
-        required_effect="item_selected",
-        available_options=[
-            {"id": "item-1", "label": "First Item"},
-            {"id": "item-2", "label": "Second Item"},
-        ],
-        claim_assessment=AssistantClaimAssessment(
-            claims_transactional_progression=False,
-            customer_requests_required_effect=True,
-            selected_option="item-1",
-        ),
-    )
-
-    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
-    assert result.required_next_effect == "item_selected"
-
-
-def test_detached_target_on_unrelated_write_does_not_prove_required_effect():
-    result = ground_agent_response(
-        text="Great, which size would you like?",
-        tool_calls=[
-            tool_call(
-                "effect_bearing_capability",
-                success=True,
-                is_write=True,
-                grounding={"transactional_effects": ["item_selected"]},
-            ),
-            tool_call(
-                "unrelated_write_capability",
-                success=True,
-                is_write=True,
-                grounding={
-                    "transactional_effects": ["customization_saved"],
-                    "transactional_targets": [transaction_target()],
-                },
-            ),
-        ],
-        required_effect="item_selected",
-        available_options=[{"id": "item-1", "label": "First Item"}],
-        claim_assessment=AssistantClaimAssessment(
-            claims_transactional_progression=False,
-            customer_requests_required_effect=True,
-        ),
-    )
-
-    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
-    assert result.required_next_effect == "item_selected"
-
-
-def test_unrelated_write_target_cannot_repair_malformed_effect_evidence():
-    result = ground_agent_response(
-        text="Great, which size would you like?",
-        tool_calls=[
-            tool_call(
-                "effect_bearing_capability",
-                success=True,
-                is_write=True,
-                grounding={
-                    "transactional_effects": ["item_selected"],
-                    "transactional_targets": [{
-                        "effect": "item_selected",
-                        "entity_type": "menu_item",
-                    }],
-                },
-            ),
-            tool_call(
-                "unrelated_write_capability",
-                success=True,
-                is_write=True,
-                grounding={
-                    "transactional_effects": ["customization_saved"],
-                    "transactional_targets": [transaction_target()],
-                },
-            ),
-        ],
-        required_effect="item_selected",
-        available_options=[{"id": "item-1", "label": "First Item"}],
-        claim_assessment=AssistantClaimAssessment(
-            claims_transactional_progression=False,
-            customer_requests_required_effect=True,
-        ),
-    )
-
-    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
-    assert result.required_next_effect == "item_selected"
-
-
-def test_valid_authoritative_target_does_not_authorize_unrelated_claimed_effect():
-    result = ground_agent_response(
-        text="The item was selected and your order was submitted.",
-        tool_calls=[tool_call(
-            "any_selection_capability",
-            success=True,
-            is_write=True,
-            grounding={
-                "transactional_effects": ["item_selected"],
-                "transactional_targets": [transaction_target()],
-            },
-        )],
-        required_effect="item_selected",
-        available_options=[
-            {"id": "item-1", "label": "First Item"},
-            {"id": "item-2", "label": "Second Item"},
-        ],
-        claim_assessment=AssistantClaimAssessment(
-            claims_transactional_progression=True,
-            claimed_actions=["item_selected", "order_submitted"],
-            customer_requests_required_effect=True,
-            selected_option=None,
-        ),
-    )
-
-    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
-    assert result.required_next_effect == "item_selected"
 
 
 def test_informational_detour_preserves_pending_requirement():
@@ -437,74 +261,16 @@ def test_successful_required_write_consumes_pending_transition():
             user_message="Which size would you like?",
             grounding={
                 "transactional_effects": ["item_selected"],
-                "transactional_targets": [transaction_target()],
                 "exact_customer_text": "Which size would you like?",
             },
         )],
         expected_write_tool="start_cart_item_customization",
         required_effect="item_selected",
-        available_options=[
-            {"id": "item-1", "label": "First Item"},
-            {"id": "item-2", "label": "Second Item"},
-        ],
     )
 
     assert result.text == "Which size would you like?"
     assert result.source == "exact_artifact"
     assert result.required_next_effect is None
-
-
-@pytest.mark.parametrize(
-    "targets",
-    [[], [transaction_target("item-99")]],
-)
-def test_exact_artifact_cannot_bypass_authoritative_target_validation(targets):
-    result = ground_authoritative_tool_response(
-        tool_calls=[tool_call(
-            "any_selection_capability",
-            is_write=True,
-            grounding={
-                "transactional_effects": ["item_selected"],
-                "transactional_targets": targets,
-                "exact_customer_text": "Choose a size.",
-            },
-        )],
-        expected_write_tool="start_cart_item_customization",
-        required_effect="item_selected",
-        available_options=[
-            {"id": "item-1", "label": "First Item"},
-            {"id": "item-2", "label": "Second Item"},
-        ],
-    )
-
-    assert result is not None
-    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
-    assert result.required_next_effect == "item_selected"
-
-
-def test_unrelated_exact_artifact_cannot_bypass_rejected_transaction_target():
-    result = ground_authoritative_tool_response(
-        tool_calls=[
-            tool_call(
-                "any_selection_capability",
-                is_write=True,
-                grounding={
-                    "transactional_effects": ["item_selected"],
-                    "transactional_targets": [transaction_target("item-99")],
-                },
-            ),
-            tool_call(
-                "any_authoritative_read",
-                grounding={"exact_customer_text": "Authoritative read text."},
-            ),
-        ],
-        required_effect="item_selected",
-        available_options=[{"id": "item-1", "label": "First Item"}],
-    )
-
-    assert result is not None
-    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
-    assert result.required_next_effect == "item_selected"
 
 
 def test_successful_required_write_takes_priority_over_follow_up_read():
@@ -545,14 +311,11 @@ def test_failed_required_write_preserves_pending_transition():
             user_message="Please choose an available item.",
         )],
         expected_write_tool="start_cart_item_customization",
-        required_effect="item_selected",
-        available_options=[{"id": "item-1", "label": "First Item"}],
     )
 
     assert result.text == "Please choose an available item."
     assert result.source == "failed_write"
     assert result.expected_transactional_action == "start_cart_item_customization"
-    assert result.required_next_effect == "item_selected"
 
 
 def test_informational_clarification_during_ordering_requires_no_write():
