@@ -462,45 +462,6 @@ def test_response_builder_does_not_reauthorize_rejected_exact_target():
     assert response.text == UNGROUNDED_TRANSACTION_FALLBACK
 
 
-def test_response_builder_preserves_classifier_unavailable_write_fallback():
-    services = SimpleNamespace(
-        carts=SimpleNamespace(get_active_cart=ForbiddenCall()),
-        orders=SimpleNamespace(get_order_status=ForbiddenCall()),
-    )
-    response = build_response_builder(lambda: services)(
-        SimpleNamespace(
-            channel="whatsapp",
-            user_id="customer-1",
-            customer_id="customer-1",
-            agent_session_id="session-1",
-        ),
-        {"customer": {}},
-        SimpleNamespace(
-            text="Your pending order is ready for confirmation.",
-            raw_result={
-                "semantic_classifier_available": False,
-                "grounding_source": "safe_authoritative_write_fallback",
-                "tool_calls": [{
-                    "tool_name": "create_pending_order_from_cart",
-                    "success": True,
-                    "is_write": True,
-                    "result": {
-                        "success": True,
-                        "user_message": (
-                            "Your pending order is ready for confirmation."
-                        ),
-                        "grounding": {
-                            "transactional_effects": ["checkout_started"],
-                        },
-                    },
-                }],
-            },
-        ),
-    )
-
-    assert response.text == "Your pending order is ready for confirmation."
-
-
 def test_informational_search_does_not_replace_pending_item_choices():
     original = [{"product_id": "item-1", "name": "Original Item"}]
 

@@ -11,7 +11,6 @@ from src.agent.response_grounding import (
     AssistantClaimAssessment,
     ground_agent_response,
     ground_authoritative_tool_response,
-    ground_classifier_unavailable_response,
 )
 from src.api.schemas import ChatResponse, ToolCallResult
 from src.models.tool_responses import (
@@ -365,13 +364,6 @@ def build_response_builder(services_provider: Callable[[], Any]):
             )
             if authoritative is not None:
                 response_text = authoritative.text
-            elif raw.get("semantic_classifier_available") is False:
-                response_text = ground_classifier_unavailable_response(
-                    tool_calls=calls,
-                    expected_write_tool=raw.get("expected_write_tool"),
-                    required_effect=raw.get("required_effect"),
-                    available_options=raw.get("available_options"),
-                ).text
             else:
                 assessment_payload = raw.get("claim_assessment")
                 assessment = (

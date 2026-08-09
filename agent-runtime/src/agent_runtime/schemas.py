@@ -50,5 +50,4 @@ class RuntimeResponse(BaseModel):
     expected_write_tool: str | None = None
     required_effect: TransactionalEffect | None = None
     available_options: list[dict[str, str]] | None = None
-    semantic_classifier_available: bool | None = None
     grounding_source: str | None = None
