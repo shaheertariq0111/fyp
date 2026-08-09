@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -11,12 +12,20 @@ from src.agent.response_grounding import (
     AssistantClaimAssessment,
     ground_agent_response,
     ground_authoritative_tool_response,
+    grounding_comparison_log_fields,
+    grounding_decision_log_fields,
+    safe_assessment_origin_log_value,
+    safe_semantic_classifier_status_log_value,
+    safe_transactional_effect_log_value,
 )
 from src.api.schemas import ChatResponse, ToolCallResult
 from src.models.tool_responses import (
     apply_legacy_item_selection_compatibility,
 )
 from src.services.customer_service import CustomerService
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +145,9 @@ class AgentRequestProcessor:
                 invocation,
                 prior_expected_write_tool=grounding_state.get("expected_write_tool"),
                 prior_required_effect=grounding_state.get("required_effect"),
+                prior_available_option_count=len(
+                    grounding_state.get("available_options") or []
+                ),
             )
             record = requests.complete(record["request_id"], response)
             self.logger.info(
@@ -170,6 +182,53 @@ class AgentRequestProcessor:
             context.agent_session_id,
         )
         items = state.get("offered_menu_items") if isinstance(state, dict) else None
+        state_age_ms = None
+        updated_at = (
+            state.get("whatsapp_order_state_updated_at")
+            if isinstance(state, dict)
+            else None
+        )
+        if isinstance(updated_at, str):
+            try:
+                timestamp = datetime.fromisoformat(updated_at)
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                state_age_ms = max(
+                    0,
+                    round(
+                        (
+                            datetime.now(timezone.utc)
+                            - timestamp.astimezone(timezone.utc)
+                        ).total_seconds()
+                        * 1000,
+                        2,
+                    ),
+                )
+            except ValueError:
+                state_age_ms = None
+        self.logger.info(
+            "WhatsApp grounding state loaded",
+            extra={
+                "event": "whatsapp_grounding_state_loaded",
+                "contract_present": bool(isinstance(items, list) and items),
+                "required_effect_present": bool(
+                    safe_transactional_effect_log_value(
+                        state.get("whatsapp_required_effect")
+                        if isinstance(state, dict)
+                        else None
+                    )
+                ),
+                "required_effect": safe_transactional_effect_log_value(
+                    state.get("whatsapp_required_effect")
+                    if isinstance(state, dict)
+                    else None
+                ),
+                "available_option_count": (
+                    len(items) if isinstance(items, list) else 0
+                ),
+                "state_age_ms": state_age_ms,
+            },
+        )
         if not isinstance(items, list) or not items:
             return {}
         options = [
@@ -196,6 +255,7 @@ class AgentRequestProcessor:
         *,
         prior_expected_write_tool: str | None = None,
         prior_required_effect: str | None = None,
+        prior_available_option_count: int = 0,
     ) -> None:
         if context.channel != "whatsapp":
             return
@@ -250,6 +310,16 @@ class AgentRequestProcessor:
                 context.customer_id or context.user_id,
                 context.agent_session_id,
             )
+            self._log_whatsapp_grounding_state_transition(
+                state_action="contract_cleared_required_effect_satisfied",
+                prior_required_effect=prior_required_effect,
+                declared_requirement=declared_requirement,
+                prior_available_option_count=prior_available_option_count,
+                produced_option_count=len(offered_options),
+                prior_required_effect_satisfied=True,
+                state_cleared=True,
+                state_clear_reason="required_effect_satisfied",
+            )
             return
         if (
             offered_options
@@ -268,6 +338,68 @@ class AgentRequestProcessor:
                 menu_has_more=menu_has_more,
                 required_effect=declared_requirement,
             )
+            self._log_whatsapp_grounding_state_transition(
+                state_action="contract_created",
+                prior_required_effect=prior_required_effect,
+                declared_requirement=declared_requirement,
+                prior_available_option_count=prior_available_option_count,
+                produced_option_count=len(offered_options),
+                prior_required_effect_satisfied=False,
+                state_cleared=False,
+            )
+            return
+        if offered_options and prior_required_effect is not None:
+            state_action = "contract_retained_existing_requirement"
+        elif offered_options and required_effect != declared_requirement:
+            state_action = "contract_not_persisted_requirement_mismatch"
+        else:
+            state_action = "no_contract_change"
+        self._log_whatsapp_grounding_state_transition(
+            state_action=state_action,
+            prior_required_effect=prior_required_effect,
+            declared_requirement=declared_requirement,
+            prior_available_option_count=prior_available_option_count,
+            produced_option_count=len(offered_options),
+            prior_required_effect_satisfied=False,
+            state_cleared=False,
+        )
+
+    def _log_whatsapp_grounding_state_transition(
+        self,
+        *,
+        state_action: str,
+        prior_required_effect: str | None,
+        declared_requirement: str | None,
+        prior_available_option_count: int,
+        produced_option_count: int,
+        prior_required_effect_satisfied: bool,
+        state_cleared: bool,
+        state_clear_reason: str | None = None,
+    ) -> None:
+        self.logger.info(
+            "WhatsApp grounding state transition observed",
+            extra={
+                "event": "whatsapp_grounding_state_transition",
+                "state_action": state_action,
+                "existing_contract_present": prior_required_effect is not None,
+                "new_contract_produced": declared_requirement is not None,
+                "existing_option_count": prior_available_option_count,
+                "produced_option_count": produced_option_count,
+                "prior_required_effect_satisfied": prior_required_effect_satisfied,
+                "contract_created": state_action == "contract_created",
+                "contract_retained": state_action
+                == "contract_retained_existing_requirement",
+                "contract_replaced": False,
+                "state_cleared": state_cleared,
+                "state_clear_reason": state_clear_reason,
+                "required_effect_present": bool(
+                    safe_transactional_effect_log_value(declared_requirement)
+                ),
+                "required_effect": safe_transactional_effect_log_value(
+                    declared_requirement
+                ),
+            },
+        )
 
 
 def build_identity_resolver(services_provider: Callable[[], Any]):
@@ -359,17 +491,41 @@ def build_response_builder(services_provider: Callable[[], Any]):
             )
             if authoritative is not None:
                 response_text = authoritative.text
+                backend_grounded = authoritative
+                assessment_transport_status = "not_applicable_fast_path"
             else:
                 assessment_payload = raw.get("claim_assessment")
-                assessment = (
-                    AssistantClaimAssessment.model_validate(assessment_payload)
-                    if assessment_payload is not None
-                    else AssistantClaimAssessment(
+                if assessment_payload is None:
+                    assessment_transport_status = "missing"
+                    logger.info(
+                        "Runtime grounding metadata was missing",
+                        extra={
+                            "event": "grounding_boundary_metadata_issue",
+                            "boundary_metadata_issue": "claim_assessment_missing",
+                            "assessment_origin": "boundary_missing_synthetic",
+                        },
+                    )
+                    assessment = AssistantClaimAssessment(
                         claims_transactional_progression=True,
                         claimed_actions=["other_transactional_progression"],
                     )
-                )
-                response_text = ground_agent_response(
+                else:
+                    try:
+                        assessment = AssistantClaimAssessment.model_validate(
+                            assessment_payload
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Runtime grounding metadata was invalid",
+                            extra={
+                                "event": "grounding_boundary_metadata_issue",
+                                "boundary_metadata_issue": "claim_assessment_invalid",
+                                "exception_type": type(exc).__name__,
+                            },
+                        )
+                        raise
+                    assessment_transport_status = "present_valid"
+                backend_grounded = ground_agent_response(
                     text=invocation.text,
                     tool_calls=calls,
                     claim_assessment=assessment,
@@ -377,7 +533,71 @@ def build_response_builder(services_provider: Callable[[], Any]):
                     informational_turn=bool(raw.get("informational_turn", False)),
                     expected_write_tool=raw.get("expected_write_tool"),
                     required_effect=raw.get("required_effect"),
-                ).text
+                )
+                response_text = backend_grounded.text
+            runtime_source = raw.get("grounding_source")
+            runtime_reason = raw.get("grounding_rejection_reason")
+            runtime_metadata_present = bool(
+                raw.get("semantic_classifier_status")
+                or raw.get("assessment_origin")
+                or "grounding_rejection_reason" in raw
+            )
+            if runtime_source is None:
+                logger.info(
+                    "Runtime grounding source was missing",
+                    extra={
+                        "event": "grounding_boundary_metadata_issue",
+                        "boundary_metadata_issue": "grounding_source_missing",
+                    },
+                )
+            if (
+                runtime_source == "ungrounded_transaction_fallback"
+                and "grounding_rejection_reason" not in raw
+            ):
+                logger.info(
+                    "Runtime grounding rejection reason was missing",
+                    extra={
+                        "event": "grounding_boundary_metadata_issue",
+                        "boundary_metadata_issue": "grounding_rejection_reason_missing",
+                    },
+                )
+            comparison = grounding_comparison_log_fields(
+                runtime_grounding_source=runtime_source,
+                runtime_grounding_rejection_reason=runtime_reason,
+                runtime_text=invocation.text,
+                backend_response=backend_grounded,
+                runtime_claim_assessment_present=raw.get("claim_assessment") is not None,
+                runtime_grounding_metadata_present=runtime_metadata_present,
+                assessment_transport_status=assessment_transport_status,
+            )
+            logger.info(
+                "Backend WhatsApp response grounded",
+                extra={
+                    "event": "backend_grounding_completed",
+                    "assessment_origin": (
+                        safe_assessment_origin_log_value(
+                            raw.get("assessment_origin")
+                        )
+                        if assessment_transport_status != "missing"
+                        else "boundary_missing_synthetic"
+                    ),
+                    "semantic_classifier_status": (
+                        safe_semantic_classifier_status_log_value(
+                            raw.get("semantic_classifier_status")
+                        )
+                    ),
+                    **grounding_decision_log_fields(backend_grounded),
+                    **comparison,
+                },
+            )
+            if not comparison["runtime_backend_grounding_agree"]:
+                logger.warning(
+                    "Runtime and backend grounding decisions differed",
+                    extra={
+                        "event": "grounding_decision_mismatch",
+                        **comparison,
+                    },
+                )
         return ChatResponse(
             text=response_text, session_id=context.agent_session_id,
             user_id=context.user_id, customer_id=context.customer_id,

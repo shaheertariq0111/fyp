@@ -1,17 +1,24 @@
 from types import SimpleNamespace
 from typing import get_args
+import time
 
 import pytest
 from pydantic import ValidationError
 
 from src.agent.response_grounding import (
     ASSISTANT_CLAIM_SYSTEM_PROMPT,
+    AssessmentOrigin,
     AssistantClaimAssessment,
     GroundedAssistantMemoryBuffer,
+    GroundingRejectionReason,
+    SemanticClassifierTimeout,
+    SemanticClassifierStatus,
     UNGROUNDED_TRANSACTION_FALLBACK,
     assess_assistant_claims,
     ground_authoritative_tool_response,
     ground_agent_response,
+    grounding_comparison_log_fields,
+    run_semantic_classifier,
 )
 from src.models.tool_responses import TransactionalEffect
 
@@ -83,6 +90,34 @@ def test_assistant_claim_classifier_uses_only_untrusted_messages_and_schema():
 def test_assistant_claim_prompt_defines_every_transactional_effect():
     for effect in get_args(TransactionalEffect):
         assert effect in ASSISTANT_CLAIM_SYSTEM_PROMPT
+
+
+def test_grounding_rejection_taxonomy_is_stable_and_complete():
+    assert set(get_args(GroundingRejectionReason)) == {
+        "claim_assessment_missing",
+        "unsupported_transactional_effect",
+        "required_effect_not_satisfied",
+        "selected_option_missing",
+        "selected_option_invalid",
+        "unsupported_authoritative_domain",
+        "authoritative_claims_unsupported",
+        "presentation_limit_exceeded",
+        "immutable_fact_mismatch",
+        "authoritative_write_failed",
+        "successful_write_missing_safe_grounding",
+    }
+    assert set(get_args(AssessmentOrigin)) == {
+        "model",
+        "timeout_synthetic",
+        "exception_synthetic",
+        "boundary_missing_synthetic",
+    }
+    assert set(get_args(SemanticClassifierStatus)) == {
+        "completed",
+        "timed_out",
+        "failed",
+        "not_run_authoritative_fast_path",
+    }
 
 
 def test_search_selection_grounding_preserves_supported_bounded_model_response():
@@ -1257,3 +1292,382 @@ def test_conversation_continuity_preserves_natural_and_authoritative_boundaries(
     assert checkout.text == "All set—delivery or takeaway?"
     assert fulfillment.text == "Order ORD-NEW total: PKR 14. Please confirm."
     assert submission.text == "Order ORD-NEW was submitted. Total: PKR 14."
+
+
+def _assert_observed_rejection(
+    result,
+    reason,
+    *,
+    expected_action="start_cart_item_customization",
+    required_effect="item_selected",
+):
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.source == "ungrounded_transaction_fallback"
+    assert result.expected_transactional_action == expected_action
+    assert result.required_next_effect == required_effect
+    assert result.rejection_reason == reason
+    assert result.diagnostics is not None
+
+
+def test_grounding_observes_missing_assessment_without_behavior_change():
+    result = ground_agent_response(
+        text="Untrusted response",
+        tool_calls=[],
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+    )
+    _assert_observed_rejection(result, "claim_assessment_missing")
+
+
+def test_grounding_observes_unsupported_effect_without_behavior_change():
+    result = ground_agent_response(
+        text="The item was added.",
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=True,
+            claimed_actions=["item_added"],
+        ),
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+    )
+    _assert_observed_rejection(result, "unsupported_transactional_effect")
+    assert result.diagnostics.unsupported_effects == ("item_added",)
+
+
+def test_grounding_observes_required_effect_not_satisfied():
+    result = ground_agent_response(
+        text="Which size would you like?",
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            customer_requests_required_effect=True,
+            selected_option="item-1",
+        ),
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+        available_options=[{"id": "item-1", "label": "First"}],
+    )
+    _assert_observed_rejection(result, "required_effect_not_satisfied")
+
+
+@pytest.mark.parametrize(
+    ("selected_option", "reason"),
+    [(None, "selected_option_missing"), ("item-2", "selected_option_invalid")],
+)
+def test_grounding_observes_selected_option_contract_rejection(selected_option, reason):
+    result = ground_agent_response(
+        text="Which size would you like?",
+        tool_calls=[tool_call(
+            "selection_capability",
+            is_write=True,
+            grounding={"transactional_effects": ["item_selected"]},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            customer_requests_required_effect=True,
+            selected_option=selected_option,
+        ),
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+        available_options=[{"id": "item-1", "label": "First"}],
+    )
+    _assert_observed_rejection(result, reason)
+    assert result.diagnostics.selected_option_present is (selected_option is not None)
+    assert result.diagnostics.selected_option_contract_evaluated is True
+
+
+def test_grounding_observes_unsupported_authoritative_domain():
+    result = ground_agent_response(
+        text="The menu says so.",
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+        ),
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+    )
+    _assert_observed_rejection(result, "unsupported_authoritative_domain")
+
+
+def test_grounding_observes_unsupported_authoritative_claims():
+    result = ground_agent_response(
+        text="The menu says so.",
+        tool_calls=[tool_call(
+            "search_menu",
+            grounding={"authoritative_domains": ["menu"]},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=False,
+        ),
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+    )
+    _assert_observed_rejection(result, "authoritative_claims_unsupported")
+
+
+def test_grounding_observes_presentation_limit_rejection():
+    result = ground_agent_response(
+        text="Too many items.",
+        tool_calls=[tool_call(
+            "search_menu",
+            grounding={"presentation": {"max_items": 1}},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            presented_authoritative_item_count=2,
+        ),
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+    )
+    _assert_observed_rejection(result, "presentation_limit_exceeded")
+    assert result.diagnostics.presentation_limit == 1
+
+
+def test_grounding_observes_immutable_fact_mismatch():
+    result = ground_agent_response(
+        text="The order is complete.",
+        tool_calls=[tool_call(
+            "get_order_status",
+            grounding={
+                "immutable_facts": [{"path": "order.status", "value": "pending"}],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_immutable_facts=[
+                {"path": "order.status", "value": "complete"},
+            ],
+        ),
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+    )
+    _assert_observed_rejection(result, "immutable_fact_mismatch")
+    assert result.diagnostics.immutable_fact_mismatch_count == 1
+
+
+def test_successful_conversation_and_authoritative_read_have_no_rejection():
+    conversation = ground_agent_response(
+        text="How can I help?",
+        tool_calls=[],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+        ),
+    )
+    authoritative_read = ground_agent_response(
+        text="One current menu option.",
+        tool_calls=[tool_call(
+            "search_menu",
+            grounding={"authoritative_domains": ["menu"]},
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+        ),
+    )
+    assert conversation.text == "How can I help?"
+    assert conversation.source == "conversation"
+    assert conversation.rejection_reason is None
+    assert authoritative_read.text == "One current menu option."
+    assert authoritative_read.source == "conversation"
+    assert authoritative_read.rejection_reason is None
+
+
+def test_authoritative_write_outcomes_have_observability_without_behavior_change():
+    failed = ground_authoritative_tool_response(tool_calls=[tool_call(
+        "confirm_order",
+        success=False,
+        is_write=True,
+        user_message="The order could not be confirmed.",
+    )])
+    exact = ground_authoritative_tool_response(tool_calls=[tool_call(
+        "confirm_order",
+        is_write=True,
+        grounding={"exact_customer_text": "Order confirmed."},
+    )])
+    missing_safe_grounding = ground_authoritative_tool_response(tool_calls=[tool_call(
+        "confirm_order",
+        is_write=True,
+    )])
+    assert failed.text == "The order could not be confirmed."
+    assert failed.source == "failed_write"
+    assert failed.expected_transactional_action is None
+    assert failed.required_next_effect is None
+    assert failed.rejection_reason == "authoritative_write_failed"
+    assert exact.text == "Order confirmed."
+    assert exact.source == "exact_artifact"
+    assert exact.rejection_reason is None
+    assert missing_safe_grounding.text == (
+        "I couldn't complete that change. Your authoritative order state was not advanced."
+    )
+    assert missing_safe_grounding.source == "write_without_grounding"
+    assert missing_safe_grounding.rejection_reason == (
+        "successful_write_missing_safe_grounding"
+    )
+
+
+def test_semantic_classifier_completed_logs_queue_model_and_total_timing(caplog):
+    assert run_semantic_classifier(
+        classifier_name="test_classifier",
+        operation=lambda: "complete",
+    ) == "complete"
+
+    started = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "semantic_classifier_started"
+    )
+    completed = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "semantic_classifier_completed"
+    )
+    assert started.classifier_run_id == completed.classifier_run_id
+    assert completed.semantic_classifier_execution_started is True
+    assert completed.semantic_classifier_queue_wait_ms >= 0
+    assert completed.semantic_classifier_model_duration_ms >= 0
+    assert completed.semantic_classifier_total_duration_ms >= 0
+
+
+def test_semantic_classifier_timeout_does_not_log_final_model_duration(caplog):
+    with pytest.raises(SemanticClassifierTimeout):
+        run_semantic_classifier(
+            classifier_name="test_timeout",
+            operation=lambda: time.sleep(0.05),
+            timeout_seconds=0.001,
+        )
+
+    timed_out = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "semantic_classifier_timed_out"
+    )
+    assert timed_out.semantic_classifier_execution_started is True
+    assert timed_out.semantic_classifier_total_duration_ms >= 0
+    assert timed_out.semantic_classifier_model_elapsed_at_timeout_ms >= 0
+    assert not hasattr(timed_out, "semantic_classifier_model_duration_ms")
+
+
+def test_semantic_classifier_failure_logs_only_safe_exception_type(caplog):
+    def fail():
+        raise ValueError("private model output")
+
+    with pytest.raises(ValueError, match="private model output"):
+        run_semantic_classifier(
+            classifier_name="test_failure",
+            operation=fail,
+        )
+
+    failed = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "semantic_classifier_failed"
+    )
+    assert failed.exception_type == "ValueError"
+    assert "private model output" not in failed.getMessage()
+    assert failed.exc_info is None
+    assert not hasattr(failed, "exception_message")
+
+
+def test_diagnostic_enum_values_fail_closed_at_logging_boundaries():
+    grounded = ground_agent_response(
+        text="Hello.",
+        tool_calls=[tool_call(
+            "malformed_capability",
+            grounding={
+                "transactional_effects": ["private effect payload"],
+                "authoritative_domains": ["private domain payload"],
+            },
+        )],
+        claim_assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+        ),
+    )
+
+    assert grounded.diagnostics.supported_effects == ()
+    assert grounded.diagnostics.supported_domains == ()
+    comparison = grounding_comparison_log_fields(
+        runtime_grounding_source="private source payload",
+        runtime_grounding_rejection_reason="private reason payload",
+        runtime_text=grounded.text,
+        backend_response=grounded,
+        runtime_claim_assessment_present=True,
+        runtime_grounding_metadata_present=True,
+        assessment_transport_status="present_valid",
+    )
+    assert comparison["runtime_grounding_source"] is None
+    assert comparison["runtime_grounding_rejection_reason"] is None
+
+
+@pytest.mark.parametrize(
+    "malformed_grounding",
+    [
+        {"authoritative_domains": None},
+        {"transactional_effects": None},
+    ],
+)
+def test_malformed_diagnostic_shapes_preserve_missing_assessment_fallback(
+    malformed_grounding,
+):
+    result = ground_agent_response(
+        text="Untrusted response",
+        tool_calls=[tool_call(
+            "malformed_read",
+            grounding=malformed_grounding,
+        )],
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+    )
+
+    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.source == "ungrounded_transaction_fallback"
+    assert result.expected_transactional_action == (
+        "start_cart_item_customization"
+    )
+    assert result.required_next_effect == "item_selected"
+    assert result.rejection_reason == "claim_assessment_missing"
+
+
+def test_malformed_unrelated_diagnostics_cannot_prevent_authoritative_exits():
+    malformed = tool_call(
+        "malformed_read",
+        grounding={
+            "authoritative_domains": None,
+            "transactional_effects": None,
+        },
+    )
+    failed = ground_authoritative_tool_response(tool_calls=[
+        malformed,
+        tool_call(
+            "failed_write",
+            success=False,
+            is_write=True,
+            user_message="The change failed safely.",
+        ),
+    ])
+    exact = ground_authoritative_tool_response(tool_calls=[
+        tool_call(
+            "malformed_read",
+            grounding={"authoritative_domains": None},
+        ),
+        tool_call(
+            "authoritative_read",
+            grounding={"exact_customer_text": "Authoritative result."},
+        ),
+    ])
+
+    assert failed.text == "The change failed safely."
+    assert failed.source == "failed_write"
+    assert failed.expected_transactional_action is None
+    assert failed.required_next_effect is None
+    assert exact.text == "Authoritative result."
+    assert exact.source == "exact_artifact"
+    assert exact.expected_transactional_action is None
+    assert exact.required_next_effect is None

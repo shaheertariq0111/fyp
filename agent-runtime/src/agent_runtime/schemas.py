@@ -3,7 +3,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from src.agent.order_intent import OrderIntentClassification
-from src.agent.response_grounding import AssistantClaimAssessment
+from src.agent.response_grounding import (
+    AssessmentOrigin,
+    AssistantClaimAssessment,
+    GroundingRejectionReason,
+    SemanticClassifierStatus,
+)
 from src.agent.whatsapp_turn_intent import WhatsAppTurnInterpretation
 from src.models.tool_responses import TransactionalEffect
 
@@ -50,3 +55,6 @@ class RuntimeResponse(BaseModel):
     expected_write_tool: str | None = None
     required_effect: TransactionalEffect | None = None
     grounding_source: str | None = None
+    grounding_rejection_reason: GroundingRejectionReason | None = None
+    assessment_origin: AssessmentOrigin | None = None
+    semantic_classifier_status: SemanticClassifierStatus | None = None

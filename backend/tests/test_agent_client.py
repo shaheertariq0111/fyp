@@ -161,6 +161,11 @@ def test_local_whatsapp_client_commits_grounded_message_without_raw_redaction(mo
 
     assert "I selected" not in str(manager.messages)
     assert manager.messages[-1]["content"][0]["text"] == result.text
+    assert result.raw_result.assessment_origin == "model"
+    assert result.raw_result.semantic_classifier_status == "completed"
+    assert result.raw_result.grounding_rejection_reason == (
+        "unsupported_transactional_effect"
+    )
 
 
 def test_local_agent_runtime_client_async_methods_are_agentcore_boundary():
@@ -192,6 +197,10 @@ def test_agentcore_runtime_client_invokes_bedrock_agentcore_runtime():
                             "text": "AgentCore response",
                             "tool_calls": [],
                             "memory": {"session_id": "session-1"},
+                            "grounding_source": "conversation",
+                            "grounding_rejection_reason": None,
+                            "assessment_origin": "model",
+                            "semantic_classifier_status": "completed",
                         }
                     ).encode("utf-8")
                 ),
@@ -217,6 +226,10 @@ def test_agentcore_runtime_client_invokes_bedrock_agentcore_runtime():
 
     assert result.text == "AgentCore response"
     assert result.raw_result["memory"] == {"session_id": "session-1"}
+    assert result.raw_result["grounding_source"] == "conversation"
+    assert result.raw_result["grounding_rejection_reason"] is None
+    assert result.raw_result["assessment_origin"] == "model"
+    assert result.raw_result["semantic_classifier_status"] == "completed"
     assert captured["agentRuntimeArn"] == "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/example"
     assert captured["runtimeSessionId"] == "req-trusted"
     assert captured["runtimeUserId"] == "user-1"
