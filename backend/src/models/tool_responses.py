@@ -74,19 +74,9 @@ class ImmutableFact(BaseModel):
     value: Any
 
 
-class TransactionalTarget(BaseModel):
-    effect: TransactionalEffect
-    entity_type: str = Field(min_length=1, max_length=128)
-    entity_id: str = Field(min_length=1, max_length=256)
-
-
 class GroundingEvidence(BaseModel):
     authoritative_domains: list[AuthoritativeDomain] = Field(default_factory=list)
     transactional_effects: list[TransactionalEffect] = Field(default_factory=list)
-    transactional_targets: list[TransactionalTarget] = Field(
-        default_factory=list,
-        max_length=50,
-    )
     required_next_effect: TransactionalEffect | None = None
     offered_options: list[GroundingOption] = Field(default_factory=list, max_length=50)
     immutable_facts: list[ImmutableFact] = Field(default_factory=list, max_length=50)

@@ -214,7 +214,6 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                         tool_calls=tool_calls,
                         expected_write_tool=expected_write_tool,
                         required_effect=required_effect,
-                        available_options=request.available_options,
                     )
                     authoritative_fast_path = grounded is not None
                     if grounded is None:
@@ -329,11 +328,6 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
         informational_turn=informational_turn,
         expected_write_tool=expected_write_tool,
         required_effect=required_effect if request.channel == "whatsapp" else None,
-        available_options=(
-            request.available_options
-            if request.channel == "whatsapp" and request.available_options
-            else None
-        ),
         grounding_source=grounding_source,
     )
     return response.model_dump(exclude_none=True)

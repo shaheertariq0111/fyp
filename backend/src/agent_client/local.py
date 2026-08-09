@@ -112,7 +112,6 @@ class LocalStrandsAgentRuntimeClient:
                 tool_calls=tool_calls,
                 expected_write_tool=expected_write_tool,
                 required_effect=required_effect,
-                available_options=request.available_options,
             )
             assessment = None
             no_write_authorized = False
@@ -180,7 +179,6 @@ class LocalStrandsAgentRuntimeClient:
                 setattr(raw_result, "informational_turn", informational_turn)
                 setattr(raw_result, "expected_write_tool", expected_write_tool)
                 setattr(raw_result, "required_effect", required_effect)
-                setattr(raw_result, "available_options", request.available_options or [])
                 setattr(raw_result, "grounding_source", grounded.source)
             except Exception:
                 raise RuntimeError("Local runtime result cannot carry grounding metadata")

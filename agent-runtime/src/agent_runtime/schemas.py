@@ -49,5 +49,4 @@ class RuntimeResponse(BaseModel):
     informational_turn: bool | None = None
     expected_write_tool: str | None = None
     required_effect: TransactionalEffect | None = None
-    available_options: list[dict[str, str]] | None = None
     grounding_source: str | None = None

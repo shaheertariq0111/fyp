@@ -1,7 +1,5 @@
 from types import SimpleNamespace
 
-import pytest
-
 from src.services.cart_service import CartService
 from src.services.order_service import OrderService
 from fakes import MemoryCartRepository, MemoryMenuRepository, MemoryOrderRepository
@@ -62,41 +60,6 @@ def test_two_identical_items_share_one_cart_item():
     response = service.set_customization_mode("user", cart_id, "same")
     assert len(response.data["items"]) == 1
     assert response.data["items"][0]["quantity"] == 2
-
-
-@pytest.mark.parametrize(
-    ("item_id", "quantity", "expected_status"),
-    [
-        ("configurable", 1, "customizing_item"),
-        ("addon", 1, "item_ready"),
-        ("configurable", 2, "cart_created"),
-    ],
-)
-def test_start_item_customization_proves_authoritative_selected_item_target(
-    item_id,
-    quantity,
-    expected_status,
-):
-    service, _, _ = build_services()
-
-    response = service.start_item_customization(
-        "target-user",
-        "target-session",
-        item_id,
-        quantity,
-    )
-
-    assert response.success is True
-    assert response.data["status"] == expected_status
-    assert response.grounding.transactional_effects == ["item_selected"]
-    assert [
-        target.model_dump()
-        for target in response.grounding.transactional_targets
-    ] == [{
-        "effect": "item_selected",
-        "entity_type": "menu_item",
-        "entity_id": item_id,
-    }]
 
 
 def test_two_separate_items_are_labeled_and_advanced():
