@@ -670,6 +670,30 @@ def restaurant_prompt_for_channel(channel: str) -> str:
         "  needed, then call start_cart_item_customization for that item before asking\n"
         "  any customization question.\n",
     )
+    prompt = prompt.replace(
+        "4. start_cart_item_customization\n"
+        "   Use when the customer wants to build/order an item in chat, but only after\n"
+        "   checking for an existing active cart. Call get_active_cart first unless a\n"
+        "   recent successful tool result already proves there is no active cart. If an\n"
+        "   active cart exists, resume it instead of creating another cart. This tool\n"
+        "   returns the next backend question or next_action.\n",
+        "4. start_cart_item_customization\n"
+        "   Use when the customer selects an item from a trusted active OptionContract.\n"
+        "   Execute it in the same turn without calling get_active_cart first; the cart\n"
+        "   service authoritatively creates or resumes the appropriate cart. This tool\n"
+        "   returns the next backend question or next_action.\n",
+    )
+    prompt = prompt.replace(
+        "- Before starting chat customization, call get_active_cart unless the latest\n"
+        "  successful backend result already proves there is no active cart.\n"
+        "- Start chat building with start_cart_item_customization(item_id, quantity) only\n"
+        "  when no active cart exists. If the tool resumes an existing cart, continue\n"
+        "  from its returned next_action instead of creating another cart.\n",
+        "- For a contract-backed menu selection, call start_cart_item_customization in\n"
+        "  the same turn without calling get_active_cart first. The cart service owns\n"
+        "  authoritative cart recovery and resumption. Continue from the tool's\n"
+        "  returned next_action.\n",
+    )
     website_section = prompt.find("\nWEBSITE ORDER FLOW\n")
     recovery_section = prompt.find("\nRECOVERY CASES\n", website_section)
     if website_section >= 0 and recovery_section > website_section:
@@ -705,6 +729,11 @@ WHATSAPP OPTION CONTRACTS
 - Whenever presenting multiple items that the customer may choose or order
   from, use selection_offer. It is the only role that may enumerate actionable
   choices or invite a selection and it replaces the prior active contract.
+- When the customer selects an option from a trusted active OptionContract,
+  its declared consumer_capability takes precedence. Execute that capability
+  in the same turn. Do not merely acknowledge, confirm, promise, or describe
+  a future action. An unrelated informational message does not select an
+  option and must not force a write.
 - The trusted contract is provided in trusted_active_option_contract. For an
   active menu selection contract, interpret the customer's natural response
   yourself, including names or ordinals, and call the declared consumer with:
@@ -714,6 +743,11 @@ WHATSAPP OPTION CONTRACTS
   contract_version = trusted_active_option_contract.contract_version.
   Never derive or alter IDs. The backend validates identity, version,
   membership, expiry, workflow state, and availability.
+- Call get_order_status with presentation_role=informational_reference when
+  only reporting verified status facts; do not invite delivery/takeaway from
+  that result. Use presentation_role=selection_offer only when intentionally
+  offering fulfillment choices for one verified order. Present those choices
+  only when the result contains the typed option_contract_proposal.
 - Do not create or send a menu-session or menu-site ordering link on WhatsApp.
 """
     return prompt

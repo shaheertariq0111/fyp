@@ -8,7 +8,11 @@ from strands import tool
 
 from src.agent.context import get_request_context
 from src.agent.dependencies import get_services
-from src.models.tool_responses import GroundingOption, ToolResponse
+from src.models.tool_responses import (
+    GroundingOption,
+    PresentationConstraints,
+    ToolResponse,
+)
 from src.models.conversation_contracts import (
     OPTION_CONTRACT_TTL_SECONDS,
     OptionContract,
@@ -618,8 +622,63 @@ def get_active_cart(
     ))
 
 
+def _with_order_status_presentation(
+    response: ToolResponse,
+    presentation_role: PresentationRole,
+) -> ToolResponse:
+    evidence = response.grounding
+    if evidence is not None:
+        evidence.required_next_effect = None
+        evidence.offered_options = []
+        evidence.presentation = PresentationConstraints(
+            role="informational_reference"
+        )
+
+    selected = _selected_verified_order(response)
+    eligible = bool(
+        presentation_role == "selection_offer"
+        and selected is not None
+        and selected["status"] == "awaiting_fulfillment_method"
+        and evidence is not None
+    )
+    response.agent = dict(response.agent or {})
+    if not eligible:
+        response.agent["instruction"] = (
+            "Present only the verified order-status facts. Do not invite an "
+            "actionable delivery or takeaway selection from this result."
+        )
+        return response
+
+    evidence.required_next_effect = "fulfillment_saved"
+    evidence.offered_options = [
+        GroundingOption(id="set_delivery", label="Delivery"),
+        GroundingOption(id="set_takeaway", label="Takeaway"),
+    ]
+    evidence.presentation = PresentationConstraints(role="selection_offer")
+    response = _with_option_contract_proposal(
+        response,
+        source_capability="get_order_status",
+        consumer_capability="update_order_flow",
+        presentation_role="selection_offer",
+        scope={"order_id": selected["order_id"]},
+    )
+    if evidence.option_contract_proposal is not None:
+        evidence.exact_customer_text = (
+            f"{response.user_message}\n\n"
+            "Would you like delivery or takeaway for this order?"
+        )
+        response.agent["instruction"] = (
+            "Present the exact_customer_text fulfillment question. Its choices "
+            "are backed by the typed option contract proposal in this result."
+        )
+    return response
+
+
 @tool
-def get_order_status(order_id: str | None = None) -> dict:
+def get_order_status(
+    order_id: str | None = None,
+    presentation_role: PresentationRole = "informational_reference",
+) -> dict:
     """Read one authorized order or the current user's active orders from DynamoDB."""
     context = get_request_context()
 
@@ -649,7 +708,20 @@ def get_order_status(order_id: str | None = None) -> dict:
                 )
         return response
 
-    return _result("get_order_status", get_and_remember_order)
+    return _result(
+        "get_order_status",
+        get_and_remember_order,
+        transform=(
+            (
+                lambda response: _with_order_status_presentation(
+                    response,
+                    presentation_role,
+                )
+            )
+            if context.channel == "whatsapp"
+            else None
+        ),
+    )
 
 
 def _selected_verified_order(response: ToolResponse) -> dict | None:

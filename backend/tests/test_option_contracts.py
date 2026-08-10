@@ -340,6 +340,52 @@ def test_scripted_dessert_selection_offer_replaces_pizza_contract():
     assert sessions.active == dessert
 
 
+def test_fulfillment_offer_replaces_menu_contract_and_both_choices_validate():
+    menu = contract("menu-contract", option_id="menu-item")
+    fulfillment_base = contract(
+        "fulfillment-contract",
+        effect="fulfillment_saved",
+        consumer="update_order_flow",
+        option_id="set_delivery",
+        source="get_order_status",
+    )
+    fulfillment = OptionContract(**{
+        **fulfillment_base.model_dump(),
+        "scope": {"order_id": "ORD-1"},
+        "options": [
+            {"id": "set_delivery", "label": "Delivery"},
+            {"id": "set_takeaway", "label": "Takeaway"},
+        ],
+    })
+    sessions = ProcessorSessions(menu)
+    processor = processor_for(sessions)
+
+    processor._persist_whatsapp_grounding_state(
+        context(),
+        SimpleNamespace(raw_result=protocol_result(
+            required_effect="fulfillment_saved",
+            tool_calls=[call_with(proposal=fulfillment)],
+        )),
+    )
+
+    assert sessions.transitions[-1]["expected"] == menu
+    assert sessions.transitions[-1]["successor"] == fulfillment
+    repository = ContractRepository({
+        "active_option_contract": fulfillment.model_dump()
+    })
+    service = session_service(repository)
+    for action in ("set_delivery", "set_takeaway"):
+        assert service.validate_option_contract_consumption(
+            "customer-1",
+            "session-1",
+            consumer_capability="update_order_flow",
+            contract_id=fulfillment.contract_id,
+            contract_version=fulfillment.contract_version,
+            selected_option_id=action,
+            scope={"order_id": "ORD-1"},
+        ) == fulfillment
+
+
 def test_consumption_requires_same_call_effect_and_atomically_installs_successor():
     old = contract("old")
     successor = contract(

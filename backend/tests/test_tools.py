@@ -172,6 +172,12 @@ def test_option_capabilities_expose_only_structured_contract_arguments():
     }
     web_schema = tools.start_cart_item_customization.tool_spec["inputSchema"]["json"]
     assert web_schema["required"] == ["item_id"]
+    order_status_role = tools.get_order_status.tool_spec["inputSchema"]["json"][
+        "properties"
+    ]["presentation_role"]
+    assert order_status_role["enum"] == [
+        "selection_offer", "informational_reference"
+    ]
 
 
 def test_web_start_cart_tool_remains_contract_optional(monkeypatch):
@@ -637,6 +643,168 @@ def test_failed_order_status_does_not_persist_verified_context(monkeypatch):
 
     assert result["error_code"] == "ORDER_NOT_FOUND"
     assert sessions.saved == []
+
+
+def test_informational_order_status_has_no_fulfillment_contract_or_invitation(
+    monkeypatch,
+):
+    response = ToolResponse.ok(
+        data={"order": {
+            "order_id": "ORD-1", "status": "awaiting_fulfillment_method",
+        }},
+        user_message="Order ORD-1 is awaiting fulfillment method.",
+        agent={"selected_order_id": "ORD-1"},
+        grounding=GroundingEvidence(authoritative_domains=["order"]),
+    )
+    sessions = VerifiedSessionStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(
+            orders=OrderStatusStub(response), agent_sessions=sessions,
+        ),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1", "session-1", request_id="request-1", channel="whatsapp",
+    )):
+        result = tools.get_order_status(
+            presentation_role="informational_reference"
+        )
+
+    grounding = result["grounding"]
+    assert grounding["presentation"]["role"] == "informational_reference"
+    assert grounding["offered_options"] == []
+    assert "required_next_effect" not in grounding
+    assert "option_contract_proposal" not in grounding
+    assert "delivery or takeaway" not in result["user_message"].casefold()
+    assert "delivery or takeaway" not in grounding.get(
+        "exact_customer_text", ""
+    ).casefold()
+
+
+def test_order_status_selection_offer_creates_scoped_fulfillment_contract(
+    monkeypatch,
+):
+    response = ToolResponse.ok(
+        data={"order": {
+            "order_id": "ORD-AUTHORITATIVE",
+            "status": "awaiting_fulfillment_method",
+        }},
+        user_message="Order status is awaiting fulfillment method.",
+        agent={"selected_order_id": "ORD-AUTHORITATIVE"},
+        grounding=GroundingEvidence(authoritative_domains=["order"]),
+    )
+    sessions = VerifiedSessionStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(
+            orders=OrderStatusStub(response), agent_sessions=sessions,
+        ),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1", "session-1", request_id="request-1", channel="whatsapp",
+    )):
+        result = tools.get_order_status(presentation_role="selection_offer")
+
+    grounding = result["grounding"]
+    proposal = grounding["option_contract_proposal"]
+    assert grounding["required_next_effect"] == "fulfillment_saved"
+    assert [option["id"] for option in grounding["offered_options"]] == [
+        "set_delivery", "set_takeaway"
+    ]
+    assert proposal["consumer_capability"] == "update_order_flow"
+    assert proposal["scope"] == {"order_id": "ORD-AUTHORITATIVE"}
+    assert "delivery or takeaway" in grounding["exact_customer_text"].casefold()
+
+
+@pytest.mark.parametrize(
+    ("data", "agent"),
+    [
+        (
+            {"orders": [
+                {"order_id": "ORD-1", "status": "awaiting_fulfillment_method"},
+                {"order_id": "ORD-2", "status": "awaiting_fulfillment_method"},
+            ]},
+            {"selected_order_id": None},
+        ),
+        (
+            {"order": {"order_id": "ORD-1", "status": "preparing"}},
+            {"selected_order_id": "ORD-1"},
+        ),
+    ],
+)
+def test_ineligible_order_status_selection_offer_has_no_actionable_contract(
+    monkeypatch, data, agent,
+):
+    response = ToolResponse.ok(
+        data=data,
+        user_message="Verified order status.",
+        agent=agent,
+        grounding=GroundingEvidence(authoritative_domains=["order"]),
+    )
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(
+            orders=OrderStatusStub(response),
+            agent_sessions=VerifiedSessionStub(),
+        ),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1", "session-1", request_id="request-1", channel="whatsapp",
+    )):
+        result = tools.get_order_status(presentation_role="selection_offer")
+
+    grounding = result["grounding"]
+    assert "option_contract_proposal" not in grounding
+    assert "required_next_effect" not in grounding
+    assert grounding["offered_options"] == []
+    assert "delivery or takeaway" not in grounding.get(
+        "exact_customer_text", ""
+    ).casefold()
+
+
+def test_web_order_status_preserves_prechange_response_without_typed_contract(
+    monkeypatch,
+):
+    response = ToolResponse.ok(
+        data={"order": {
+            "order_id": "ORD-1", "status": "awaiting_fulfillment_method",
+        }},
+        user_message="Order ORD-1 is awaiting fulfillment method.",
+        next_action="present_order_status",
+        agent={
+            "selected_order_id": "ORD-1",
+            "instruction": "Continue from the returned next_action.",
+            "required_input": "fulfillment_method",
+        },
+        grounding=GroundingEvidence(authoritative_domains=["order"]),
+    )
+    expected = response.model_dump(exclude_none=True)
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(
+            orders=OrderStatusStub(response),
+            agent_sessions=VerifiedSessionStub(),
+        ),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1", "session-1", request_id="request-1", channel="web",
+    )):
+        result = tools.get_order_status()
+
+    assert result == expected
+    assert result["next_action"] == "present_order_status"
+    assert result["agent"]["instruction"] == (
+        "Continue from the returned next_action."
+    )
+    assert "option_contract_proposal" not in result["grounding"]
 
 
 def test_verified_context_persistence_failure_keeps_successful_order_status(

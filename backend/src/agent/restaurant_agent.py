@@ -74,6 +74,7 @@ def invoke_restaurant_agent(
     channel: str = "web",
     agent: Agent | None = None,
     option_contract: dict[str, Any] | None = None,
+    primary_contract_recovery: bool = False,
     **kwargs: Any,
 ):
     context = AgentRequestContext(
@@ -97,11 +98,24 @@ def invoke_restaurant_agent(
     with request_context(context):
         agent_input = message
         if channel == "whatsapp" and option_contract:
+            structured_input = {
+                "trusted_active_option_contract": option_contract,
+                "customer_message": message,
+            }
+            if primary_contract_recovery:
+                structured_input["primary_contract_recovery"] = {
+                    "attempt": 1,
+                    "reason": "declared_consumer_not_executed",
+                    "instruction": (
+                        "Re-evaluate the original customer message. If it selects "
+                        "an active option, execute the consumer_capability declared "
+                        "by trusted_active_option_contract through its normal tool. "
+                        "Choose opaque IDs only from that trusted contract; do not "
+                        "merely acknowledge or promise the action."
+                    ),
+                }
             agent_input = json.dumps(
-                {
-                    "trusted_active_option_contract": option_contract,
-                    "customer_message": message,
-                },
+                structured_input,
                 separators=(",", ":"),
                 sort_keys=True,
             )

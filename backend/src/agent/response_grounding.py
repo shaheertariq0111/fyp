@@ -18,6 +18,7 @@ from src.models.tool_responses import (
     ImmutableFact,
     TransactionalEffect,
 )
+from src.models.conversation_contracts import OptionContract
 
 
 logger = logging.getLogger(__name__)
@@ -517,7 +518,7 @@ def ground_authoritative_tool_response(
             return GroundedAgentResponse(
                 exact_text,
                 "exact_artifact",
-                expected_write_tool,
+                _expected_action_after_calls(calls, expected_write_tool),
                 _required_effect_after_calls(
                     calls, required_effect
                 ),
@@ -966,6 +967,10 @@ def _required_effect_after_calls(
     calls: list[Any],
     required_effect: TransactionalEffect | None,
 ) -> TransactionalEffect | None:
+    for call in reversed(calls):
+        successor = _validated_option_contract_proposal(call)
+        if successor is not None:
+            return successor.required_effect
     supported = _supported_effects(calls)
     pending = None if required_effect in supported else required_effect
     if pending is not None:
@@ -989,9 +994,37 @@ def _expected_action_after_calls(
     expected_write_tool: str | None,
 ) -> str | None:
     for call in reversed(calls):
+        successor = _validated_option_contract_proposal(call)
+        if successor is not None:
+            return successor.consumer_capability
+    for call in reversed(calls):
         if bool(_value(call, "is_write")) and _call_succeeded(call):
             return _expected_action_after_call(call, expected_write_tool)
     return expected_write_tool
+
+
+def _validated_option_contract_proposal(call: Any) -> OptionContract | None:
+    if not _call_succeeded(call):
+        return None
+    evidence = _grounding_evidence(call)
+    proposal = evidence.get("option_contract_proposal")
+    declared_effect = evidence.get("required_next_effect")
+    if not isinstance(proposal, dict) or not declared_effect:
+        return None
+    try:
+        contract = OptionContract.model_validate(proposal)
+    except Exception:
+        return None
+    if contract.required_effect != declared_effect:
+        return None
+    offered_ids = {
+        str(option.get("id"))
+        for option in evidence.get("offered_options", [])
+        if isinstance(option, dict) and option.get("id")
+    }
+    if offered_ids != {option.id for option in contract.options}:
+        return None
+    return contract
 
 
 def _call_succeeded(call: Any) -> bool:
