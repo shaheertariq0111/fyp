@@ -21,6 +21,13 @@ TERMINAL_CART_STATUSES = {
     "cancelled",
     "expired",
 }
+RESUMABLE_CART_STATUSES = {
+    "cart_created",
+    "customizing_item",
+    "awaiting_upsell_decision",
+    "item_ready",
+    "cart_ready",
+}
 
 
 class CartService:
@@ -61,7 +68,21 @@ class CartService:
             TERMINAL_CART_STATUSES,
         )
         if active_cart:
-            return self._resume_active_cart(active_cart)
+            replay_effects = (
+                ["item_selected"]
+                if self._is_same_contract_cart_replay(
+                    active_cart,
+                    user_id=user_id,
+                    session_id=session_id,
+                    item_id=item_id,
+                    creation_idempotency_key=creation_idempotency_key,
+                )
+                else None
+            )
+            return self._resume_active_cart(
+                active_cart,
+                effects=replay_effects,
+            )
         menu_item = self.menu.get_item(item_id)
         if not menu_item:
             return ToolResponse.error(error_code="ITEM_NOT_FOUND",
@@ -103,7 +124,21 @@ class CartService:
         except CartCreationConflictError:
             existing = self.carts.find_by_cart_id(user_id, cart_id)
             if existing:
-                return self._resume_active_cart(existing)
+                replay_effects = (
+                    ["item_selected"]
+                    if self._is_same_contract_cart_replay(
+                        existing,
+                        user_id=user_id,
+                        session_id=session_id,
+                        item_id=item_id,
+                        creation_idempotency_key=creation_idempotency_key,
+                    )
+                    else None
+                )
+                return self._resume_active_cart(
+                    existing,
+                    effects=replay_effects,
+                )
             return ToolResponse.error(
                 error_code="CART_CREATE_CONFLICT",
                 user_message=(
@@ -794,7 +829,35 @@ class CartService:
         self.carts.save(cart, version)
         cart["version"] = version + 1
 
-    def _resume_active_cart(self, cart):
+    def _is_same_contract_cart_replay(
+        self,
+        cart,
+        *,
+        user_id: str,
+        session_id: str,
+        item_id: str,
+        creation_idempotency_key: str | None,
+    ) -> bool:
+        if not creation_idempotency_key:
+            return False
+        status = cart.get("status")
+        if status not in RESUMABLE_CART_STATUSES:
+            return False
+        if status == "customizing_item" and not cart.get("active_cart_item_id"):
+            return False
+        expected_cart_id = self._contract_cart_id(
+            user_id,
+            session_id,
+            creation_idempotency_key,
+        )
+        return bool(
+            cart.get("cart_id") == expected_cart_id
+            and cart.get("user_id") == user_id
+            and cart.get("agent_session_id") == session_id
+            and cart.get("source_item_id") == item_id
+        )
+
+    def _resume_active_cart(self, cart, effects=None):
         status = cart.get("status")
 
         if status == "cart_created":
@@ -833,6 +896,7 @@ class CartService:
                 ],
                 grounding=GroundingEvidence(
                     authoritative_domains=["cart"],
+                    transactional_effects=effects or [],
                     required_next_effect="customization_saved",
                     offered_options=[
                         GroundingOption(id="same", label="Same"),
@@ -846,7 +910,7 @@ class CartService:
             )
 
         if status == "customizing_item" and cart.get("active_cart_item_id"):
-            return self._next_choice_response(cart)
+            return self._next_choice_response(cart, effects=effects)
 
         if status == "awaiting_upsell_decision":
             upsell_items = list(self._upsell_items(cart).values())
@@ -872,6 +936,7 @@ class CartService:
                 ),
                 grounding=GroundingEvidence(
                     authoritative_domains=["cart", "menu"],
+                    transactional_effects=effects or [],
                     required_next_effect="other_transactional_progression",
                     offered_options=[
                         *[
@@ -904,7 +969,10 @@ class CartService:
                         "upsells or proceed to checkout."
                     ),
                 ),
-                grounding=GroundingEvidence(authoritative_domains=["cart"]),
+                grounding=GroundingEvidence(
+                    authoritative_domains=["cart"],
+                    transactional_effects=effects or [],
+                ),
             )
 
         if status == "cart_ready":
@@ -920,7 +988,10 @@ class CartService:
                         "checkout when the customer is ready."
                     ),
                 ),
-                grounding=GroundingEvidence(authoritative_domains=["cart"]),
+                grounding=GroundingEvidence(
+                    authoritative_domains=["cart"],
+                    transactional_effects=effects or [],
+                ),
             )
 
         return ToolResponse.ok(
@@ -934,7 +1005,10 @@ class CartService:
                     "Resume this existing cart instead of creating another cart."
                 ),
             ),
-            grounding=GroundingEvidence(authoritative_domains=["cart"]),
+            grounding=GroundingEvidence(
+                authoritative_domains=["cart"],
+                transactional_effects=effects or [],
+            ),
         )
 
     def _next_choice_response(self, cart, effects=None):
