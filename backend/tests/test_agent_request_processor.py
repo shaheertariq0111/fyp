@@ -506,6 +506,68 @@ def test_backend_grounding_logs_runtime_agreement_without_public_diagnostics(cap
     assert "semantic_classifier_status" not in public
 
 
+def test_backend_grounding_v2_accepts_no_tool_conversation_without_assessment(caplog):
+    response = _grounding_response_builder()(
+        _grounding_context(),
+        {"customer": {}},
+        SimpleNamespace(
+            text="How can I help with your order?",
+            raw_result={
+                "grounding_protocol_version": 2,
+                "tool_calls": [],
+                "grounding_source": "conversation",
+            },
+        ),
+    )
+
+    completed = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "backend_grounding_completed"
+    )
+    assert response.text == "How can I help with your order?"
+    assert completed.grounding_protocol_version == 2
+    assert completed.assessment_transport_status == "not_required_v2"
+    assert completed.runtime_backend_grounding_agree is True
+    assert completed.runtime_backend_expected_action_agree is True
+    assert completed.runtime_backend_required_effect_agree is True
+    assert not any(
+        getattr(record, "event", None) == "grounding_boundary_metadata_issue"
+        for record in caplog.records
+    )
+    assert not any(
+        getattr(record, "assessment_origin", None) == "boundary_missing_synthetic"
+        for record in caplog.records
+    )
+
+
+def test_backend_grounding_v2_reapplies_authoritative_failed_write():
+    response = _grounding_response_builder()(
+        _grounding_context(),
+        {"customer": {}},
+        SimpleNamespace(
+            text="I couldn't complete that change.",
+            raw_result={
+                "grounding_protocol_version": 2,
+                "tool_calls": [{
+                    "tool_name": "submit_order",
+                    "success": False,
+                    "is_write": True,
+                    "result": {
+                        "success": False,
+                        "user_message": "I couldn't complete that change.",
+                    },
+                    "error_code": "INVALID_ORDER_STATE",
+                }],
+                "grounding_source": "failed_write",
+                "grounding_rejection_reason": "authoritative_write_failed",
+            },
+        ),
+    )
+
+    assert response.text == "I couldn't complete that change."
+
+
 def test_backend_grounding_logs_runtime_disagreement_without_changing_text(caplog):
     response = _grounding_response_builder()(
         _grounding_context(),

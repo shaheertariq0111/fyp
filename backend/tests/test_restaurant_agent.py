@@ -477,7 +477,7 @@ def test_whatsapp_llm_input_contains_trusted_active_option_contract():
     assert result
 
 
-def test_primary_recovery_input_reuses_contract_without_selecting_an_option():
+def test_whatsapp_contract_input_has_no_primary_recovery_reminder():
     captured = {}
     option_contract = {
         "contract_id": "contract-1",
@@ -501,17 +501,11 @@ def test_primary_recovery_input_reuses_contract_without_selecting_an_option():
         channel="whatsapp",
         agent=FakeAgent(),
         option_contract=option_contract,
-        primary_contract_recovery=True,
     )
 
     assert captured["customer_message"] == "choose from the active options"
     assert captured["trusted_active_option_contract"] == option_contract
-    reminder = captured["primary_contract_recovery"]
-    assert reminder["attempt"] == 1
-    assert reminder["reason"] == "declared_consumer_not_executed"
-    assert "selected_option_id" not in reminder
-    assert "item-1" not in repr(reminder)
-    assert "item-5" not in repr(reminder)
+    assert "primary_contract_recovery" not in captured
 
 
 def test_agent_result_text_extracts_and_sanitizes_message_text():

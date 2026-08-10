@@ -9,16 +9,11 @@ from src.agent.order_intent import (
     classify_order_intent,
 )
 from src.agent.response_grounding import (
-    AssistantClaimAssessment,
     GroundedAssistantMemoryBuffer,
     SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
-    SemanticClassifierTimeout,
-    assess_assistant_claims,
-    ground_authoritative_tool_response,
-    ground_agent_response,
+    ground_agent_response_v2,
     grounding_decision_log_fields,
     run_semantic_classifier,
-    tool_evidence_payload,
 )
 from src.agent.restaurant_agent import (
     agent_result_text,
@@ -113,71 +108,18 @@ class LocalStrandsAgentRuntimeClient:
                     expected_write_tool=expected_write_tool,
                 )
             )
-            grounded = ground_authoritative_tool_response(
+            grounded = ground_agent_response_v2(
+                text=response_text,
                 tool_calls=tool_calls,
                 expected_write_tool=expected_write_tool,
                 required_effect=required_effect,
+                available_options=request.available_options,
             )
-            assessment = None
-            no_write_authorized = False
-            informational_turn = False
-            assessment_origin = None
-            semantic_classifier_status = None
-            authoritative_fast_path = grounded is not None
-            if grounded is None:
-                try:
-                    assessment = run_semantic_classifier(
-                        classifier_name="grounding_assessment",
-                        timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
-                        operation=lambda: assess_assistant_claims(
-                            customer_message=request.message,
-                            assistant_message=response_text,
-                            tool_evidence=tool_evidence_payload(tool_calls),
-                            required_effect=required_effect,
-                            available_options=request.available_options,
-                        ),
-                    )
-                    assessment_origin = "model"
-                    semantic_classifier_status = "completed"
-                except SemanticClassifierTimeout:
-                    assessment = AssistantClaimAssessment(
-                        claims_transactional_progression=True,
-                        claimed_actions=["other_transactional_progression"],
-                        customer_requests_required_effect=bool(required_effect),
-                    )
-                    assessment_origin = "timeout_synthetic"
-                    semantic_classifier_status = "timed_out"
-                except Exception:
-                    assessment = AssistantClaimAssessment(
-                        claims_transactional_progression=True,
-                        claimed_actions=["other_transactional_progression"],
-                        customer_requests_required_effect=bool(required_effect),
-                    )
-                    assessment_origin = "exception_synthetic"
-                    semantic_classifier_status = "failed"
-                no_write_authorized = not (
-                    required_effect and assessment.customer_requests_required_effect
-                )
-                informational_turn = assessment.informational_turn
-                grounded = ground_agent_response(
-                    text=response_text,
-                    tool_calls=tool_calls,
-                    claim_assessment=assessment,
-                    no_write_authorized=no_write_authorized,
-                    informational_turn=informational_turn,
-                    expected_write_tool=expected_write_tool,
-                    required_effect=required_effect,
-                    available_options=request.available_options,
-                )
-            else:
-                semantic_classifier_status = "not_run_authoritative_fast_path"
             logger.info(
                 "Local WhatsApp response grounded",
                 extra={
                     "event": "whatsapp_grounding_completed",
-                    "authoritative_fast_path": authoritative_fast_path,
-                    "assessment_origin": assessment_origin,
-                    "semantic_classifier_status": semantic_classifier_status,
+                    "grounding_protocol_version": 2,
                     **grounding_decision_log_fields(grounded),
                 },
             )
@@ -193,13 +135,7 @@ class LocalStrandsAgentRuntimeClient:
             if memory_buffer is not None:
                 memory_buffer.commit(response_text, runtime_agent)
             try:
-                setattr(
-                    raw_result,
-                    "claim_assessment",
-                    assessment.model_dump() if assessment is not None else None,
-                )
-                setattr(raw_result, "no_write_authorized", no_write_authorized)
-                setattr(raw_result, "informational_turn", informational_turn)
+                setattr(raw_result, "grounding_protocol_version", 2)
                 setattr(raw_result, "expected_write_tool", expected_write_tool)
                 setattr(raw_result, "required_effect", required_effect)
                 setattr(raw_result, "grounding_source", grounded.source)
@@ -207,12 +143,6 @@ class LocalStrandsAgentRuntimeClient:
                     raw_result,
                     "grounding_rejection_reason",
                     grounded.rejection_reason,
-                )
-                setattr(raw_result, "assessment_origin", assessment_origin)
-                setattr(
-                    raw_result,
-                    "semantic_classifier_status",
-                    semantic_classifier_status,
                 )
             except Exception:
                 raise RuntimeError("Local runtime result cannot carry grounding metadata")

@@ -32,6 +32,7 @@ def test_json_formatter_serializes_existing_and_phase_one_fields():
         "semantic_classifier_model_elapsed_at_timeout_ms": 3000.75,
         "semantic_classifier_execution_started": True,
         "authoritative_fast_path": False,
+        "grounding_protocol_version": 2,
         "grounding_source": "conversation",
         "grounding_rejection_reason": "required_effect_not_supported",
         "assessment_origin": "model",

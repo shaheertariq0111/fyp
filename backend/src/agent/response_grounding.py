@@ -41,6 +41,7 @@ GroundingRejectionReason = Literal[
     "presentation_limit_exceeded",
     "immutable_fact_mismatch",
     "authoritative_write_failed",
+    "authoritative_read_failed",
     "successful_write_missing_safe_grounding",
 ]
 AssessmentOrigin = Literal[
@@ -58,6 +59,7 @@ SemanticClassifierStatus = Literal[
 GroundingSource = Literal[
     "conversation",
     "exact_artifact",
+    "failed_read",
     "failed_write",
     "successful_write",
     "write_without_grounding",
@@ -527,6 +529,96 @@ def ground_authoritative_tool_response(
     return None
 
 
+def ground_agent_response_v2(
+    *,
+    text: str,
+    tool_calls: list[Any],
+    expected_write_tool: str | None = None,
+    required_effect: TransactionalEffect | None = None,
+    available_options: list[dict[str, str]] | None = None,
+) -> GroundedAgentResponse:
+    """Ground a WhatsApp response using validated tool evidence only."""
+    calls = list(tool_calls or [])
+    diagnostics = _safe_grounding_diagnostics(
+        calls,
+        claim_assessment=None,
+        required_effect=required_effect,
+        available_options=available_options,
+    )
+
+    for call in reversed(calls):
+        if bool(_value(call, "is_write")) and not _call_succeeded(call):
+            result = _result(call)
+            return GroundedAgentResponse(
+                _clean_text(result.get("user_message")) or FAILED_TRANSACTION_FALLBACK,
+                "failed_write",
+                expected_write_tool,
+                required_effect,
+                "authoritative_write_failed",
+                diagnostics,
+            )
+
+    for call in reversed(calls):
+        if not bool(_value(call, "is_write")) or not _call_succeeded(call):
+            continue
+        exact_text = _clean_text(
+            _grounding_evidence(call).get("exact_customer_text")
+        )
+        if exact_text:
+            return GroundedAgentResponse(
+                exact_text,
+                "exact_artifact",
+                _expected_action_after_calls(calls, expected_write_tool),
+                _required_effect_after_calls(calls, required_effect),
+                diagnostics=diagnostics,
+            )
+        user_message = _clean_text(_result(call).get("user_message"))
+        return GroundedAgentResponse(
+            user_message or FAILED_TRANSACTION_FALLBACK,
+            "successful_write" if user_message else "write_without_grounding",
+            _expected_action_after_calls(calls, expected_write_tool),
+            _required_effect_after_calls(calls, required_effect),
+            None if user_message else "successful_write_missing_safe_grounding",
+            diagnostics,
+        )
+
+    for call in reversed(calls):
+        if bool(_value(call, "is_write")) or not _call_succeeded(call):
+            continue
+        exact_text = _clean_text(
+            _grounding_evidence(call).get("exact_customer_text")
+        )
+        if exact_text:
+            return GroundedAgentResponse(
+                exact_text,
+                "exact_artifact",
+                _expected_action_after_calls(calls, expected_write_tool),
+                _required_effect_after_calls(calls, required_effect),
+                diagnostics=diagnostics,
+            )
+
+    for call in reversed(calls):
+        if bool(_value(call, "is_write")) or _call_succeeded(call):
+            continue
+        result = _result(call)
+        return GroundedAgentResponse(
+            _clean_text(result.get("user_message")) or FAILED_TRANSACTION_FALLBACK,
+            "failed_read",
+            expected_write_tool,
+            required_effect,
+            "authoritative_read_failed",
+            diagnostics,
+        )
+
+    return GroundedAgentResponse(
+        text,
+        "conversation",
+        _expected_action_after_calls(calls, expected_write_tool),
+        _required_effect_after_calls(calls, required_effect),
+        diagnostics=diagnostics,
+    )
+
+
 def ground_agent_response(
     *,
     text: str,
@@ -681,6 +773,9 @@ def grounding_comparison_log_fields(
     runtime_claim_assessment_present: bool,
     runtime_grounding_metadata_present: bool,
     assessment_transport_status: str,
+    runtime_expected_transactional_action: str | None = None,
+    runtime_required_next_effect: str | None = None,
+    compare_transition_metadata: bool = False,
 ) -> dict[str, Any]:
     runtime_grounding_source = safe_grounding_source_log_value(
         runtime_grounding_source
@@ -689,10 +784,19 @@ def grounding_comparison_log_fields(
         runtime_grounding_rejection_reason
     )
     backend_changed_runtime_text = backend_response.text != runtime_text
+    expected_action_agrees = (
+        runtime_expected_transactional_action
+        == backend_response.expected_transactional_action
+    )
+    required_effect_agrees = (
+        runtime_required_next_effect == backend_response.required_next_effect
+    )
     agreement = (
         runtime_grounding_source == backend_response.source
         and runtime_grounding_rejection_reason == backend_response.rejection_reason
         and not backend_changed_runtime_text
+        and (not compare_transition_metadata or expected_action_agrees)
+        and (not compare_transition_metadata or required_effect_agrees)
     )
     return {
         "runtime_grounding_source": runtime_grounding_source,
@@ -704,6 +808,8 @@ def grounding_comparison_log_fields(
         "runtime_claim_assessment_present": runtime_claim_assessment_present,
         "runtime_grounding_metadata_present": runtime_grounding_metadata_present,
         "assessment_transport_status": assessment_transport_status,
+        "runtime_backend_expected_action_agree": expected_action_agrees,
+        "runtime_backend_required_effect_agree": required_effect_agrees,
     }
 
 

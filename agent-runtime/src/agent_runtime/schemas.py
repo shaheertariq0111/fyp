@@ -46,6 +46,7 @@ class ToolCallResult(BaseModel):
 
 class RuntimeResponse(BaseModel):
     text: str
+    grounding_protocol_version: Literal[2] | None = None
     option_contract_protocol_version: int | None = None
     tool_calls: list[ToolCallResult] = Field(default_factory=list)
     memory: dict[str, str] = Field(default_factory=dict)

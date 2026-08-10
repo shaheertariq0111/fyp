@@ -7,7 +7,6 @@ import pytest
 
 from src.agent_client.agentcore import AgentCoreRuntimeClient
 from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
-from src.agent.response_grounding import AssistantClaimAssessment
 from src.agent.whatsapp_turn_intent import (
     WhatsAppTurnIntentRequest,
     WhatsAppTurnInterpretation,
@@ -123,7 +122,7 @@ def test_local_agent_runtime_client_preserves_missing_request_id(monkeypatch):
     assert captured["request_id"] is None
 
 
-def test_local_whatsapp_client_commits_grounded_message_without_raw_redaction(monkeypatch):
+def test_local_whatsapp_client_uses_classifier_free_v2_and_commits_final_text(monkeypatch):
     class Manager:
         def __init__(self):
             self.messages = []
@@ -164,11 +163,8 @@ def test_local_whatsapp_client_commits_grounded_message_without_raw_redaction(mo
         ),
     )
     monkeypatch.setattr(
-        "src.agent_client.local.assess_assistant_claims",
-        lambda **kwargs: AssistantClaimAssessment(
-            claims_transactional_progression=True,
-            claimed_actions=["item_selected"],
-        ),
+        "src.agent_client.local.run_semantic_classifier",
+        lambda **_kwargs: pytest.fail("conversation grounding classifier must not run"),
     )
 
     result = LocalStrandsAgentRuntimeClient().invoke(AgentInvocationRequest(
@@ -180,14 +176,13 @@ def test_local_whatsapp_client_commits_grounded_message_without_raw_redaction(mo
         available_options=[{"id": "item-1", "label": "First Item"}],
     ))
 
-    assert "I selected" not in str(manager.messages)
     assert built_channels == ["whatsapp"]
     assert manager.messages[-1]["content"][0]["text"] == result.text
-    assert result.raw_result.assessment_origin == "model"
-    assert result.raw_result.semantic_classifier_status == "completed"
-    assert result.raw_result.grounding_rejection_reason == (
-        "unsupported_transactional_effect"
-    )
+    assert result.text == "I selected the item and saved a size."
+    assert result.raw_result.grounding_protocol_version == 2
+    assert result.raw_result.grounding_source == "conversation"
+    assert not hasattr(result.raw_result, "claim_assessment")
+    assert not hasattr(result.raw_result, "semantic_classifier_status")
 
 
 def test_local_agent_runtime_client_async_methods_are_agentcore_boundary():
