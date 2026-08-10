@@ -221,7 +221,10 @@ class AgentRequestProcessor:
             "WhatsApp grounding state loaded",
             extra={
                 "event": "whatsapp_grounding_state_loaded",
-                "contract_present": bool(isinstance(items, list) and items),
+                "typed_contract_present": contract is not None,
+                "legacy_option_count": (
+                    len(items) if isinstance(items, list) else 0
+                ),
                 "required_effect_present": bool(
                     safe_transactional_effect_log_value(
                         state.get("whatsapp_required_effect")
@@ -233,9 +236,6 @@ class AgentRequestProcessor:
                     state.get("whatsapp_required_effect")
                     if isinstance(state, dict)
                     else None
-                ),
-                "available_option_count": (
-                    len(items) if isinstance(items, list) else 0
                 ),
                 "state_age_ms": state_age_ms,
             },
