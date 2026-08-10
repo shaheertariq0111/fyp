@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import json
 import re
 from typing import Any
 
@@ -9,8 +10,8 @@ from strands.models.bedrock import BedrockModel
 from strands.session import FileSessionManager
 
 from src.agent.context import AgentRequestContext, request_context
-from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT
-from src.agent.tools import MVP_TOOLS
+from src.agent.system_prompt import restaurant_prompt_for_channel
+from src.agent.tools import tools_for_channel
 from src.infrastructure.config import get_bedrock_model_settings, get_settings
 
 
@@ -41,11 +42,12 @@ def build_session_manager(agent_session_id: str) -> FileSessionManager | None:
 def build_restaurant_agent(
     model: BedrockModel | str | None = None,
     session_manager: Any | None = None,
+    channel: str = "web",
 ) -> Agent:
     return Agent(
         model=model or build_bedrock_model(),
-        tools=MVP_TOOLS,
-        system_prompt=RESTAURANT_AGENT_SYSTEM_PROMPT,
+        tools=tools_for_channel(channel),
+        system_prompt=restaurant_prompt_for_channel(channel),
         name="restaurant-ordering-agent",
         description="Single MVP pizza restaurant ordering assistant.",
         session_manager=session_manager,
@@ -56,7 +58,7 @@ def build_restaurant_agent(
 
 @lru_cache
 def get_restaurant_agent() -> Agent:
-    return build_restaurant_agent()
+    return build_restaurant_agent(channel="web")
 
 
 def invoke_restaurant_agent(
@@ -71,6 +73,7 @@ def invoke_restaurant_agent(
     customer_phone: str | None = None,
     channel: str = "web",
     agent: Agent | None = None,
+    option_contract: dict[str, Any] | None = None,
     **kwargs: Any,
 ):
     context = AgentRequestContext(
@@ -84,11 +87,25 @@ def invoke_restaurant_agent(
         channel=channel,
         current_message=message,
     )
-    runtime_agent = agent or build_restaurant_agent(
-        session_manager=build_session_manager(agent_session_id)
-    )
+    if agent is not None:
+        runtime_agent = agent
+    else:
+        build_kwargs = {"session_manager": build_session_manager(agent_session_id)}
+        if channel != "web":
+            build_kwargs["channel"] = channel
+        runtime_agent = build_restaurant_agent(**build_kwargs)
     with request_context(context):
-        result = runtime_agent(message, **kwargs)
+        agent_input = message
+        if channel == "whatsapp" and option_contract:
+            agent_input = json.dumps(
+                {
+                    "trusted_active_option_contract": option_contract,
+                    "customer_message": message,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        result = runtime_agent(agent_input, **kwargs)
         try:
             setattr(result, "tool_calls", list(context.tool_calls))
         except Exception:

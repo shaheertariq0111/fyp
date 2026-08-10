@@ -9,6 +9,8 @@ from pydantic_core import PydanticCustomError
 
 from src.models.ticket import MAX_DESCRIPTION_LENGTH, normalize_ticket_timestamp
 from src.models.tool_responses import TransactionalEffect
+from src.models.conversation_contracts import OptionContract
+from src.models.tool_responses import ToolResponse
 from src.repositories.agent_session_repository import SupportStateConflictError
 
 
@@ -246,6 +248,141 @@ class AgentSessionService:
                 },
             )
         return {}
+
+    def get_active_option_contract(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> OptionContract | None:
+        state = self.repository.get_whatsapp_order_state(customer_id, agent_session_id)
+        raw_contract = state.get("active_option_contract")
+        if raw_contract is not None:
+            try:
+                contract = OptionContract.model_validate(raw_contract)
+            except Exception:
+                self.repository.clear_option_contract(customer_id, agent_session_id)
+                return None
+            now = self._now()
+            created_at = datetime.fromisoformat(contract.created_at).astimezone(timezone.utc)
+            expires_at = datetime.fromisoformat(contract.expires_at).astimezone(timezone.utc)
+            if created_at > now + SUPPORT_STATE_MAX_CLOCK_SKEW or expires_at <= now:
+                self.repository.transition_option_contract(
+                    customer_id,
+                    agent_session_id,
+                    expected_contract_id=contract.contract_id,
+                    expected_contract_version=contract.contract_version,
+                    successor=None,
+                )
+                return None
+            return contract
+        legacy = self._legacy_option_contract(state, agent_session_id)
+        if legacy is None and state:
+            self.repository.clear_whatsapp_order_state(customer_id, agent_session_id)
+        return legacy
+
+    def _legacy_option_contract(
+        self,
+        state: dict,
+        agent_session_id: str,
+    ) -> OptionContract | None:
+        items = state.get("offered_menu_items")
+        updated_at = state.get("whatsapp_order_state_updated_at")
+        required_effect = state.get("whatsapp_required_effect") or "item_selected"
+        if not isinstance(items, list) or not items or not isinstance(updated_at, str):
+            return None
+        try:
+            created = datetime.fromisoformat(updated_at).astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return None
+        now = self._now()
+        if created > now + SUPPORT_STATE_MAX_CLOCK_SKEW or now - created >= WHATSAPP_ORDER_STATE_TTL:
+            return None
+        options = [
+            {"id": str(item["product_id"]), "label": str(item.get("name") or item["product_id"])}
+            for item in items
+            if isinstance(item, dict) and item.get("product_id")
+        ]
+        if not options:
+            return None
+        try:
+            return OptionContract(
+                contract_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"legacy:{agent_session_id}:{updated_at}")),
+                contract_version=1,
+                required_effect=required_effect,
+                consumer_capability="start_cart_item_customization",
+                source_capability="legacy-v1",
+                source_request_id="legacy-v1",
+                options=options,
+                created_at=created.isoformat(),
+                expires_at=(created + WHATSAPP_ORDER_STATE_TTL).isoformat(),
+            )
+        except Exception:
+            return None
+
+    def validate_option_contract_consumption(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        consumer_capability: str,
+        contract_id: str | None,
+        contract_version: int | None,
+        selected_option_id: str | None,
+        scope: dict[str, str] | None = None,
+    ) -> OptionContract | ToolResponse | None:
+        contract = self.get_active_option_contract(customer_id, agent_session_id)
+        if contract is None:
+            if contract_id is None and contract_version is None:
+                return None
+            return self._invalid_option_contract("There is no active choice to use.")
+        if (
+            contract_id != contract.contract_id
+            or contract_version != contract.contract_version
+            or consumer_capability != contract.consumer_capability
+            or not isinstance(selected_option_id, str)
+            or selected_option_id not in {option.id for option in contract.options}
+            or any((scope or {}).get(key) != value for key, value in contract.scope.items())
+        ):
+            return self._invalid_option_contract(
+                "That choice is stale or does not belong to the active options."
+            )
+        return contract
+
+    @staticmethod
+    def _invalid_option_contract(message: str) -> ToolResponse:
+        return ToolResponse.error(
+            error_code="INVALID_OPTION_CONTRACT",
+            user_message=message,
+        )
+
+    def transition_option_contract(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        expected: OptionContract | None,
+        successor: OptionContract | None,
+        legacy_projection: dict | None = None,
+    ) -> None:
+        if expected is not None and expected.source_capability == "legacy-v1":
+            self.repository.transition_legacy_option_contract(
+                customer_id,
+                agent_session_id,
+                expected_contract_id=expected.contract_id,
+                expected_contract_version=expected.contract_version,
+                expected_required_effect=expected.required_effect,
+                successor=(successor.model_dump() if successor else None),
+                legacy_projection=legacy_projection,
+            )
+            return
+        self.repository.transition_option_contract(
+            customer_id,
+            agent_session_id,
+            expected_contract_id=(expected.contract_id if expected else None),
+            expected_contract_version=(expected.contract_version if expected else None),
+            successor=(successor.model_dump() if successor else None),
+            legacy_projection=legacy_projection,
+        )
 
     def clear_whatsapp_order_state(
         self,

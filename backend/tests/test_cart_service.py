@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from src.services.cart_service import CartService
 from src.services.order_service import OrderService
+from src.repositories.cart_repository import CartCreationConflictError
 from fakes import MemoryCartRepository, MemoryMenuRepository, MemoryOrderRepository
 
 
@@ -227,6 +228,107 @@ def test_start_item_customization_does_not_create_second_active_cart():
     assert second.data["cart_id"] == first.data["cart_id"]
     assert second.data["items"][0]["item_id"] == "configurable"
     assert second.agent["active_choice"]["field_name"] == "dynamic-choice"
+
+
+class StaleActiveLookupCartRepository(MemoryCartRepository):
+    """Models two creators that both observed no active cart."""
+
+    def __init__(self):
+        super().__init__()
+        self.create_attempts = 0
+
+    def find_active_by_session(self, *_args):
+        return None
+
+    def create(self, cart):
+        self.create_attempts += 1
+        if cart["cart_id"] in self.data:
+            raise CartCreationConflictError("cart already exists")
+        super().create(cart)
+
+
+def test_same_contract_retry_resumes_one_cart_identity():
+    service, carts, _ = build_services()
+
+    first = service.start_item_customization(
+        "user", "session", "configurable",
+        creation_idempotency_key="contract-1:1",
+    )
+    retry = service.start_item_customization(
+        "user", "session", "configurable",
+        creation_idempotency_key="contract-1:1",
+    )
+
+    assert first.data["cart_id"] == retry.data["cart_id"]
+    assert len(carts.data) == 1
+
+
+def test_contract_backed_initial_cart_creation_is_idempotent_after_stale_lookup():
+    service, _, _ = build_services()
+    carts = StaleActiveLookupCartRepository()
+    service.carts = carts
+
+    first = service.start_item_customization(
+        "user", "session", "configurable",
+        creation_idempotency_key="contract-1:1",
+    )
+    retry = service.start_item_customization(
+        "user", "session", "configurable",
+        creation_idempotency_key="contract-1:1",
+    )
+
+    assert first.success and retry.success
+    assert first.data["cart_id"] == retry.data["cart_id"]
+    assert len(carts.data) == 1
+    assert carts.create_attempts == 2
+
+
+def test_different_validated_contract_keys_derive_different_cart_identities():
+    service, _, _ = build_services()
+    carts = StaleActiveLookupCartRepository()
+    service.carts = carts
+
+    first = service.start_item_customization(
+        "user", "session", "configurable",
+        creation_idempotency_key="contract-1:1",
+    )
+    second = service.start_item_customization(
+        "user", "session", "addon",
+        creation_idempotency_key="contract-2:1",
+    )
+
+    assert first.data["cart_id"] != second.data["cart_id"]
+    assert len(carts.data) == 2
+
+
+def test_web_initial_cart_creation_without_contract_remains_non_idempotent():
+    service, _, _ = build_services()
+    carts = StaleActiveLookupCartRepository()
+    service.carts = carts
+
+    first = service.start_item_customization("user", "session", "addon")
+    second = service.start_item_customization("user", "session", "addon")
+
+    assert first.data["cart_id"] != second.data["cart_id"]
+    assert len(carts.data) == 2
+
+
+def test_contract_create_conflict_without_visible_cart_fails_deterministically():
+    service, _, _ = build_services()
+
+    class ConflictingRepository(StaleActiveLookupCartRepository):
+        def create(self, _cart):
+            raise CartCreationConflictError("cart already exists")
+
+    service.carts = ConflictingRepository()
+    response = service.start_item_customization(
+        "user", "session", "addon",
+        creation_idempotency_key="contract-1:1",
+    )
+
+    assert response.success is False
+    assert response.error_code == "CART_CREATE_CONFLICT"
+    assert response.retryable is True
 
 
 def test_size_choice_includes_authoritative_prices():

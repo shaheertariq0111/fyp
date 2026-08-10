@@ -3647,7 +3647,8 @@ def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
             "expected_write_tool": None,
             "required_effect": None,
             "available_options": None,
-    }
+            "option_contract": None,
+        }
 
 
 def test_successful_chat_logs_exclude_trusted_request_and_session_ids(

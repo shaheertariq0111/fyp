@@ -1,3 +1,5 @@
+import uuid
+
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
@@ -18,6 +20,7 @@ VERIFIED_ORDER_FIELDS = (
     "verified_order_at",
 )
 WHATSAPP_ORDER_STATE_FIELDS = (
+    "active_option_contract",
     "offered_menu_items",
     "whatsapp_menu_query",
     "shown_menu_item_ids",
@@ -25,6 +28,10 @@ WHATSAPP_ORDER_STATE_FIELDS = (
     "whatsapp_required_effect",
     "whatsapp_order_state_updated_at",
 )
+
+
+class OptionContractConflictError(RuntimeError):
+    pass
 
 
 class SupportStateConflictError(RuntimeError):
@@ -174,6 +181,228 @@ class AgentSessionRepository:
                 "#pk": "PK",
                 "#customer_id": "customer_id",
                 "#agent_session_id": "agent_session_id",
+                "#items": "offered_menu_items",
+                "#menu_query": "whatsapp_menu_query",
+                "#shown_ids": "shown_menu_item_ids",
+                "#has_more": "whatsapp_menu_has_more",
+                "#required_effect": "whatsapp_required_effect",
+                "#updated_at": "whatsapp_order_state_updated_at",
+            },
+            values={
+                ":customer_id": customer_id,
+                ":agent_session_id": agent_session_id,
+            },
+        )
+
+    def transition_option_contract(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        expected_contract_id: str | None,
+        expected_contract_version: int | None,
+        successor: dict | None,
+        legacy_projection: dict | None = None,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        names = {
+            "#pk": "PK",
+            "#customer_id": "customer_id",
+            "#agent_session_id": "agent_session_id",
+            "#contract": "active_option_contract",
+            "#contract_id": "contract_id",
+            "#contract_version": "contract_version",
+            "#items": "offered_menu_items",
+            "#menu_query": "whatsapp_menu_query",
+            "#shown_ids": "shown_menu_item_ids",
+            "#has_more": "whatsapp_menu_has_more",
+            "#required_effect": "whatsapp_required_effect",
+            "#updated_at": "whatsapp_order_state_updated_at",
+        }
+        values = {
+            ":customer_id": customer_id,
+            ":agent_session_id": agent_session_id,
+        }
+        condition = (
+            "attribute_exists(#pk) AND #customer_id = :customer_id "
+            "AND #agent_session_id = :agent_session_id"
+        )
+        if expected_contract_id is None:
+            condition += " AND attribute_not_exists(#contract)"
+        else:
+            condition += (
+                " AND #contract.#contract_id = :expected_contract_id"
+                " AND #contract.#contract_version = :expected_contract_version"
+            )
+            values[":expected_contract_id"] = expected_contract_id
+            values[":expected_contract_version"] = expected_contract_version
+
+        if successor is None:
+            update = (
+                "REMOVE #contract, #items, #menu_query, #shown_ids, #has_more, "
+                "#required_effect, #updated_at"
+            )
+        else:
+            values[":contract"] = successor
+            projection = legacy_projection or {}
+            values.update({
+                ":items": projection.get("offered_menu_items", []),
+                ":menu_query": projection.get("whatsapp_menu_query", ""),
+                ":shown_ids": projection.get("shown_menu_item_ids", []),
+                ":has_more": bool(projection.get("whatsapp_menu_has_more", False)),
+                ":required_effect": successor["required_effect"],
+                ":updated_at": successor["created_at"],
+            })
+            update = (
+                "SET #contract = :contract, #items = :items, "
+                "#menu_query = :menu_query, #shown_ids = :shown_ids, "
+                "#has_more = :has_more, #required_effect = :required_effect, "
+                "#updated_at = :updated_at"
+            )
+        try:
+            self._update_support_attributes(
+                session,
+                update_expression=update,
+                condition_expression=condition,
+                names=names,
+                values=values,
+            )
+        except SupportStateConflictError as exc:
+            raise OptionContractConflictError(
+                "option contract changed concurrently"
+            ) from exc
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                raise OptionContractConflictError(
+                    "option contract changed concurrently"
+                ) from exc
+            raise
+
+    def transition_legacy_option_contract(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        expected_contract_id: str,
+        expected_contract_version: int,
+        expected_required_effect: TransactionalEffect,
+        successor: dict | None,
+        legacy_projection: dict | None = None,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        updated_at = session.get("whatsapp_order_state_updated_at")
+        stored_required_effect = session.get("whatsapp_required_effect")
+        effective_required_effect = stored_required_effect or "item_selected"
+        derived_contract_id = (
+            str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"legacy:{agent_session_id}:{updated_at}",
+            ))
+            if isinstance(updated_at, str)
+            else None
+        )
+        if (
+            expected_contract_version != 1
+            or derived_contract_id != expected_contract_id
+            or effective_required_effect != expected_required_effect
+        ):
+            raise OptionContractConflictError(
+                "legacy option contract changed concurrently"
+            )
+
+        names = {
+            "#pk": "PK",
+            "#customer_id": "customer_id",
+            "#agent_session_id": "agent_session_id",
+            "#contract": "active_option_contract",
+            "#items": "offered_menu_items",
+            "#menu_query": "whatsapp_menu_query",
+            "#shown_ids": "shown_menu_item_ids",
+            "#has_more": "whatsapp_menu_has_more",
+            "#required_effect": "whatsapp_required_effect",
+            "#updated_at": "whatsapp_order_state_updated_at",
+        }
+        values = {
+            ":customer_id": customer_id,
+            ":agent_session_id": agent_session_id,
+            ":expected_updated_at": updated_at,
+        }
+        condition = (
+            "attribute_exists(#pk) AND #customer_id = :customer_id "
+            "AND #agent_session_id = :agent_session_id "
+            "AND attribute_not_exists(#contract) "
+            "AND #updated_at = :expected_updated_at"
+        )
+        if stored_required_effect is None:
+            condition += " AND attribute_not_exists(#required_effect)"
+        else:
+            condition += " AND #required_effect = :expected_required_effect"
+            values[":expected_required_effect"] = expected_required_effect
+
+        if successor is None:
+            update = (
+                "REMOVE #contract, #items, #menu_query, #shown_ids, #has_more, "
+                "#required_effect, #updated_at"
+            )
+        else:
+            projection = legacy_projection or {}
+            values.update({
+                ":contract": successor,
+                ":items": projection.get("offered_menu_items", []),
+                ":menu_query": projection.get("whatsapp_menu_query", ""),
+                ":shown_ids": projection.get("shown_menu_item_ids", []),
+                ":has_more": bool(projection.get("whatsapp_menu_has_more", False)),
+                ":required_effect": successor["required_effect"],
+                ":updated_at": successor["created_at"],
+            })
+            update = (
+                "SET #contract = :contract, #items = :items, "
+                "#menu_query = :menu_query, #shown_ids = :shown_ids, "
+                "#has_more = :has_more, #required_effect = :required_effect, "
+                "#updated_at = :updated_at"
+            )
+        try:
+            self._update_support_attributes(
+                session,
+                update_expression=update,
+                condition_expression=condition,
+                names=names,
+                values=values,
+            )
+        except SupportStateConflictError as exc:
+            raise OptionContractConflictError(
+                "legacy option contract changed concurrently"
+            ) from exc
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                raise OptionContractConflictError(
+                    "legacy option contract changed concurrently"
+                ) from exc
+            raise
+
+    def clear_option_contract(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        self._update_support_attributes(
+            session,
+            update_expression=(
+                "REMOVE #contract, #items, #menu_query, #shown_ids, #has_more, "
+                "#required_effect, #updated_at"
+            ),
+            condition_expression=(
+                "attribute_exists(#pk) AND #customer_id = :customer_id "
+                "AND #agent_session_id = :agent_session_id"
+            ),
+            names={
+                "#pk": "PK", "#customer_id": "customer_id",
+                "#agent_session_id": "agent_session_id",
+                "#contract": "active_option_contract",
                 "#items": "offered_menu_items",
                 "#menu_query": "whatsapp_menu_query",
                 "#shown_ids": "shown_menu_item_ids",

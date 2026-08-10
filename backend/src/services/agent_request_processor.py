@@ -22,6 +22,7 @@ from src.api.schemas import ChatResponse, ToolCallResult
 from src.models.tool_responses import (
     apply_legacy_item_selection_compatibility,
 )
+from src.models.conversation_contracts import OptionContract
 from src.services.customer_service import CustomerService
 
 
@@ -133,6 +134,7 @@ class AgentRequestProcessor:
                 expected_write_tool=grounding_state.get("expected_write_tool"),
                 required_effect=grounding_state.get("required_effect"),
                 available_options=grounding_state.get("available_options"),
+                option_contract=grounding_state.get("option_contract"),
             ))
             self.logger.info("Agent runtime invocation completed", extra={
                 "event": "agentcore_invocation_completed", "http_request_id": http_request_id,
@@ -177,7 +179,15 @@ class AgentRequestProcessor:
     def _whatsapp_grounding_state(self, context) -> dict[str, Any]:
         if context.channel != "whatsapp":
             return {}
-        state = self.services_provider().agent_sessions.get_whatsapp_order_state(
+        sessions = self.services_provider().agent_sessions
+        contract = (
+            sessions.get_active_option_contract(
+                context.customer_id or context.user_id,
+                context.agent_session_id,
+            )
+            if hasattr(sessions, "get_active_option_contract") else None
+        )
+        state = sessions.get_whatsapp_order_state(
             context.customer_id or context.user_id,
             context.agent_session_id,
         )
@@ -229,6 +239,13 @@ class AgentRequestProcessor:
                 "state_age_ms": state_age_ms,
             },
         )
+        if contract is not None:
+            return {
+                "expected_write_tool": contract.consumer_capability,
+                "required_effect": contract.required_effect,
+                "available_options": [option.model_dump() for option in contract.options],
+                "option_contract": contract.model_dump(),
+            }
         if not isinstance(items, list) or not items:
             return {}
         options = [
@@ -260,6 +277,11 @@ class AgentRequestProcessor:
         if context.channel != "whatsapp":
             return
         raw = invocation.raw_result
+        protocol_version = (
+            raw.get("option_contract_protocol_version")
+            if isinstance(raw, dict)
+            else getattr(raw, "option_contract_protocol_version", None)
+        )
         calls = raw.get("tool_calls", []) if isinstance(raw, dict) else getattr(raw, "tool_calls", [])
         expected_write_tool = (
             raw.get("expected_write_tool")
@@ -278,11 +300,22 @@ class AgentRequestProcessor:
             )
         )
         sessions = self.services_provider().agent_sessions
-        successful_effects: set[str] = set()
-        declared_requirement: str | None = None
-        offered_options: list[dict[str, str]] = []
-        menu_has_more = False
-        for call in reversed(list(calls or [])):
+        if protocol_version != 1:
+            self._persist_legacy_whatsapp_grounding_state(
+                context,
+                calls,
+                required_effect=required_effect,
+                prior_required_effect=prior_required_effect,
+                prior_available_option_count=prior_available_option_count,
+            )
+            return
+        prior_contract = sessions.get_active_option_contract(
+            context.customer_id or context.user_id,
+            context.agent_session_id,
+        )
+        proposals: list[OptionContract] = []
+        matching_consumption = False
+        for call in list(calls or []):
             success = call.get("success") if isinstance(call, dict) else getattr(call, "success", False)
             result = call.get("result") if isinstance(call, dict) else getattr(call, "result", None)
             if not success or not isinstance(result, dict) or result.get("success") is not True:
@@ -290,79 +323,151 @@ class AgentRequestProcessor:
             evidence = result.get("grounding")
             if not isinstance(evidence, dict):
                 continue
-            successful_effects.update(
-                str(effect)
-                for effect in evidence.get("transactional_effects", [])
-            )
-            if declared_requirement is None and evidence.get("required_next_effect"):
-                declared_requirement = str(evidence["required_next_effect"])
-                offered_options = [
-                    option
-                    for option in evidence.get("offered_options", [])
-                    if isinstance(option, dict) and option.get("id") and option.get("label")
-                ]
-                data = result.get("data")
-                menu_has_more = bool(
-                    isinstance(data, dict) and data.get("has_more")
-                )
-        if prior_required_effect and prior_required_effect in successful_effects:
-            sessions.clear_whatsapp_order_state(
+            effects = {
+                str(effect) for effect in evidence.get("transactional_effects", [])
+            }
+            consumption = evidence.get("option_contract_consumption")
+            if prior_contract and isinstance(consumption, dict):
+                matching_consumption = (
+                    consumption.get("contract_id") == prior_contract.contract_id
+                    and consumption.get("contract_version") == prior_contract.contract_version
+                    and consumption.get("effect") == prior_contract.required_effect
+                    and prior_contract.required_effect in effects
+                    and consumption.get("selected_option_id")
+                    in {option.id for option in prior_contract.options}
+                ) or matching_consumption
+            proposal = evidence.get("option_contract_proposal")
+            if isinstance(proposal, dict):
+                try:
+                    proposals.append(OptionContract.model_validate(proposal))
+                except Exception:
+                    continue
+        successor = proposals[-1] if proposals else None
+        if successor is not None and required_effect != successor.required_effect:
+            successor = None
+        if matching_consumption or successor is not None:
+            expected = prior_contract
+            legacy_projection = None
+            if successor is not None:
+                legacy_projection = {
+                    # Temporary mixed-version projection; remove after legacy rows retire.
+                    "offered_menu_items": ([
+                        {"product_id": option.id, "name": option.label}
+                        for option in successor.options
+                    ] if successor.consumer_capability == "start_cart_item_customization" else []),
+                    "shown_menu_item_ids": (
+                        [option.id for option in successor.options]
+                        if successor.consumer_capability == "start_cart_item_customization"
+                        else []
+                    ),
+                }
+            sessions.transition_option_contract(
                 context.customer_id or context.user_id,
                 context.agent_session_id,
+                expected=expected,
+                successor=successor,
+                legacy_projection=legacy_projection,
             )
+            state_action = (
+                "contract_replaced"
+                if expected and successor
+                else "contract_consumed" if matching_consumption
+                else "contract_created"
+            )
+            self._log_whatsapp_grounding_state_transition(
+                state_action=state_action,
+                prior_required_effect=prior_required_effect,
+                declared_requirement=(successor.required_effect if successor else None),
+                prior_available_option_count=prior_available_option_count,
+                produced_option_count=(len(successor.options) if successor else 0),
+                prior_required_effect_satisfied=matching_consumption,
+                state_cleared=successor is None,
+                state_clear_reason=("contract_consumed" if successor is None else None),
+            )
+            return
+        self._log_whatsapp_grounding_state_transition(
+            state_action="contract_retained_informational" if prior_contract else "no_contract_change",
+            prior_required_effect=prior_required_effect,
+            declared_requirement=None,
+            prior_available_option_count=prior_available_option_count,
+            produced_option_count=0,
+            prior_required_effect_satisfied=False,
+            state_cleared=False,
+        )
+
+    def _persist_legacy_whatsapp_grounding_state(
+        self,
+        context,
+        calls,
+        *,
+        required_effect: str | None,
+        prior_required_effect: str | None,
+        prior_available_option_count: int,
+    ) -> None:
+        """Mixed-version bridge for old service implementations; remove after rollout."""
+        sessions = self.services_provider().agent_sessions
+        effects: set[str] = set()
+        requirement = None
+        options: list[dict[str, str]] = []
+        for call in reversed(list(calls or [])):
+            success = call.get("success") if isinstance(call, dict) else getattr(call, "success", False)
+            result = call.get("result") if isinstance(call, dict) else getattr(call, "result", None)
+            evidence = result.get("grounding") if success and isinstance(result, dict) and result.get("success") is True else None
+            if not isinstance(evidence, dict):
+                continue
+            effects.update(str(effect) for effect in evidence.get("transactional_effects", []))
+            if requirement is None and evidence.get("required_next_effect"):
+                requirement = str(evidence["required_next_effect"])
+                options = [
+                    option for option in evidence.get("offered_options", [])
+                    if isinstance(option, dict) and option.get("id") and option.get("label")
+                ]
+        if prior_required_effect and prior_required_effect in effects and hasattr(sessions, "clear_whatsapp_order_state"):
+            sessions.clear_whatsapp_order_state(context.customer_id or context.user_id, context.agent_session_id)
             self._log_whatsapp_grounding_state_transition(
                 state_action="contract_cleared_required_effect_satisfied",
                 prior_required_effect=prior_required_effect,
-                declared_requirement=declared_requirement,
+                declared_requirement=requirement,
                 prior_available_option_count=prior_available_option_count,
-                produced_option_count=len(offered_options),
+                produced_option_count=len(options),
                 prior_required_effect_satisfied=True,
                 state_cleared=True,
                 state_clear_reason="required_effect_satisfied",
             )
-            return
-        if (
-            offered_options
-            and prior_required_effect is None
-            and required_effect == declared_requirement
-        ):
-            offered = [
-                {"product_id": option["id"], "name": option["label"]}
-                for option in offered_options
-            ]
+        elif options and prior_required_effect is None and required_effect == requirement and hasattr(sessions, "save_whatsapp_order_state"):
             sessions.save_whatsapp_order_state(
                 context.customer_id or context.user_id,
                 context.agent_session_id,
-                offered_menu_items=offered,
-                shown_menu_item_ids=[option["id"] for option in offered_options],
-                menu_has_more=menu_has_more,
-                required_effect=declared_requirement,
+                offered_menu_items=[{"product_id": option["id"], "name": option["label"]} for option in options],
+                shown_menu_item_ids=[option["id"] for option in options],
+                menu_has_more=False,
+                required_effect=requirement,
             )
             self._log_whatsapp_grounding_state_transition(
                 state_action="contract_created",
-                prior_required_effect=prior_required_effect,
-                declared_requirement=declared_requirement,
+                prior_required_effect=None,
+                declared_requirement=requirement,
                 prior_available_option_count=prior_available_option_count,
-                produced_option_count=len(offered_options),
+                produced_option_count=len(options),
                 prior_required_effect_satisfied=False,
                 state_cleared=False,
             )
-            return
-        if offered_options and prior_required_effect is not None:
-            state_action = "contract_retained_existing_requirement"
-        elif offered_options and required_effect != declared_requirement:
-            state_action = "contract_not_persisted_requirement_mismatch"
         else:
-            state_action = "no_contract_change"
-        self._log_whatsapp_grounding_state_transition(
-            state_action=state_action,
-            prior_required_effect=prior_required_effect,
-            declared_requirement=declared_requirement,
-            prior_available_option_count=prior_available_option_count,
-            produced_option_count=len(offered_options),
-            prior_required_effect_satisfied=False,
-            state_cleared=False,
-        )
+            state_action = (
+                "contract_retained_existing_requirement"
+                if options and prior_required_effect else
+                "contract_not_persisted_requirement_mismatch"
+                if options else "no_contract_change"
+            )
+            self._log_whatsapp_grounding_state_transition(
+                state_action=state_action,
+                prior_required_effect=prior_required_effect,
+                declared_requirement=requirement,
+                prior_available_option_count=prior_available_option_count,
+                produced_option_count=len(options),
+                prior_required_effect_satisfied=False,
+                state_cleared=False,
+            )
 
     def _log_whatsapp_grounding_state_transition(
         self,
@@ -388,8 +493,8 @@ class AgentRequestProcessor:
                 "prior_required_effect_satisfied": prior_required_effect_satisfied,
                 "contract_created": state_action == "contract_created",
                 "contract_retained": state_action
-                == "contract_retained_existing_requirement",
-                "contract_replaced": False,
+                in {"contract_retained_existing_requirement", "contract_retained_informational"},
+                "contract_replaced": state_action == "contract_replaced",
                 "state_cleared": state_cleared,
                 "state_clear_reason": state_clear_reason,
                 "required_effect_present": bool(

@@ -197,6 +197,8 @@ class AgentCoreRuntimeClient:
             payload["required_effect"] = request.required_effect
         if request.available_options:
             payload["available_options"] = request.available_options
+        if request.option_contract:
+            payload["option_contract"] = request.option_contract
         return payload
 
     @staticmethod

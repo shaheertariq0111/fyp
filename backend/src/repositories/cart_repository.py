@@ -8,12 +8,27 @@ class CartVersionConflictError(RuntimeError):
     pass
 
 
+class CartCreationConflictError(RuntimeError):
+    pass
+
+
 class CartRepository:
     def __init__(self, dynamodb, table_name: str):
         self.table = dynamodb.Table(table_name)
 
     def create(self, cart: dict) -> None:
-        self.table.put_item(Item=to_dynamodb(cart), ConditionExpression="attribute_not_exists(PK)")
+        try:
+            self.table.put_item(
+                Item=to_dynamodb(cart),
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+        except ClientError as exc:
+            if (
+                exc.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                raise CartCreationConflictError("cart already exists") from exc
+            raise
 
     def get(self, user_id: str, cart_id: str) -> dict | None:
         response = self.table.get_item(

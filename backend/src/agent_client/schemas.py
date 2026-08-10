@@ -20,6 +20,7 @@ class AgentInvocationRequest:
     expected_write_tool: str | None = None
     required_effect: TransactionalEffect | None = None
     available_options: list[dict[str, str]] | None = None
+    option_contract: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

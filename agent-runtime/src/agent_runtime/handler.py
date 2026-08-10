@@ -180,7 +180,8 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             )
             try:
                 runtime_agent = build_restaurant_agent(
-                    session_manager=memory_buffer or session_manager
+                    session_manager=memory_buffer or session_manager,
+                    channel=request.channel,
                 )
                 result = invoke_restaurant_agent(
                     request.message,
@@ -193,6 +194,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                     customer_phone=request.customer_phone,
                     channel=request.channel,
                     agent=runtime_agent,
+                    option_contract=request.option_contract,
                 )
                 tool_calls = [
                     ToolCallResult.model_validate(call)
@@ -339,6 +341,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     )
     response = RuntimeResponse(
         text=grounded_text,
+        option_contract_protocol_version=1,
         tool_calls=tool_calls,
         memory={
             "memory_id": memory_id,
