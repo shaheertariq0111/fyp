@@ -329,27 +329,61 @@ class AgentSessionService:
         contract_version: int | None,
         selected_option_id: str | None,
         scope: dict[str, str] | None = None,
+        bound_option_id: str | None = None,
     ) -> OptionContract | ToolResponse | None:
         contract = self.get_active_option_contract(customer_id, agent_session_id)
         if contract is None:
             if contract_id is None and contract_version is None:
                 return None
-            return self._invalid_option_contract("There is no active choice to use.")
-        if (
-            contract_id != contract.contract_id
-            or contract_version != contract.contract_version
-            or consumer_capability != contract.consumer_capability
-            or not isinstance(selected_option_id, str)
-            or selected_option_id not in {option.id for option in contract.options}
-            or any((scope or {}).get(key) != value for key, value in contract.scope.items())
-        ):
             return self._invalid_option_contract(
-                "That choice is stale or does not belong to the active options."
+                "There is no active choice to use.", "contract_missing"
+            )
+        if contract_id != contract.contract_id:
+            return self._invalid_option_contract(
+                "That choice is stale or does not belong to the active options.",
+                "contract_id_mismatch",
+            )
+        if contract_version != contract.contract_version:
+            return self._invalid_option_contract(
+                "That choice is stale or does not belong to the active options.",
+                "contract_version_mismatch",
+            )
+        if consumer_capability != contract.consumer_capability:
+            return self._invalid_option_contract(
+                "That choice is stale or does not belong to the active options.",
+                "consumer_mismatch",
+            )
+        if not isinstance(selected_option_id, str):
+            return self._invalid_option_contract(
+                "That choice is stale or does not belong to the active options.",
+                "selected_option_missing",
+            )
+        if bound_option_id is not None and bound_option_id != selected_option_id:
+            return self._invalid_option_contract(
+                "That choice is stale or does not belong to the active options.",
+                "item_selected_option_mismatch",
+            )
+        if selected_option_id not in {option.id for option in contract.options}:
+            return self._invalid_option_contract(
+                "That choice is stale or does not belong to the active options.",
+                "selected_option_not_offered",
+            )
+        if any((scope or {}).get(key) != value for key, value in contract.scope.items()):
+            return self._invalid_option_contract(
+                "That choice is stale or does not belong to the active options.",
+                "scope_mismatch",
             )
         return contract
 
     @staticmethod
-    def _invalid_option_contract(message: str) -> ToolResponse:
+    def _invalid_option_contract(message: str, reason: str) -> ToolResponse:
+        logger.info(
+            "Option contract validation failed",
+            extra={
+                "event": "option_contract_validation_failed",
+                "option_contract_failure_reason": reason,
+            },
+        )
         return ToolResponse.error(
             error_code="INVALID_OPTION_CONTRACT",
             user_message=message,

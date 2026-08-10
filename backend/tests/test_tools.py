@@ -133,9 +133,10 @@ def test_channel_scoped_capabilities_keep_whatsapp_chat_native_without_menu_link
     web = tools.tools_for_channel("web")
     assert tools.create_menu_session_link not in whatsapp
     assert tools.create_menu_session_link in web
+    assert tools.whatsapp_start_cart_item_customization in whatsapp
+    assert tools.start_cart_item_customization not in whatsapp
     for capability in (
         tools.search_menu,
-        tools.start_cart_item_customization,
         tools.save_customization_choice,
         tools.begin_checkout,
         tools.confirm_order,
@@ -160,6 +161,95 @@ def test_option_capabilities_expose_only_structured_contract_arguments():
         "current_message",
         "ordinal",
     }.intersection(start_parameters)
+    whatsapp_schema = tools.whatsapp_start_cart_item_customization.tool_spec[
+        "inputSchema"
+    ]["json"]
+    assert tools.whatsapp_start_cart_item_customization.tool_spec["name"] == (
+        "start_cart_item_customization"
+    )
+    assert set(whatsapp_schema["required"]) == {
+        "item_id", "contract_id", "contract_version", "selected_option_id"
+    }
+    web_schema = tools.start_cart_item_customization.tool_spec["inputSchema"]["json"]
+    assert web_schema["required"] == ["item_id"]
+
+
+def test_web_start_cart_tool_remains_contract_optional(monkeypatch):
+    carts = CartStub()
+    monkeypatch.setattr(tools, "get_services", lambda: SimpleNamespace(carts=carts))
+
+    with request_context(AgentRequestContext("user-1", "session-1", channel="web")):
+        result = tools.start_cart_item_customization("item-1")
+
+    assert result["success"] is True
+    assert carts.start_calls[0][1]["creation_idempotency_key"] is None
+
+
+@pytest.mark.parametrize(
+    ("chosen_id", "customer_message"),
+    [
+        ("item-5", "order the 5th one for me"),
+        ("chicken-fajita", "Chicken Fajita"),
+    ],
+)
+def test_whatsapp_semantic_selection_executes_only_with_llm_supplied_opaque_id(
+    monkeypatch, chosen_id, customer_message,
+):
+    now = datetime.now(timezone.utc)
+    active = OptionContract(
+        contract_id="contract-1",
+        contract_version=1,
+        required_effect="item_selected",
+        consumer_capability="start_cart_item_customization",
+        source_capability="search_menu",
+        source_request_id="request-1",
+        options=[
+            {"id": option_id, "label": f"Option {index}"}
+            for index, option_id in enumerate(
+                ["item-1", "item-2", "item-3", "item-4", chosen_id], start=1
+            )
+        ],
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(minutes=30)).isoformat(),
+    )
+
+    class Sessions:
+        def validate_option_contract_consumption(self, *_args, **kwargs):
+            assert kwargs["contract_id"] == active.contract_id
+            assert kwargs["contract_version"] == active.contract_version
+            assert kwargs["selected_option_id"] == chosen_id
+            assert kwargs["bound_option_id"] == chosen_id
+            return active
+
+    carts = CartStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(carts=carts, agent_sessions=Sessions()),
+    )
+    context = AgentRequestContext(
+        "customer-1", "session-1", customer_id="customer-1",
+        channel="whatsapp", current_message=customer_message,
+    )
+
+    with request_context(context):
+        result = tools.whatsapp_start_cart_item_customization(
+            item_id=chosen_id,
+            selected_option_id=chosen_id,
+            contract_id=active.contract_id,
+            contract_version=active.contract_version,
+        )
+
+    assert result["success"] is True
+    assert carts.start_calls[0][0][2] == chosen_id
+
+
+def test_whatsapp_selection_binding_contains_no_language_routing():
+    source = inspect.getsource(tools._start_cart_item_customization)
+    assert "current_message" not in source
+    assert "customer_message" not in source
+    assert "casefold" not in source
+    assert "regex" not in source
 
 
 def test_start_cart_uses_only_backend_validated_contract_for_creation_key(monkeypatch):

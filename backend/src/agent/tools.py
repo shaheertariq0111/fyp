@@ -193,6 +193,7 @@ def _contract_validation(
     contract_version: int | None,
     selected_option_id: str | None,
     scope: dict[str, str] | None = None,
+    bound_option_id: str | None = None,
 ) -> ToolResponse | OptionContract | None:
     context = get_request_context()
     if context.channel != "whatsapp":
@@ -205,6 +206,7 @@ def _contract_validation(
         contract_version=contract_version,
         selected_option_id=selected_option_id,
         scope=scope or {},
+        bound_option_id=bound_option_id,
     )
 
 
@@ -220,9 +222,15 @@ def _contract_write(
     successor_scope: Callable[[ToolResponse], dict[str, str]] | None = None,
     scope: dict[str, str] | None = None,
     validated_call: Callable[[OptionContract], ToolResponse] | None = None,
+    bound_option_id: str | None = None,
 ) -> dict:
     validation = _contract_validation(
-        tool_name, contract_id, contract_version, selected_option_id, scope
+        tool_name,
+        contract_id,
+        contract_version,
+        selected_option_id,
+        scope,
+        bound_option_id,
     )
     if isinstance(validation, ToolResponse):
         return _result(tool_name, lambda: validation, is_write=True)
@@ -297,8 +305,7 @@ def create_menu_session_link(item_id: str | None = None) -> dict:
     ))
 
 
-@tool
-def start_cart_item_customization(
+def _start_cart_item_customization(
     item_id: str,
     quantity: int = 1,
     contract_id: str | None = None,
@@ -320,10 +327,52 @@ def start_cart_item_customization(
     return _contract_write("start_cart_item_customization", start,
         contract_id=contract_id, contract_version=contract_version,
         selected_option_id=selected_option_id or item_id,
+        scope=None,
         successor_consumer="save_customization_choice",
         validated_call=lambda contract: start(creation_idempotency_key=(
             f"{contract.contract_id}:{contract.contract_version}"
-        )))
+        )),
+        bound_option_id=(item_id if context.channel == "whatsapp" else None))
+
+
+@tool
+def start_cart_item_customization(
+    item_id: str,
+    quantity: int = 1,
+    contract_id: str | None = None,
+    contract_version: int | None = None,
+    selected_option_id: str | None = None,
+) -> dict:
+    """Start chat customization; web callers may omit option-contract fields."""
+    return _start_cart_item_customization(
+        item_id,
+        quantity,
+        contract_id,
+        contract_version,
+        selected_option_id,
+    )
+
+
+@tool(name="start_cart_item_customization")
+def whatsapp_start_cart_item_customization(
+    item_id: str,
+    contract_id: str,
+    contract_version: int,
+    selected_option_id: str,
+    quantity: int = 1,
+) -> dict:
+    """Start WhatsApp customization from a trusted active option contract.
+
+    Pass item_id and selected_option_id as the exact same chosen opaque option
+    ID, together with the trusted active contract_id and contract_version.
+    """
+    return _start_cart_item_customization(
+        item_id,
+        quantity,
+        contract_id,
+        contract_version,
+        selected_option_id,
+    )
 
 
 @tool
@@ -902,5 +951,10 @@ MVP_TOOLS = [
 def tools_for_channel(channel: str) -> list[Callable]:
     """Return capabilities selected only from trusted channel metadata."""
     if channel == "whatsapp":
-        return [tool for tool in MVP_TOOLS if tool is not create_menu_session_link]
+        return [
+            whatsapp_start_cart_item_customization
+            if capability is start_cart_item_customization else capability
+            for capability in MVP_TOOLS
+            if capability is not create_menu_session_link
+        ]
     return list(MVP_TOOLS)

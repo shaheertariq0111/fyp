@@ -684,6 +684,13 @@ def restaurant_prompt_for_channel(channel: str) -> str:
         "update_order_flow(action=\"set_takeaway\")(order_id)",
         "update_order_flow(order_id, action=\"set_takeaway\")",
     )
+    prompt = prompt.replace(
+        "start_cart_item_customization(item_id, quantity)",
+        (
+            "start_cart_item_customization(item_id, contract_id, "
+            "contract_version, selected_option_id, quantity)"
+        ),
+    )
     prompt += """
 
 WHATSAPP OPTION CONTRACTS
@@ -698,11 +705,15 @@ WHATSAPP OPTION CONTRACTS
 - Whenever presenting multiple items that the customer may choose or order
   from, use selection_offer. It is the only role that may enumerate actionable
   choices or invite a selection and it replaces the prior active contract.
-- For an active option contract, interpret the customer's natural response
-  yourself and pass only its contract_id, contract_version, and the selected
-  backend option ID to the declared consumer capability. Never derive or alter
-  IDs. The backend validates identity, version, membership, expiry, workflow
-  state, and availability.
+- The trusted contract is provided in trusted_active_option_contract. For an
+  active menu selection contract, interpret the customer's natural response
+  yourself, including names or ordinals, and call the declared consumer with:
+  item_id = chosen trusted_active_option_contract.options[].id;
+  selected_option_id = exactly the same option.id;
+  contract_id = trusted_active_option_contract.contract_id; and
+  contract_version = trusted_active_option_contract.contract_version.
+  Never derive or alter IDs. The backend validates identity, version,
+  membership, expiry, workflow state, and availability.
 - Do not create or send a menu-session or menu-site ordering link on WhatsApp.
 """
     return prompt
