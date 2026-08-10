@@ -1151,6 +1151,22 @@ def test_runtime_request_accepts_missing_request_id():
     assert request.request_id is None
 
 
+def test_runtime_request_preserves_typed_option_contract():
+    option_contract = {
+        "contract_id": "contract-1",
+        "contract_version": 1,
+        "consumer_capability": "start_cart_item_customization",
+        "options": [{"id": "item-5", "label": "Fifth"}],
+    }
+
+    request = RuntimeRequest.model_validate(runtime_payload(
+        channel="whatsapp",
+        option_contract=option_contract,
+    ))
+
+    assert request.option_contract == option_contract
+
+
 def test_handler_classifies_order_intent_without_tools_or_conversation_memory(monkeypatch):
     captured = {}
 

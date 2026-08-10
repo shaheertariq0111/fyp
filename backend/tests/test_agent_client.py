@@ -34,6 +34,26 @@ def test_agent_invocation_request_supports_optional_request_id():
     assert legacy_request.request_id is None
 
 
+def test_typed_option_contract_survives_agentcore_request_transport():
+    option_contract = {
+        "contract_id": "contract-1",
+        "contract_version": 1,
+        "consumer_capability": "start_cart_item_customization",
+        "options": [{"id": "item-5", "label": "Fifth"}],
+    }
+    request = AgentInvocationRequest(
+        message="select an item",
+        user_id="customer-1",
+        agent_session_id="session-1",
+        channel="whatsapp",
+        option_contract=option_contract,
+    )
+
+    payload = AgentCoreRuntimeClient._payload(request)
+
+    assert payload["option_contract"] == option_contract
+
+
 def test_local_agent_runtime_client_invokes_existing_strands_agent(monkeypatch):
     captured = {}
 

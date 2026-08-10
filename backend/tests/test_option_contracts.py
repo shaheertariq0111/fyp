@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from src.models.conversation_contracts import OptionContract
+from src.services import agent_session_service as agent_session_service_module
 from src.services.agent_request_processor import AgentRequestProcessor
 from src.services.agent_session_service import AgentSessionService
 
@@ -105,6 +108,117 @@ def test_contract_validation_checks_identity_version_consumer_and_membership():
         )
         assert result.success is False
         assert result.error_code == "INVALID_OPTION_CONTRACT"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_reason"),
+    [
+        ({"contract_id": None}, "contract_id_mismatch"),
+        ({"contract_version": None}, "contract_version_mismatch"),
+        ({"contract_id": "wrong"}, "contract_id_mismatch"),
+        ({"contract_version": 2}, "contract_version_mismatch"),
+        ({"consumer_capability": "wrong_tool"}, "consumer_mismatch"),
+        ({"selected_option_id": None}, "selected_option_missing"),
+        ({
+            "selected_option_id": "Choice", "bound_option_id": "Choice"
+        }, "selected_option_not_offered"),
+        ({
+            "selected_option_id": "wrong", "bound_option_id": "wrong"
+        }, "selected_option_not_offered"),
+        ({"bound_option_id": "other-item"}, "item_selected_option_mismatch"),
+        ({"scope": {}}, "scope_mismatch"),
+    ],
+)
+def test_contract_validation_fails_closed_with_privacy_safe_reason(
+    monkeypatch, overrides, expected_reason,
+):
+    active = contract("private-contract", option_id="private-item").model_copy(
+        update={"scope": {"cart_id": "private-cart"}}
+    )
+    service = session_service(ContractRepository({
+        "active_option_contract": active.model_dump()
+    }))
+    events = []
+    monkeypatch.setattr(
+        agent_session_service_module.logger,
+        "info",
+        lambda _message, *, extra: events.append(extra),
+    )
+    values = {
+        "consumer_capability": active.consumer_capability,
+        "contract_id": active.contract_id,
+        "contract_version": active.contract_version,
+        "selected_option_id": "private-item",
+        "bound_option_id": "private-item",
+        "scope": {"cart_id": "private-cart"},
+        **overrides,
+    }
+
+    response = service.validate_option_contract_consumption(
+        "private-customer", "private-session", **values
+    )
+
+    assert response.success is False
+    assert response.error_code == "INVALID_OPTION_CONTRACT"
+    assert events == [{
+        "event": "option_contract_validation_failed",
+        "option_contract_failure_reason": expected_reason,
+    }]
+    logged = repr(events)
+    for private_value in (
+        "private-contract", "private-item", "private-cart",
+        "private-customer", "private-session", "Choice",
+    ):
+        assert private_value not in logged
+
+
+def test_missing_active_contract_emits_safe_contract_missing_reason(monkeypatch):
+    service = session_service(ContractRepository())
+    events = []
+    monkeypatch.setattr(
+        agent_session_service_module.logger,
+        "info",
+        lambda _message, *, extra: events.append(extra),
+    )
+
+    response = service.validate_option_contract_consumption(
+        "customer", "session",
+        consumer_capability="start_cart_item_customization",
+        contract_id="not-logged",
+        contract_version=1,
+        selected_option_id="not-logged",
+    )
+
+    assert response.error_code == "INVALID_OPTION_CONTRACT"
+    assert events[0]["option_contract_failure_reason"] == "contract_missing"
+    assert "not-logged" not in repr(events)
+
+
+def test_exact_bound_item_contract_selection_succeeds_without_diagnostics(
+    monkeypatch,
+):
+    active = contract(option_id="item-5")
+    service = session_service(ContractRepository({
+        "active_option_contract": active.model_dump()
+    }))
+    events = []
+    monkeypatch.setattr(
+        agent_session_service_module.logger,
+        "info",
+        lambda _message, *, extra: events.append(extra),
+    )
+
+    result = service.validate_option_contract_consumption(
+        "customer", "session",
+        consumer_capability="start_cart_item_customization",
+        contract_id=active.contract_id,
+        contract_version=active.contract_version,
+        selected_option_id="item-5",
+        bound_option_id="item-5",
+    )
+
+    assert result == active
+    assert events == []
 
 
 def test_typed_contract_is_preferred_and_legacy_state_adapts_when_absent():
