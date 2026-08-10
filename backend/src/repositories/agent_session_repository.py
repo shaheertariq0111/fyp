@@ -210,8 +210,6 @@ class AgentSessionRepository:
             "#customer_id": "customer_id",
             "#agent_session_id": "agent_session_id",
             "#contract": "active_option_contract",
-            "#contract_id": "contract_id",
-            "#contract_version": "contract_version",
             "#items": "offered_menu_items",
             "#menu_query": "whatsapp_menu_query",
             "#shown_ids": "shown_menu_item_ids",
@@ -230,6 +228,8 @@ class AgentSessionRepository:
         if expected_contract_id is None:
             condition += " AND attribute_not_exists(#contract)"
         else:
+            names["#contract_id"] = "contract_id"
+            names["#contract_version"] = "contract_version"
             condition += (
                 " AND #contract.#contract_id = :expected_contract_id"
                 " AND #contract.#contract_version = :expected_contract_version"
