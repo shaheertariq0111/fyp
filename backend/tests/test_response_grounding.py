@@ -17,6 +17,7 @@ from src.agent.response_grounding import (
     assess_assistant_claims,
     ground_authoritative_tool_response,
     ground_agent_response,
+    ground_agent_response_v2,
     grounding_comparison_log_fields,
     run_semantic_classifier,
 )
@@ -104,8 +105,195 @@ def test_grounding_rejection_taxonomy_is_stable_and_complete():
         "presentation_limit_exceeded",
         "immutable_fact_mismatch",
         "authoritative_write_failed",
+        "authoritative_read_failed",
         "successful_write_missing_safe_grounding",
     }
+
+
+def test_v2_no_tool_conversation_is_allowed_without_assessment():
+    result = ground_agent_response_v2(
+        text="How can I help with your order?",
+        tool_calls=[],
+        required_effect="item_selected",
+    )
+
+    assert result.text == "How can I help with your order?"
+    assert result.source == "conversation"
+    assert result.required_next_effect == "item_selected"
+
+
+def test_v2_successful_read_allows_primary_narration():
+    result = ground_agent_response_v2(
+        text="Here are the current menu choices.",
+        tool_calls=[tool_call(
+            "search_menu",
+            grounding={
+                "authoritative_domains": ["menu"],
+                "presentation": {"max_items": 5},
+            },
+        )],
+    )
+
+    assert result.text == "Here are the current menu choices."
+    assert result.source == "conversation"
+    assert result.diagnostics.supported_domains == ("menu",)
+    assert result.diagnostics.presentation_limit == 5
+
+
+def test_v2_failed_read_replaces_invented_primary_state():
+    result = ground_agent_response_v2(
+        text="Your order is preparing.",
+        tool_calls=[tool_call(
+            "get_order_status",
+            success=False,
+            user_message="I couldn't find that order.",
+        )],
+    )
+
+    assert result.text == "I couldn't find that order."
+    assert result.source == "failed_read"
+    assert result.rejection_reason == "authoritative_read_failed"
+
+
+def test_v2_successful_write_uses_service_message_and_authoritative_effect():
+    result = ground_agent_response_v2(
+        text="Everything is finished.",
+        tool_calls=[tool_call(
+            "start_cart_item_customization",
+            is_write=True,
+            user_message="Which size would you like?",
+            grounding={"transactional_effects": ["item_selected"]},
+        )],
+        required_effect="item_selected",
+    )
+
+    assert result.text == "Which size would you like?"
+    assert result.source == "successful_write"
+    assert result.required_next_effect is None
+    assert result.diagnostics.supported_effects == ("item_selected",)
+
+
+def test_v2_exact_artifact_precedes_successful_write_message():
+    result = ground_agent_response_v2(
+        text="Model wording.",
+        tool_calls=[tool_call(
+            "submit_order",
+            is_write=True,
+            user_message="Service wording.",
+            grounding={
+                "transactional_effects": ["order_submitted"],
+                "exact_customer_text": "Exact confirmation.",
+            },
+        )],
+    )
+
+    assert result.text == "Exact confirmation."
+    assert result.source == "exact_artifact"
+
+
+def test_v2_later_successful_write_wins_over_earlier_read_exact_artifact():
+    result = ground_agent_response_v2(
+        text="Model wording.",
+        tool_calls=[
+            tool_call(
+                "get_order_status",
+                user_message="Order status.",
+                grounding={
+                    "authoritative_domains": ["order"],
+                    "exact_customer_text": "Would you like delivery or takeaway?",
+                },
+            ),
+            tool_call(
+                "update_order_flow",
+                is_write=True,
+                user_message="Takeaway was saved.",
+                grounding={"transactional_effects": ["fulfillment_saved"]},
+            ),
+        ],
+    )
+
+    assert result.text == "Takeaway was saved."
+    assert result.source == "successful_write"
+
+
+def test_v2_later_write_exact_artifact_wins_over_earlier_read_exact_artifact():
+    result = ground_agent_response_v2(
+        text="Model wording.",
+        tool_calls=[
+            tool_call(
+                "get_order_status",
+                grounding={
+                    "authoritative_domains": ["order"],
+                    "exact_customer_text": "Would you like delivery or takeaway?",
+                },
+            ),
+            tool_call(
+                "update_order_flow",
+                is_write=True,
+                user_message="Service wording.",
+                grounding={
+                    "transactional_effects": ["fulfillment_saved"],
+                    "exact_customer_text": "Exact updated order.",
+                },
+            ),
+        ],
+    )
+
+    assert result.text == "Exact updated order."
+    assert result.source == "exact_artifact"
+
+
+def test_v2_read_exact_artifact_remains_exact_without_writes():
+    result = ground_agent_response_v2(
+        text="Model wording.",
+        tool_calls=[tool_call(
+            "get_order_status",
+            grounding={
+                "authoritative_domains": ["order"],
+                "exact_customer_text": "Would you like delivery or takeaway?",
+            },
+        )],
+    )
+
+    assert result.text == "Would you like delivery or takeaway?"
+    assert result.source == "exact_artifact"
+
+
+def test_v2_failed_write_precedes_exact_artifact_from_another_call():
+    result = ground_agent_response_v2(
+        text="Model success wording.",
+        tool_calls=[
+            tool_call(
+                "get_order_status",
+                grounding={"exact_customer_text": "Verified order."},
+            ),
+            tool_call(
+                "submit_order",
+                success=False,
+                is_write=True,
+                user_message="I couldn't submit that order.",
+            ),
+        ],
+    )
+
+    assert result.text == "I couldn't submit that order."
+    assert result.source == "failed_write"
+    assert result.rejection_reason == "authoritative_write_failed"
+
+
+def test_v2_successful_write_without_safe_message_fails_closed():
+    result = ground_agent_response_v2(
+        text="The write definitely worked.",
+        tool_calls=[tool_call(
+            "write_tool",
+            is_write=True,
+            grounding={"transactional_effects": ["cart_progressed"]},
+        )],
+    )
+
+    assert result.source == "write_without_grounding"
+    assert result.rejection_reason == "successful_write_missing_safe_grounding"
+    assert result.text != "The write definitely worked."
     assert set(get_args(AssessmentOrigin)) == {
         "model",
         "timeout_synthetic",

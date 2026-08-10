@@ -11,6 +11,7 @@ from src.agent.context import AgentRequestContext
 from src.agent.response_grounding import (
     AssistantClaimAssessment,
     ground_agent_response,
+    ground_agent_response_v2,
     ground_authoritative_tool_response,
     grounding_comparison_log_fields,
     grounding_decision_log_fields,
@@ -588,7 +589,48 @@ def build_response_builder(services_provider: Callable[[], Any]):
             except Exception:
                 pass
         response_text = grounded or invocation.text
-        if context.channel == "whatsapp":
+        grounding_protocol_version = raw.get("grounding_protocol_version")
+        if context.channel == "whatsapp" and grounding_protocol_version == 2:
+            backend_grounded = ground_agent_response_v2(
+                text=invocation.text,
+                tool_calls=calls,
+                expected_write_tool=raw.get("expected_write_tool"),
+                required_effect=raw.get("required_effect"),
+            )
+            response_text = backend_grounded.text
+            comparison = grounding_comparison_log_fields(
+                runtime_grounding_source=raw.get("grounding_source"),
+                runtime_grounding_rejection_reason=raw.get(
+                    "grounding_rejection_reason"
+                ),
+                runtime_text=invocation.text,
+                backend_response=backend_grounded,
+                runtime_claim_assessment_present=False,
+                runtime_grounding_metadata_present=True,
+                assessment_transport_status="not_required_v2",
+                runtime_expected_transactional_action=raw.get("expected_write_tool"),
+                runtime_required_next_effect=raw.get("required_effect"),
+                compare_transition_metadata=True,
+            )
+            logger.info(
+                "Backend WhatsApp response grounded",
+                extra={
+                    "event": "backend_grounding_completed",
+                    "grounding_protocol_version": 2,
+                    **grounding_decision_log_fields(backend_grounded),
+                    **comparison,
+                },
+            )
+            if not comparison["runtime_backend_grounding_agree"]:
+                logger.warning(
+                    "Runtime and backend grounding decisions differed",
+                    extra={
+                        "event": "grounding_decision_mismatch",
+                        "grounding_protocol_version": 2,
+                        **comparison,
+                    },
+                )
+        if context.channel == "whatsapp" and grounding_protocol_version != 2:
             authoritative = ground_authoritative_tool_response(
                 tool_calls=calls,
                 expected_write_tool=raw.get("expected_write_tool"),

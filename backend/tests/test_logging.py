@@ -93,6 +93,7 @@ def test_json_formatter_includes_phase_one_grounding_and_comparison_fields():
         "semantic_classifier_model_elapsed_at_timeout_ms": 3000.75,
         "semantic_classifier_execution_started": True,
         "authoritative_fast_path": False,
+        "grounding_protocol_version": 2,
         "grounding_source": "conversation",
         "grounding_rejection_reason": "required_effect_not_supported",
         "assessment_origin": "model",
@@ -137,6 +138,8 @@ def test_json_formatter_includes_phase_one_grounding_and_comparison_fields():
         "runtime_claim_assessment_present": True,
         "runtime_grounding_metadata_present": True,
         "assessment_transport_status": "present_valid",
+        "runtime_backend_expected_action_agree": True,
+        "runtime_backend_required_effect_agree": True,
     }
 
     payload = json.loads(JsonFormatter().format(_record(**fields)))

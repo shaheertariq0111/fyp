@@ -37,6 +37,7 @@ class JsonFormatter(logging.Formatter):
             "semantic_classifier_model_elapsed_at_timeout_ms",
             "semantic_classifier_execution_started",
             "authoritative_fast_path",
+            "grounding_protocol_version",
             "grounding_source",
             "grounding_rejection_reason",
             "assessment_origin",
