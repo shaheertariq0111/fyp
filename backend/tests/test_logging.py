@@ -175,6 +175,14 @@ def test_json_formatter_includes_phase_one_state_fields():
         assert payload[key] == value
 
 
+def test_json_formatter_includes_option_contract_failure_reason():
+    payload = json.loads(JsonFormatter().format(
+        _record(option_contract_failure_reason="scope_mismatch")
+    ))
+
+    assert payload["option_contract_failure_reason"] == "scope_mismatch"
+
+
 def test_json_formatter_still_excludes_unapproved_sensitive_extras():
     excluded = {
         "unknown_extra": "not-approved",
