@@ -105,6 +105,8 @@ SAFE_LOG_FIELDS = (
     "runtime_backend_expected_action_agree",
     "runtime_backend_required_effect_agree",
     "contract_present",
+    "typed_contract_present",
+    "legacy_option_count",
     "existing_contract_present",
     "new_contract_produced",
     "existing_option_count",

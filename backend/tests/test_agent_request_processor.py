@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from botocore.exceptions import ClientError
 import pytest
 
+from src.models.conversation_contracts import OptionContract
 from src.services.agent_request_processor import (
     AgentRequestProcessor,
     PreparedAgentRequest,
@@ -308,10 +309,10 @@ def test_search_results_persist_expected_item_selection_write_and_options(caplog
         for record in caplog.records
         if getattr(record, "event", None) == "whatsapp_grounding_state_loaded"
     )
-    assert loaded.contract_present is True
+    assert loaded.typed_contract_present is False
     assert loaded.required_effect_present is True
     assert loaded.required_effect == "item_selected"
-    assert loaded.available_option_count == 2
+    assert loaded.legacy_option_count == 2
     transition = next(
         record
         for record in caplog.records
@@ -321,6 +322,67 @@ def test_search_results_persist_expected_item_selection_write_and_options(caplog
     assert transition.contract_created is True
     assert transition.contract_replaced is False
     assert transition.produced_option_count == 2
+
+
+def test_typed_non_item_selection_contract_logs_present_independent_of_legacy_items(caplog):
+    fulfillment_contract = OptionContract(
+        contract_id="fulfillment-contract",
+        contract_version=1,
+        required_effect="fulfillment_saved",
+        consumer_capability="update_order_flow",
+        source_capability="get_order_status",
+        source_request_id="request-1",
+        scope={"order_id": "ORD-1"},
+        options=[
+            {"id": "set_delivery", "label": "Delivery"},
+            {"id": "set_takeaway", "label": "Takeaway"},
+        ],
+        created_at="2026-08-10T08:00:00+00:00",
+        expires_at="2026-08-10T08:30:00+00:00",
+    )
+
+    class Sessions:
+        def get_active_option_contract(self, customer_id, session_id):
+            return fulfillment_contract
+
+        def get_whatsapp_order_state(self, customer_id, session_id):
+            # Stale legacy menu-selection state left over from an earlier,
+            # unrelated turn; must not be conflated with the typed contract.
+            return {
+                "offered_menu_items": [
+                    {"product_id": "item-1", "name": "First Item"},
+                    {"product_id": "item-2", "name": "Second Item"},
+                    {"product_id": "item-3", "name": "Third Item"},
+                ],
+                "whatsapp_required_effect": "item_selected",
+            }
+
+    processor = AgentRequestProcessor(
+        services_provider=lambda: SimpleNamespace(agent_sessions=Sessions()),
+        agent_client_provider=ForbiddenCall(),
+        identity_resolver=ForbiddenCall(),
+        response_builder=ForbiddenCall(),
+    )
+    context = SimpleNamespace(
+        channel="whatsapp", customer_id="customer-1",
+        user_id="user-1", agent_session_id="session-1",
+    )
+
+    with caplog.at_level("INFO"):
+        state = processor._whatsapp_grounding_state(context)
+
+    assert state["expected_write_tool"] == "update_order_flow"
+    assert state["required_effect"] == "fulfillment_saved"
+
+    loaded = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "whatsapp_grounding_state_loaded"
+    )
+    assert loaded.typed_contract_present is True
+    assert loaded.legacy_option_count == 3
+    assert not hasattr(loaded, "contract_present")
+    assert not hasattr(loaded, "available_option_count")
 
 
 def test_legacy_whatsapp_menu_state_is_inferred_only_at_orchestration_boundary():

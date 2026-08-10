@@ -188,6 +188,9 @@ def _with_fulfillment_option_evidence(response: ToolResponse) -> ToolResponse:
                 GroundingOption(id="set_delivery", label="Delivery"),
                 GroundingOption(id="set_takeaway", label="Takeaway"),
             ]
+            evidence.exact_customer_text = (
+                f"{response.user_message}\n\nWould you like delivery or takeaway?"
+            )
     return response
 
 

@@ -720,6 +720,84 @@ def test_order_status_selection_offer_creates_scoped_fulfillment_contract(
     assert "delivery or takeaway" in grounding["exact_customer_text"].casefold()
 
 
+class CheckoutStub:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def create_pending_order(self, user_id, cart_id):
+        self.calls.append((user_id, cart_id))
+        return self.response
+
+
+@pytest.mark.parametrize(
+    "checkout_tool", [tools.begin_checkout, tools.create_pending_order_from_cart]
+)
+def test_checkout_awaiting_fulfillment_states_the_delivery_takeaway_question(
+    monkeypatch, checkout_tool,
+):
+    response = ToolResponse.ok(
+        data={
+            "order": {"order_id": "ORD-CHECKOUT"},
+            "status": "awaiting_fulfillment_method",
+        },
+        user_message="The order is ready for fulfillment details.",
+        grounding=GroundingEvidence(authoritative_domains=["order"]),
+    )
+    carts = CheckoutStub(response)
+    monkeypatch.setattr(
+        tools, "get_services", lambda: SimpleNamespace(carts=carts),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1", "session-1", request_id="request-1", channel="whatsapp",
+    )):
+        result = checkout_tool("CART-1")
+
+    grounding = result["grounding"]
+    proposal = grounding["option_contract_proposal"]
+    assert grounding["required_next_effect"] == "fulfillment_saved"
+    assert [option["id"] for option in grounding["offered_options"]] == [
+        "set_delivery", "set_takeaway"
+    ]
+    assert proposal["consumer_capability"] == "update_order_flow"
+    assert "delivery or takeaway" in grounding["exact_customer_text"].casefold()
+
+
+@pytest.mark.parametrize(
+    "checkout_tool", [tools.begin_checkout, tools.create_pending_order_from_cart]
+)
+def test_checkout_non_fulfillment_status_has_no_contract_or_invitation(
+    monkeypatch, checkout_tool,
+):
+    response = ToolResponse.ok(
+        data={
+            "order": {"order_id": "ORD-CHECKOUT"},
+            "status": "pending_confirmation",
+        },
+        user_message="Please confirm your order.",
+        grounding=GroundingEvidence(authoritative_domains=["order"]),
+    )
+    carts = CheckoutStub(response)
+    monkeypatch.setattr(
+        tools, "get_services", lambda: SimpleNamespace(carts=carts),
+    )
+
+    with request_context(AgentRequestContext(
+        "user-1", "session-1", request_id="request-1", channel="whatsapp",
+    )):
+        result = checkout_tool("CART-1")
+
+    grounding = result["grounding"]
+    assert grounding["offered_options"] == []
+    assert "required_next_effect" not in grounding
+    assert "option_contract_proposal" not in grounding
+    assert "delivery or takeaway" not in result["user_message"].casefold()
+    assert "delivery or takeaway" not in grounding.get(
+        "exact_customer_text", ""
+    ).casefold()
+
+
 @pytest.mark.parametrize(
     ("data", "agent"),
     [
