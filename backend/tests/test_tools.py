@@ -1,6 +1,6 @@
 import inspect
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +8,8 @@ import pytest
 from fakes import MemoryAgentSessionRepository, MemoryOrderRepository
 from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
-from src.models.tool_responses import ToolResponse
+from src.models.tool_responses import GroundingEvidence, GroundingOption, ToolResponse
+from src.models.conversation_contracts import OptionContract
 from src.services.agent_session_service import AgentSessionService
 from src.services.support_flow_service import SupportFlowService
 
@@ -32,6 +33,15 @@ class SessionStub:
 class CartStub:
     def __init__(self):
         self.checkout_calls = []
+        self.start_calls = []
+
+    def start_item_customization(self, *args, **kwargs):
+        self.start_calls.append((args, kwargs))
+        return ToolResponse.ok(
+            data={"cart_id": "CART-1"},
+            user_message="started",
+            grounding=GroundingEvidence(transactional_effects=["item_selected"]),
+        )
 
     def get_active_cart(self, user_id, session_id):
         return ToolResponse.ok(
@@ -116,6 +126,144 @@ def test_mvp_tools_include_active_cart_lookup():
     assert "cancel_support_request" in tools.WRITE_TOOLS
     assert "get_support_ticket_status" not in tools.WRITE_TOOLS
     assert "get_support_ticket" not in tools.WRITE_TOOLS
+
+
+def test_channel_scoped_capabilities_keep_whatsapp_chat_native_without_menu_link():
+    whatsapp = tools.tools_for_channel("whatsapp")
+    web = tools.tools_for_channel("web")
+    assert tools.create_menu_session_link not in whatsapp
+    assert tools.create_menu_session_link in web
+    for capability in (
+        tools.search_menu,
+        tools.start_cart_item_customization,
+        tools.save_customization_choice,
+        tools.begin_checkout,
+        tools.confirm_order,
+    ):
+        assert capability in whatsapp
+
+
+def test_option_capabilities_expose_only_structured_contract_arguments():
+    role = tools.search_menu.tool_spec["inputSchema"]["json"]["properties"][
+        "presentation_role"
+    ]
+    assert role["enum"] == ["selection_offer", "informational_reference"]
+    start_parameters = inspect.signature(
+        tools.start_cart_item_customization
+    ).parameters
+    assert {"contract_id", "contract_version", "selected_option_id"}.issubset(
+        start_parameters
+    )
+    assert not {
+        "creation_idempotency_key",
+        "customer_message",
+        "current_message",
+        "ordinal",
+    }.intersection(start_parameters)
+
+
+def test_start_cart_uses_only_backend_validated_contract_for_creation_key(monkeypatch):
+    now = datetime.now(timezone.utc)
+    validated = OptionContract(
+        contract_id="validated-contract",
+        contract_version=4,
+        required_effect="item_selected",
+        consumer_capability="start_cart_item_customization",
+        source_capability="search_menu",
+        source_request_id="request-1",
+        options=[{"id": "item-1", "label": "Item"}],
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(minutes=30)).isoformat(),
+    )
+
+    class Sessions:
+        def validate_option_contract_consumption(self, *_args, **_kwargs):
+            return validated
+
+    carts = CartStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(carts=carts, agent_sessions=Sessions()),
+    )
+    context = AgentRequestContext(
+        "customer-1", "session-1", customer_id="customer-1",
+        channel="whatsapp", request_id="request-1",
+    )
+
+    with request_context(context):
+        result = tools.start_cart_item_customization(
+            "item-1",
+            contract_id="untrusted-llm-value",
+            contract_version=999,
+            selected_option_id="item-1",
+        )
+
+    assert result["success"] is True
+    assert carts.start_calls[0][1]["creation_idempotency_key"] == (
+        "validated-contract:4"
+    )
+
+
+def test_invalid_contract_never_reaches_initial_cart_creation(monkeypatch):
+    class Sessions:
+        def validate_option_contract_consumption(self, *_args, **_kwargs):
+            return ToolResponse.error(
+                error_code="INVALID_OPTION_CONTRACT",
+                user_message="That choice is no longer active.",
+            )
+
+    carts = CartStub()
+    monkeypatch.setattr(
+        tools,
+        "get_services",
+        lambda: SimpleNamespace(carts=carts, agent_sessions=Sessions()),
+    )
+    context = AgentRequestContext(
+        "customer-1", "session-1", customer_id="customer-1",
+        channel="whatsapp", request_id="request-1",
+    )
+
+    with request_context(context):
+        result = tools.start_cart_item_customization(
+            "item-1", contract_id="stale", contract_version=1,
+        )
+
+    assert result["error_code"] == "INVALID_OPTION_CONTRACT"
+    assert carts.start_calls == []
+
+
+def test_menu_presentation_role_controls_contract_proposal(monkeypatch):
+    class Menu:
+        customer_result_limit = 5
+
+        def search_menu(self, *, presentation_role, **_kwargs):
+            actionable = presentation_role == "selection_offer"
+            return ToolResponse.ok(
+                data={"items": [{"product_id": "item-1", "name": "First"}]},
+                user_message="Current menu information.",
+                grounding=GroundingEvidence(
+                    authoritative_domains=["menu"],
+                    required_next_effect="item_selected" if actionable else None,
+                    offered_options=(
+                        [GroundingOption(id="item-1", label="First")]
+                        if actionable else []
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(tools, "get_services", lambda: SimpleNamespace(menu=Menu()))
+    context = AgentRequestContext(
+        "customer-1", "session-1", request_id="request-1", channel="whatsapp"
+    )
+    with request_context(context):
+        offer = tools.search_menu(presentation_role="selection_offer")
+        reference = tools.search_menu(presentation_role="informational_reference")
+
+    assert offer["grounding"]["option_contract_proposal"]["required_effect"] == (
+        "item_selected"
+    )
+    assert "option_contract_proposal" not in reference["grounding"]
 
 
 class TicketStub:

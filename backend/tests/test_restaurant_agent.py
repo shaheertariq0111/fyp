@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from src.agent.context import get_request_context
 from src.agent import restaurant_agent
-from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT
+from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT, restaurant_prompt_for_channel
 from src.agent.tools import MVP_TOOLS
 
 
@@ -239,6 +239,29 @@ def test_build_restaurant_agent_registers_mvp_tools_and_prompt(monkeypatch):
     assert captured["session_manager"] is None
     assert captured["callback_handler"] is None
     assert captured["record_direct_tool_call"] is True
+
+
+def test_whatsapp_agent_uses_chat_native_capabilities_and_prompt(monkeypatch):
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(restaurant_agent, "Agent", FakeAgent)
+    restaurant_agent.build_restaurant_agent(model="configured", channel="whatsapp")
+
+    prompt = restaurant_prompt_for_channel("whatsapp")
+    assert "create_menu_session_link" not in prompt
+    assert "menu website" not in prompt.casefold()
+    assert captured["tools"] == restaurant_agent.tools_for_channel("whatsapp")
+    assert captured["system_prompt"] == prompt
+    assert "presentation_role" in prompt
+    assert "contract_id" in prompt
+    assert "Never render informational_reference results as a numbered list" in prompt
+    assert "Do not ask or invite the customer to" in prompt
+    assert "Whenever presenting multiple items that the customer may choose or order" in prompt
+    assert "use selection_offer" in prompt
 
 
 def test_build_session_manager_uses_trusted_session_id_and_configured_storage(monkeypatch):

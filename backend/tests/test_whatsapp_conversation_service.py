@@ -8,12 +8,15 @@ import pytest
 from src.services.whatsapp_conversation_service import (
     UNGROUNDED_ORDER_SUBMISSION_ERROR_CODE,
     UNGROUNDED_ORDER_SUBMISSION_FALLBACK,
+    WHATSAPP_MENU_LINK_FORBIDDEN_ERROR_CODE,
+    WHATSAPP_MENU_LINK_FORBIDDEN_FALLBACK,
     PreparedWhatsAppConversation,
     WhatsAppConversationReply,
     WhatsAppConversationService,
     authoritative_order_submission_from_response,
     build_whatsapp_identity,
     submitted_order_id_from_response,
+    whatsapp_reply_from_response,
 )
 from src.models.tool_responses import ToolResponse
 from src.api.whatsapp import WhatsAppInboundMessage
@@ -540,3 +543,46 @@ def test_reply_constructor_remains_backward_compatible():
     assert positional.submitted_order_id is None
     assert existing_keyword.resumed is True
     assert existing_keyword.submitted_order_id is None
+
+
+def test_whatsapp_blocks_menu_session_effect_and_configured_menu_site_only(caplog):
+    response = {
+        "text": "Open https://menu.example.test/session/token?item=1",
+        "tool_calls": [{
+            "tool_name": "mixed_version_capability",
+            "success": True,
+            "result": {
+                "success": True,
+                "grounding": {"transactional_effects": ["menu_session_created"]},
+            },
+        }],
+    }
+    with caplog.at_level("WARNING"):
+        reply = whatsapp_reply_from_response(
+            response,
+            request_id="request-1",
+            session_id="session-1",
+            customer_id="customer-1",
+            menu_site_base_url="https://menu.example.test/session",
+        )
+    assert reply.reply == WHATSAPP_MENU_LINK_FORBIDDEN_FALLBACK
+    assert any(
+        getattr(record, "error_code", None) == WHATSAPP_MENU_LINK_FORBIDDEN_ERROR_CODE
+        for record in caplog.records
+    )
+    assert "token" not in caplog.text
+
+
+def test_whatsapp_allows_unrelated_urls_but_blocks_configured_menu_path():
+    unrelated = whatsapp_reply_from_response(
+        {"text": "See https://status.example.test/help", "tool_calls": []},
+        request_id="r", session_id="s", customer_id="c",
+        menu_site_base_url="https://menu.example.test/menu",
+    )
+    forbidden = whatsapp_reply_from_response(
+        {"text": "See https://menu.example.test/menu/item?id=1", "tool_calls": []},
+        request_id="r", session_id="s", customer_id="c",
+        menu_site_base_url="https://menu.example.test/menu",
+    )
+    assert unrelated.reply == "See https://status.example.test/help"
+    assert forbidden.reply == WHATSAPP_MENU_LINK_FORBIDDEN_FALLBACK

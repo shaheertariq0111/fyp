@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+import json
 import re
+import uuid
 
-from src.models.tool_responses import GroundingEvidence, ToolResponse
-from src.repositories.cart_repository import CartVersionConflictError
+from src.models.tool_responses import GroundingEvidence, GroundingOption, ToolResponse
+from src.repositories.cart_repository import (
+    CartCreationConflictError,
+    CartVersionConflictError,
+)
 
 
 ORDER_HANDOFF_CART_STATUS = "converted_to_order"
@@ -34,11 +38,20 @@ class CartService:
     def _id(prefix: str) -> str:
         return f"{prefix}-{uuid.uuid4()}"
 
+    @staticmethod
+    def _contract_cart_id(user_id: str, session_id: str, idempotency_key: str) -> str:
+        identity = json.dumps(
+            ["option-contract", user_id, session_id, idempotency_key],
+            separators=(",", ":"),
+        )
+        return f"CART-{uuid.uuid5(uuid.NAMESPACE_URL, identity)}"
+
     def start_item_customization(self, user_id: str, session_id: str, item_id: str,
                                  quantity: int = 1, customer_id: str | None = None,
                                  customer_name: str | None = None,
                                  customer_phone: str | None = None,
-                                 channel: str = "web") -> ToolResponse:
+                                 channel: str = "web",
+                                 creation_idempotency_key: str | None = None) -> ToolResponse:
         if quantity < 1:
             return ToolResponse.error(error_code="INVALID_QUANTITY",
                                       user_message="Quantity must be at least one.")
@@ -58,7 +71,11 @@ class CartService:
                                       user_message="That item is currently unavailable.")
         groups = self._groups(menu_item)
         now = self._now()
-        cart_id = self._id("CART")
+        cart_id = (
+            self._contract_cart_id(user_id, session_id, creation_idempotency_key)
+            if creation_idempotency_key
+            else self._id("CART")
+        )
         cart = {
             "PK": user_id, "SK": f"CART#{cart_id}", "cart_id": cart_id,
             "user_id": user_id, "agent_session_id": session_id,
@@ -81,7 +98,20 @@ class CartService:
             if not cart["items"][0]["missing_required_fields"]:
                 cart["active_cart_item_id"] = None
                 cart["status"] = "item_ready"
-        self.carts.create(cart)
+        try:
+            self.carts.create(cart)
+        except CartCreationConflictError:
+            existing = self.carts.find_by_cart_id(user_id, cart_id)
+            if existing:
+                return self._resume_active_cart(existing)
+            return ToolResponse.error(
+                error_code="CART_CREATE_CONFLICT",
+                user_message=(
+                    "The cart changed while I was starting customization. "
+                    "Please try again."
+                ),
+                retryable=True,
+            )
         if quantity > 1 and groups:
             return ToolResponse.ok(
                 data=self._cart_data(cart),
@@ -106,6 +136,11 @@ class CartService:
                 grounding=GroundingEvidence(
                     authoritative_domains=["cart"],
                     transactional_effects=["item_selected"],
+                    required_next_effect="customization_saved",
+                    offered_options=[
+                        GroundingOption(id="same", label="Same"),
+                        GroundingOption(id="separate", label="Customize separately"),
+                    ],
                     exact_customer_text=(
                         "Should these items use the same customization or be "
                         "customized separately?"
@@ -179,7 +214,9 @@ class CartService:
             else [selected_option_id]
         )
         option_ids = {
-            entry.get("option_id") for entry in group.get("options", [])
+            entry.get("option_id")
+            for entry in group.get("options", [])
+            if entry.get("available", True)
         }
         minimum = self._selection_limit(group, "min")
         maximum = self._selection_limit(group, "max")
@@ -275,6 +312,18 @@ class CartService:
                 ),
                 grounding=GroundingEvidence(
                     authoritative_domains=["cart", "menu"],
+                    required_next_effect="other_transactional_progression",
+                    offered_options=[
+                        *[
+                            GroundingOption(
+                                id=str(item["product_id"]),
+                                label=str(item.get("name") or item["product_id"]),
+                            )
+                            for item in upsell_items
+                            if item.get("product_id")
+                        ],
+                        GroundingOption(id="skip", label="No add-on"),
+                    ],
                     exact_customer_text=upsell_prompt,
                 ),
             )
@@ -305,7 +354,9 @@ class CartService:
                                    ),
                                    grounding=GroundingEvidence(
                                        authoritative_domains=["cart"],
-                                       transactional_effects=["item_added"],
+                                       transactional_effects=[
+                                           "item_added", "other_transactional_progression"
+                                       ],
                                    ))
         cart["status"] = "cart_ready"
         self._save(cart)
@@ -318,7 +369,9 @@ class CartService:
                                ),
                                grounding=GroundingEvidence(
                                    authoritative_domains=["cart"],
-                                   transactional_effects=["cart_progressed"],
+                                   transactional_effects=[
+                                       "cart_progressed", "other_transactional_progression"
+                                   ],
                                ))
 
     def create_pending_order(self, user_id: str, cart_id: str) -> ToolResponse:
@@ -780,6 +833,11 @@ class CartService:
                 ],
                 grounding=GroundingEvidence(
                     authoritative_domains=["cart"],
+                    required_next_effect="customization_saved",
+                    offered_options=[
+                        GroundingOption(id="same", label="Same"),
+                        GroundingOption(id="separate", label="Customize separately"),
+                    ],
                     exact_customer_text=(
                         "Should these items use the same customization or be "
                         "customized separately?"
@@ -814,6 +872,18 @@ class CartService:
                 ),
                 grounding=GroundingEvidence(
                     authoritative_domains=["cart", "menu"],
+                    required_next_effect="other_transactional_progression",
+                    offered_options=[
+                        *[
+                            GroundingOption(
+                                id=str(item["product_id"]),
+                                label=str(item.get("name") or item["product_id"]),
+                            )
+                            for item in upsell_items
+                            if item.get("product_id")
+                        ],
+                        GroundingOption(id="skip", label="No add-on"),
+                    ],
                     exact_customer_text=upsell_prompt,
                 ),
             )
@@ -900,6 +970,19 @@ class CartService:
             grounding=GroundingEvidence(
                 authoritative_domains=["cart", "menu"],
                 transactional_effects=effects or [],
+                required_next_effect="customization_saved",
+                offered_options=[
+                    GroundingOption(
+                        id=str(option["option_id"]),
+                        label=str(
+                            option.get("display_label")
+                            or option.get("name")
+                            or option["option_id"]
+                        ),
+                    )
+                    for option in active_choice["options"]
+                    if option.get("option_id")
+                ],
                 exact_customer_text=active_choice["choice_prompt"],
             ),
         )

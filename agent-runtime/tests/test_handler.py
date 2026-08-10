@@ -75,7 +75,7 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: FakeAgent(session_manager),
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
     )
     monkeypatch.setattr(
         handler,
@@ -137,6 +137,7 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
 
     response = handler.invoke(runtime_payload(channel="whatsapp"))
 
+    assert response["option_contract_protocol_version"] == 1
     assert response["text"].endswith("Which item would you like?")
     assert "size" not in response["text"].lower()
     assert FakeMemorySessionManager.redactions == []
@@ -201,7 +202,7 @@ def test_natural_tool_response_uses_one_post_agent_semantic_call(
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: FakeAgent(session_manager),
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
     )
     monkeypatch.setattr(
         handler,
@@ -275,7 +276,7 @@ def test_whatsapp_get_menu_item_preserves_supported_natural_continuation(monkeyp
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: FakeAgent(session_manager),
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
     )
     monkeypatch.setattr(
         handler,
@@ -358,7 +359,7 @@ def test_transactional_customer_can_receive_conversational_continuation(monkeypa
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: FakeAgent(session_manager),
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
     )
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: text)
@@ -449,7 +450,7 @@ def test_explicit_new_transaction_intent_is_not_hijacked_by_existing_orders(
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: FakeAgent(session_manager),
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
     )
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: model_reply)
@@ -507,7 +508,7 @@ def test_pending_write_survives_conversational_detour(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: FakeAgent(session_manager),
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
     )
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: text)
@@ -599,7 +600,7 @@ def test_two_turn_search_selection_blocks_prose_progression_across_production_pa
             selected_option="item-1",
         )
 
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(handler, "classify_whatsapp_turn", classify_turn)
@@ -685,7 +686,7 @@ def test_assistant_classifier_exception_fails_closed_before_memory_commit(monkey
         )
         return SimpleNamespace(message={"content": [{"text": raw}]}, tool_calls=[])
 
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(
@@ -740,7 +741,7 @@ def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(
             claimed_actions=[],
         )
 
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: raw)
     monkeypatch.setattr(
@@ -826,7 +827,7 @@ def test_write_outcome_commits_only_authoritative_message(monkeypatch, success, 
             }],
         )
 
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(
@@ -863,7 +864,7 @@ def test_unsupported_cart_claim_fails_closed_despite_cart_read(monkeypatch):
             self.session_manager = session_manager
 
     raw = "The model invented a cart item."
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
     monkeypatch.setattr(
         handler,
         "invoke_restaurant_agent",
@@ -954,7 +955,7 @@ def test_memory_commit_failure_leaves_no_raw_turn_for_next_invocation(monkeypatc
         "load_agentcore_memory_integration",
         lambda: (FakeMemoryConfig, FailingMemory),
     )
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(
@@ -1037,8 +1038,9 @@ def test_handler_invokes_existing_restaurant_agent_with_agentcore_memory(monkeyp
         def __init__(self, session_manager):
             self.session_manager = session_manager
 
-    def fake_build_restaurant_agent(*, session_manager):
+    def fake_build_restaurant_agent(*, session_manager, channel="web"):
         captured["session_manager"] = session_manager
+        captured["build_channel"] = channel
         return FakeAgent(session_manager)
 
     def fake_invoke_restaurant_agent(message, **kwargs):
@@ -1080,6 +1082,7 @@ def test_handler_invokes_existing_restaurant_agent_with_agentcore_memory(monkeyp
     assert captured["agent"].session_manager is FakeMemorySessionManager.created[0]
     assert captured["agent_session_id"] == "session-1"
     assert captured["request_id"] == "req-trusted"
+    assert captured["build_channel"] == "web"
     assert FakeMemorySessionManager.closed == [FakeMemorySessionManager.created[0]]
 
 
@@ -1090,7 +1093,8 @@ def test_handler_uses_versioned_agentcore_memory_session_for_whatsapp(monkeypatc
         def __init__(self, session_manager):
             self.session_manager = session_manager
 
-    def fake_build_restaurant_agent(*, session_manager):
+    def fake_build_restaurant_agent(*, session_manager, channel="web"):
+        captured["build_channel"] = channel
         return FakeAgent(session_manager)
 
     def fake_invoke_restaurant_agent(message, **kwargs):
@@ -1107,12 +1111,24 @@ def test_handler_uses_versioned_agentcore_memory_session_for_whatsapp(monkeypatc
         lambda: settings(whatsapp_memory_namespace="wa-clean-v3"),
     )
 
+    option_contract = {
+        "contract_id": "contract-1", "contract_version": 1,
+        "contract_kind": "selection_offer", "required_effect": "item_selected",
+        "consumer_capability": "start_cart_item_customization",
+        "source_capability": "search_menu", "source_request_id": "request-1",
+        "scope": {}, "options": [{"id": "item-1", "label": "First"}],
+        "created_at": "2026-08-10T08:00:00+00:00",
+        "expires_at": "2026-08-10T08:30:00+00:00",
+    }
     response = handler.invoke(runtime_payload(
         agent_session_id="whatsapp-session-1",
         channel="whatsapp",
+        option_contract=option_contract,
     ))
 
     assert captured["agent_session_id"] == "whatsapp-session-1"
+    assert captured["build_channel"] == "whatsapp"
+    assert captured["option_contract"] == option_contract
     assert response["memory"] == {
         "memory_id": "memory-1",
         "actor_id": "customer-1",
@@ -1272,7 +1288,7 @@ def test_handler_forwards_missing_request_id_without_substitute(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: SimpleNamespace(
+        lambda *, session_manager, channel="web": SimpleNamespace(
             session_manager=session_manager
         ),
     )
@@ -1302,7 +1318,7 @@ def test_handler_forwards_missing_request_id_without_substitute(monkeypatch):
 
 
 def test_handler_uses_user_id_as_actor_when_customer_id_missing(monkeypatch):
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: lambda message, **kwargs: "ok")
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": lambda message, **kwargs: "ok")
     monkeypatch.setattr(
         handler,
         "invoke_restaurant_agent",
@@ -1333,7 +1349,7 @@ def test_same_session_id_restores_conversation_history(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: FakeAgent(session_manager),
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
     )
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke_restaurant_agent)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
@@ -1356,7 +1372,7 @@ def test_file_session_manager_is_not_used_in_agentcore_runtime(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: SimpleNamespace(session_manager=session_manager),
+        lambda *, session_manager, channel="web": SimpleNamespace(session_manager=session_manager),
     )
     monkeypatch.setattr(
         handler,
@@ -1386,7 +1402,7 @@ def test_session_manager_cleanup_occurs_after_invocation_failure(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager: SimpleNamespace(session_manager=session_manager),
+        lambda *, session_manager, channel="web": SimpleNamespace(session_manager=session_manager),
     )
 
     def fail_invoke(message, **kwargs):

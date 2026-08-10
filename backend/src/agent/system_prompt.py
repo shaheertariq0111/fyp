@@ -636,3 +636,73 @@ SAFETY AND PRIVACY
 - If retrieve_restaurant_knowledge is unavailable or cannot confirm a policy, say
   the policy could not be confirmed.
 """
+
+
+def restaurant_prompt_for_channel(channel: str) -> str:
+    if channel != "whatsapp":
+        return RESTAURANT_AGENT_SYSTEM_PROMPT
+    prompt = RESTAURANT_AGENT_SYSTEM_PROMPT
+    prompt = prompt.replace(
+        "and offer another page or the menu\n   website; never imply",
+        "and offer another page or category; never imply",
+    )
+    prompt = prompt.replace(
+        "\n3. create_menu_session_link\n   Use when the user wants the website, visual menu, or website customization.\n   If an item is selected, pass item_id so the website can open with context.\n",
+        "",
+    )
+    prompt = prompt.replace(
+        "- For a separate transaction, offer the valid build paths:\n"
+        "  1. Open the menu website with create_menu_session_link.\n"
+        "  2. Build in chat by asking what item/category they want, then search_menu.\n"
+        "- If the user clearly asks for the website/menu link, call create_menu_session_link\n"
+        "  immediately.\n",
+        "- For a separate transaction, build conversationally by asking what item or\n"
+        "  category they want, then use search_menu. Keep menu browsing, item\n"
+        "  selection, customization, add-ons, cart review, and checkout in chat.\n",
+    )
+    prompt = prompt.replace(
+        "- If the customer chooses an item from results, use get_menu_item if details are\n"
+        "  needed, then ask whether to build it in chat or open it on the website unless\n"
+        "  their wording already chooses one path. If chat building is already chosen,\n"
+        "  call start_cart_item_customization for that item before asking any\n"
+        "  customization question.\n",
+        "- If the customer chooses an item from results, use get_menu_item if details are\n"
+        "  needed, then call start_cart_item_customization for that item before asking\n"
+        "  any customization question.\n",
+    )
+    website_section = prompt.find("\nWEBSITE ORDER FLOW\n")
+    recovery_section = prompt.find("\nRECOVERY CASES\n", website_section)
+    if website_section >= 0 and recovery_section > website_section:
+        prompt = prompt[:website_section] + prompt[recovery_section:]
+    prompt = prompt.replace("choose_delivery", "update_order_flow(action=\"set_delivery\")")
+    prompt = prompt.replace("choose_takeaway", "update_order_flow(action=\"set_takeaway\")")
+    prompt = prompt.replace(
+        "update_order_flow(action=\"set_delivery\")(order_id)",
+        "update_order_flow(order_id, action=\"set_delivery\")",
+    )
+    prompt = prompt.replace(
+        "update_order_flow(action=\"set_takeaway\")(order_id)",
+        "update_order_flow(order_id, action=\"set_takeaway\")",
+    )
+    prompt += """
+
+WHATSAPP OPTION CONTRACTS
+
+- When a capability can present choices, set presentation_role to
+  selection_offer only when the choices are an actionable question for the
+  customer. Use informational_reference for descriptive or comparison results
+  that must not replace a pending actionable choice.
+- Never render informational_reference results as a numbered list, selectable
+  list, buttons, or a new choice menu. Do not ask or invite the customer to
+  choose, select, or order an item from informational_reference results.
+- Whenever presenting multiple items that the customer may choose or order
+  from, use selection_offer. It is the only role that may enumerate actionable
+  choices or invite a selection and it replaces the prior active contract.
+- For an active option contract, interpret the customer's natural response
+  yourself and pass only its contract_id, contract_version, and the selected
+  backend option ID to the declared consumer capability. Never derive or alter
+  IDs. The backend validates identity, version, membership, expiry, workflow
+  state, and availability.
+- Do not create or send a menu-session or menu-site ordering link on WhatsApp.
+"""
+    return prompt

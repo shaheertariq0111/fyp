@@ -33,6 +33,7 @@ class RuntimeRequest(BaseModel):
     available_options: list[dict[str, str]] = Field(default_factory=list)
     expected_write_tool: str | None = None
     required_effect: TransactionalEffect | None = None
+    option_contract: dict[str, Any] | None = None
 
 
 class ToolCallResult(BaseModel):
@@ -45,6 +46,7 @@ class ToolCallResult(BaseModel):
 
 class RuntimeResponse(BaseModel):
     text: str
+    option_contract_protocol_version: int | None = None
     tool_calls: list[ToolCallResult] = Field(default_factory=list)
     memory: dict[str, str] = Field(default_factory=dict)
     intent: OrderIntentClassification | None = None

@@ -9,6 +9,7 @@ from src.models.tool_responses import (
     PresentationConstraints,
     ToolResponse,
 )
+from src.models.conversation_contracts import PresentationRole
 
 
 class MenuService:
@@ -24,7 +25,8 @@ class MenuService:
         self.customer_result_limit = customer_result_limit
 
     def search_menu(self, query=None, category=None, tags=None, max_price=None,
-                    available_only=True, limit=None, exclude_product_ids=None) -> ToolResponse:
+                    available_only=True, limit=None, exclude_product_ids=None,
+                    presentation_role: PresentationRole = "selection_offer") -> ToolResponse:
         items = self.repository.search(available_only=available_only)
         normalized_query = query.casefold() if query else None
         required_tags = {tag.casefold() for tag in tags or []}
@@ -70,14 +72,33 @@ class MenuService:
             matches = matches[:min(limit, self.customer_result_limit)]
         else:
             matches = matches[:self.customer_result_limit]
+        actionable = presentation_role == "selection_offer"
         return ToolResponse.ok(
             data={"items": matches, "has_more": total_matches > len(matches)},
             user_message=("I found current menu options." if matches
                           else "I couldn't find a matching available menu item."),
             next_action="present_menu_results",
+            agent={
+                "presentation_role": presentation_role,
+                "instruction": (
+                    "Present these as actionable choices and invite selection."
+                    if actionable and matches
+                    else (
+                        "Use these items only as descriptive or comparative facts. "
+                        "Do not render a numbered or selectable choice list and do "
+                        "not invite the customer to select or order from this result."
+                        if matches
+                        else "Explain that no matching current menu item was found."
+                    )
+                ),
+            },
             grounding=GroundingEvidence(
                 authoritative_domains=["menu"],
-                required_next_effect="item_selected" if matches else None,
+                required_next_effect=(
+                    "item_selected"
+                    if matches and actionable
+                    else None
+                ),
                 offered_options=[
                     GroundingOption(
                         id=str(item["product_id"]),
@@ -85,9 +106,10 @@ class MenuService:
                     )
                     for item in matches
                     if item.get("product_id")
-                ],
+                ] if actionable else [],
                 presentation=PresentationConstraints(
                     max_items=self.customer_result_limit,
+                    role=presentation_role,
                 ),
             ),
         )

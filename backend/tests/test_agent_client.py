@@ -128,10 +128,11 @@ def test_local_whatsapp_client_commits_grounded_message_without_raw_redaction(mo
         )
 
     monkeypatch.setattr("src.agent_client.local.build_session_manager", lambda session_id: manager)
-    monkeypatch.setattr(
-        "src.agent_client.local.build_restaurant_agent",
-        lambda *, session_manager: SimpleNamespace(session_manager=session_manager),
-    )
+    built_channels = []
+    def build_agent(*, session_manager, channel="web"):
+        built_channels.append(channel)
+        return SimpleNamespace(session_manager=session_manager)
+    monkeypatch.setattr("src.agent_client.local.build_restaurant_agent", build_agent)
     monkeypatch.setattr("src.agent_client.local.invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr("src.agent_client.local.agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(
@@ -160,6 +161,7 @@ def test_local_whatsapp_client_commits_grounded_message_without_raw_redaction(mo
     ))
 
     assert "I selected" not in str(manager.messages)
+    assert built_channels == ["whatsapp"]
     assert manager.messages[-1]["content"][0]["text"] == result.text
     assert result.raw_result.assessment_origin == "model"
     assert result.raw_result.semantic_classifier_status == "completed"

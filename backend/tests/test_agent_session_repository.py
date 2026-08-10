@@ -1,10 +1,12 @@
 from copy import deepcopy
+import uuid
 
 import pytest
 from botocore.exceptions import ClientError
 
 from src.repositories.agent_session_repository import (
     AgentSessionRepository,
+    OptionContractConflictError,
     SessionNotFoundError,
     SupportStateConflictError,
 )
@@ -480,3 +482,122 @@ def test_verified_order_cleanup_is_compare_and_set():
     assert call["ExpressionAttributeValues"][":expected_verified_at"] == (
         "2026-07-24T10:00:00+00:00"
     )
+
+
+def test_option_contract_successor_transition_is_one_conditional_update():
+    repository, table = repository_with_session(
+        active_option_contract={"contract_id": "old", "contract_version": 3},
+        unrelated_attribute="preserve-me",
+    )
+    successor = {
+        "contract_id": "new", "contract_version": 1,
+        "required_effect": "customization_saved",
+        "created_at": "2026-08-10T08:00:00+00:00",
+    }
+
+    repository.transition_option_contract(
+        "cust-1", "session-1",
+        expected_contract_id="old", expected_contract_version=3,
+        successor=successor,
+        legacy_projection={
+            "offered_menu_items": [{"product_id": "large", "name": "Large"}],
+            "shown_menu_item_ids": ["large"],
+        },
+    )
+
+    assert len(table.update_calls) == 1
+    call = table.update_calls[0]
+    assert call["ExpressionAttributeValues"][":contract"] == successor
+    assert "#contract.#contract_id = :expected_contract_id" in call["ConditionExpression"]
+    assert "#contract.#contract_version = :expected_contract_version" in call["ConditionExpression"]
+    assert "unrelated_attribute" not in set(call["ExpressionAttributeNames"].values())
+
+
+def test_legacy_option_contract_consumption_atomically_clears_legacy_state():
+    updated_at = "2026-08-10T08:00:00+00:00"
+    repository, table = repository_with_session(
+        offered_menu_items=[{"product_id": "item-1", "name": "Choice"}],
+        shown_menu_item_ids=["item-1"],
+        whatsapp_required_effect="item_selected",
+        whatsapp_order_state_updated_at=updated_at,
+    )
+    contract_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"legacy:session-1:{updated_at}"
+    ))
+
+    repository.transition_legacy_option_contract(
+        "cust-1", "session-1",
+        expected_contract_id=contract_id,
+        expected_contract_version=1,
+        expected_required_effect="item_selected",
+        successor=None,
+    )
+
+    assert len(table.update_calls) == 1
+    call = table.update_calls[0]
+    assert call["UpdateExpression"].startswith("REMOVE #contract, #items")
+    assert "attribute_not_exists(#contract)" in call["ConditionExpression"]
+    assert "#updated_at = :expected_updated_at" in call["ConditionExpression"]
+    assert "#required_effect = :expected_required_effect" in call["ConditionExpression"]
+    assert call["ExpressionAttributeValues"][":expected_updated_at"] == updated_at
+
+
+def test_legacy_option_contract_transition_atomically_installs_typed_successor():
+    updated_at = "2026-08-10T08:00:00+00:00"
+    repository, table = repository_with_session(
+        offered_menu_items=[{"product_id": "item-1", "name": "Choice"}],
+        whatsapp_required_effect="item_selected",
+        whatsapp_order_state_updated_at=updated_at,
+    )
+    contract_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"legacy:session-1:{updated_at}"
+    ))
+    successor = {
+        "contract_id": "next", "contract_version": 1,
+        "required_effect": "customization_saved",
+        "created_at": "2026-08-10T08:01:00+00:00",
+    }
+
+    repository.transition_legacy_option_contract(
+        "cust-1", "session-1",
+        expected_contract_id=contract_id,
+        expected_contract_version=1,
+        expected_required_effect="item_selected",
+        successor=successor,
+        legacy_projection={
+            "offered_menu_items": [{"product_id": "large", "name": "Large"}],
+            "shown_menu_item_ids": ["large"],
+        },
+    )
+
+    call = table.update_calls[0]
+    assert call["UpdateExpression"].startswith("SET #contract = :contract")
+    assert call["ExpressionAttributeValues"][":contract"] == successor
+    assert call["ExpressionAttributeValues"][":items"] == [
+        {"product_id": "large", "name": "Large"}
+    ]
+    assert call["ExpressionAttributeValues"][":shown_ids"] == ["large"]
+
+
+def test_stale_legacy_option_contract_transition_cannot_overwrite_newer_state():
+    updated_at = "2026-08-10T08:00:00+00:00"
+    repository, table = repository_with_session(
+        offered_menu_items=[{"product_id": "item-1", "name": "Choice"}],
+        whatsapp_required_effect="item_selected",
+        whatsapp_order_state_updated_at=updated_at,
+    )
+    contract_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"legacy:session-1:{updated_at}"
+    ))
+    table.update_error = conditional_error()
+
+    with pytest.raises(OptionContractConflictError):
+        repository.transition_legacy_option_contract(
+            "cust-1", "session-1",
+            expected_contract_id=contract_id,
+            expected_contract_version=1,
+            expected_required_effect="item_selected",
+            successor=None,
+        )
+
+    assert len(table.update_calls) == 1

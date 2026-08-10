@@ -67,11 +67,14 @@ class LocalStrandsAgentRuntimeClient:
                 if session_manager is not None:
                     memory_buffer = GroundedAssistantMemoryBuffer(session_manager)
                 runtime_agent = build_restaurant_agent(
-                    session_manager=memory_buffer or session_manager
+                    session_manager=memory_buffer or session_manager,
+                    channel=request.channel,
                 )
             invocation_kwargs = {}
             if runtime_agent is not None:
                 invocation_kwargs["agent"] = runtime_agent
+            if request.option_contract is not None:
+                invocation_kwargs["option_contract"] = request.option_contract
             raw_result = invoke_restaurant_agent(
                 request.message,
                 user_id=request.user_id,
