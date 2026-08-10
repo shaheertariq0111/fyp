@@ -60,3 +60,7 @@ class RuntimeResponse(BaseModel):
     grounding_rejection_reason: GroundingRejectionReason | None = None
     assessment_origin: AssessmentOrigin | None = None
     semantic_classifier_status: SemanticClassifierStatus | None = None
+    primary_contract_recovery_attempted: bool | None = None
+    primary_contract_recovery_succeeded: bool | None = None
+    first_primary_tool_call_count: int | None = Field(default=None, ge=0)
+    retry_primary_tool_call_count: int | None = Field(default=None, ge=0)

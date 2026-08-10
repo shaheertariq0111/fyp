@@ -1167,6 +1167,271 @@ def test_runtime_request_preserves_typed_option_contract():
     assert request.option_contract == option_contract
 
 
+def _active_menu_contract():
+    return {
+        "contract_id": "private-contract",
+        "contract_version": 3,
+        "contract_kind": "selection_offer",
+        "required_effect": "item_selected",
+        "consumer_capability": "start_cart_item_customization",
+        "source_capability": "search_menu",
+        "source_request_id": "request-1",
+        "scope": {},
+        "options": [{"id": "private-item-5", "label": "Private Label"}],
+        "created_at": "2026-08-10T08:00:00+00:00",
+        "expires_at": "2026-08-10T08:30:00+00:00",
+    }
+
+
+def test_qualifying_zero_tool_selection_gets_one_primary_recovery(monkeypatch):
+    invocations = []
+    logged_events = []
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def fake_invoke(message, **kwargs):
+        invocations.append((message, kwargs))
+        if len(invocations) == 1:
+            return SimpleNamespace(
+                message={"content": [{"text": "I will handle that."}]},
+                tool_calls=[],
+            )
+        return SimpleNamespace(
+            message={"content": [{"text": "Internal model wording."}]},
+            tool_calls=[{
+                "tool_name": "start_cart_item_customization",
+                "success": True,
+                "is_write": True,
+                "result": {
+                    "success": True,
+                    "user_message": "Which size would you like?",
+                    "grounding": {"transactional_effects": ["item_selected"]},
+                },
+                "error_code": None,
+            }],
+        )
+
+    monkeypatch.setattr(
+        handler, "build_restaurant_agent",
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **_kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            customer_requests_required_effect=True,
+            selected_option="private-item-5",
+        ),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+    monkeypatch.setattr(
+        handler.logger, "info",
+        lambda _message, *, extra=None: logged_events.append(extra or {}),
+    )
+    contract = _active_menu_contract()
+
+    response = handler.invoke(runtime_payload(
+        message="private customer wording",
+        channel="whatsapp",
+        required_effect="item_selected",
+        expected_write_tool="start_cart_item_customization",
+        available_options=[{"id": "private-item-5", "label": "Private Label"}],
+        option_contract=contract,
+    ))
+
+    assert len(invocations) == 2
+    assert invocations[0][1]["option_contract"] == contract
+    assert invocations[1][1]["option_contract"] == contract
+    assert "primary_contract_recovery" not in invocations[0][1]
+    assert invocations[1][1]["primary_contract_recovery"] is True
+    assert not {
+        "item_id", "selected_option_id", "contract_id", "contract_version",
+    }.intersection(invocations[1][1])
+    assert response["tool_calls"][0]["tool_name"] == (
+        "start_cart_item_customization"
+    )
+    assert response["text"] == "Internal model wording."
+    assert response["primary_contract_recovery_attempted"] is True
+    assert response["primary_contract_recovery_succeeded"] is True
+    assert response["first_primary_tool_call_count"] == 0
+    assert response["retry_primary_tool_call_count"] == 1
+    event = next(
+        item for item in logged_events
+        if item.get("event") == "whatsapp_grounding_completed"
+    )
+    assert event["primary_contract_recovery_attempted"] is True
+    assert event["primary_contract_recovery_succeeded"] is True
+    for private_value in (
+        "private customer wording", "private-contract", "private-item-5",
+        "Private Label",
+    ):
+        assert private_value not in repr(event)
+
+
+def test_normal_contract_selection_tool_call_does_not_retry(monkeypatch):
+    invocation_count = 0
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def fake_invoke(_message, **_kwargs):
+        nonlocal invocation_count
+        invocation_count += 1
+        return SimpleNamespace(
+            message={"content": [{"text": "Selection executed."}]},
+            tool_calls=[{
+                "tool_name": "start_cart_item_customization",
+                "success": True,
+                "is_write": True,
+                "result": {
+                    "success": True,
+                    "user_message": "Which size would you like?",
+                    "grounding": {"transactional_effects": ["item_selected"]},
+                },
+                "error_code": None,
+            }],
+        )
+
+    monkeypatch.setattr(
+        handler, "build_restaurant_agent",
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **_kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            customer_requests_required_effect=True,
+            selected_option="private-item-5",
+        ),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        channel="whatsapp",
+        required_effect="item_selected",
+        expected_write_tool="start_cart_item_customization",
+        available_options=[{"id": "private-item-5", "label": "Private Label"}],
+        option_contract=_active_menu_contract(),
+    ))
+
+    assert invocation_count == 1
+    assert response["tool_calls"][0]["tool_name"] == (
+        "start_cart_item_customization"
+    )
+    assert response["primary_contract_recovery_attempted"] is False
+    assert response["first_primary_tool_call_count"] == 1
+    assert response["retry_primary_tool_call_count"] == 0
+
+
+def test_primary_contract_recovery_is_bounded_and_falls_back(monkeypatch):
+    invocation_count = 0
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def fake_invoke(_message, **_kwargs):
+        nonlocal invocation_count
+        invocation_count += 1
+        return SimpleNamespace(
+            message={"content": [{"text": "I will handle that."}]},
+            tool_calls=[],
+        )
+
+    monkeypatch.setattr(
+        handler, "build_restaurant_agent",
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **_kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            customer_requests_required_effect=True,
+            selected_option="private-item-5",
+        ),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        channel="whatsapp",
+        required_effect="item_selected",
+        expected_write_tool="start_cart_item_customization",
+        available_options=[{"id": "private-item-5", "label": "Private Label"}],
+        option_contract=_active_menu_contract(),
+    ))
+
+    assert invocation_count == 2
+    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
+    assert response["grounding_rejection_reason"] == "required_effect_not_satisfied"
+    assert response["primary_contract_recovery_attempted"] is True
+    assert response["primary_contract_recovery_succeeded"] is False
+    assert response["retry_primary_tool_call_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("requests_effect", "selected_option"),
+    [(False, None), (True, "not-offered")],
+)
+def test_nonqualifying_contract_turn_does_not_retry(
+    monkeypatch, requests_effect, selected_option,
+):
+    invocation_count = 0
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def fake_invoke(_message, **_kwargs):
+        nonlocal invocation_count
+        invocation_count += 1
+        return SimpleNamespace(
+            message={"content": [{"text": "Verified information only."}]},
+            tool_calls=[],
+        )
+
+    monkeypatch.setattr(
+        handler, "build_restaurant_agent",
+        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+    )
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **_kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            customer_requests_required_effect=requests_effect,
+            selected_option=selected_option,
+            informational_turn=not requests_effect,
+        ),
+    )
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+
+    response = handler.invoke(runtime_payload(
+        channel="whatsapp",
+        required_effect="item_selected",
+        expected_write_tool="start_cart_item_customization",
+        available_options=[{"id": "private-item-5", "label": "Private Label"}],
+        option_contract=_active_menu_contract(),
+    ))
+
+    assert invocation_count == 1
+    assert response["primary_contract_recovery_attempted"] is False
+    assert response["retry_primary_tool_call_count"] == 0
+
+
 def test_handler_classifies_order_intent_without_tools_or_conversation_memory(monkeypatch):
     captured = {}
 

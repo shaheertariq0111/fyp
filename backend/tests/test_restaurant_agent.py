@@ -267,6 +267,11 @@ def test_whatsapp_agent_uses_chat_native_capabilities_and_prompt(monkeypatch):
     assert "item_id = chosen trusted_active_option_contract.options[].id" in prompt
     assert "selected_option_id = exactly the same option.id" in prompt
     assert "start_cart_item_customization(item_id, quantity)" not in prompt
+    assert "declared consumer_capability takes precedence" in prompt
+    assert "without calling get_active_cart first" in prompt
+    assert "Do not merely acknowledge, confirm, promise" in prompt
+    assert "presentation_role=selection_offer" in prompt
+    assert "typed option_contract_proposal" in prompt
 
 
 def test_build_session_manager_uses_trusted_session_id_and_configured_storage(monkeypatch):
@@ -470,6 +475,43 @@ def test_whatsapp_llm_input_contains_trusted_active_option_contract():
         "trusted_active_option_contract": option_contract,
     }
     assert result
+
+
+def test_primary_recovery_input_reuses_contract_without_selecting_an_option():
+    captured = {}
+    option_contract = {
+        "contract_id": "contract-1",
+        "contract_version": 1,
+        "consumer_capability": "start_cart_item_customization",
+        "options": [
+            {"id": "item-1", "label": "First"},
+            {"id": "item-5", "label": "Fifth"},
+        ],
+    }
+
+    class FakeAgent:
+        def __call__(self, message, **_kwargs):
+            captured.update(json.loads(message))
+            return message
+
+    restaurant_agent.invoke_restaurant_agent(
+        "choose from the active options",
+        user_id="customer-1",
+        agent_session_id="session-1",
+        channel="whatsapp",
+        agent=FakeAgent(),
+        option_contract=option_contract,
+        primary_contract_recovery=True,
+    )
+
+    assert captured["customer_message"] == "choose from the active options"
+    assert captured["trusted_active_option_contract"] == option_contract
+    reminder = captured["primary_contract_recovery"]
+    assert reminder["attempt"] == 1
+    assert reminder["reason"] == "declared_consumer_not_executed"
+    assert "selected_option_id" not in reminder
+    assert "item-1" not in repr(reminder)
+    assert "item-5" not in repr(reminder)
 
 
 def test_agent_result_text_extracts_and_sanitizes_message_text():

@@ -1350,6 +1350,69 @@ def test_grounding_observes_required_effect_not_satisfied():
     _assert_observed_rejection(result, "required_effect_not_satisfied")
 
 
+def test_valid_typed_successor_offer_replaces_stale_required_effect():
+    options = [
+        {"id": "set_delivery", "label": "Delivery"},
+        {"id": "set_takeaway", "label": "Takeaway"},
+    ]
+    proposal = {
+        "contract_id": "fulfillment-contract",
+        "contract_version": 1,
+        "contract_kind": "selection_offer",
+        "required_effect": "fulfillment_saved",
+        "consumer_capability": "update_order_flow",
+        "source_capability": "get_order_status",
+        "source_request_id": "request-1",
+        "scope": {"order_id": "ORD-1"},
+        "options": options,
+        "created_at": "2026-08-10T08:00:00+00:00",
+        "expires_at": "2026-08-10T08:30:00+00:00",
+    }
+    result = ground_authoritative_tool_response(
+        tool_calls=[tool_call(
+            "get_order_status",
+            grounding={
+                "authoritative_domains": ["order"],
+                "required_next_effect": "fulfillment_saved",
+                "offered_options": options,
+                "exact_customer_text": "Would you like delivery or takeaway?",
+                "option_contract_proposal": proposal,
+            },
+        )],
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+    )
+
+    assert result is not None
+    assert result.required_next_effect == "fulfillment_saved"
+    assert result.expected_transactional_action == "update_order_flow"
+
+
+def test_malformed_successor_offer_cannot_replace_stale_required_effect():
+    result = ground_authoritative_tool_response(
+        tool_calls=[tool_call(
+            "get_order_status",
+            grounding={
+                "authoritative_domains": ["order"],
+                "required_next_effect": "fulfillment_saved",
+                "offered_options": [
+                    {"id": "set_delivery", "label": "Delivery"},
+                ],
+                "exact_customer_text": "Would you like delivery or takeaway?",
+                "option_contract_proposal": {"malformed": True},
+            },
+        )],
+        expected_write_tool="start_cart_item_customization",
+        required_effect="item_selected",
+    )
+
+    assert result is not None
+    assert result.required_next_effect == "item_selected"
+    assert result.expected_transactional_action == (
+        "start_cart_item_customization"
+    )
+
+
 @pytest.mark.parametrize(
     ("selected_option", "reason"),
     [(None, "selected_option_missing"), ("item-2", "selected_option_invalid")],
