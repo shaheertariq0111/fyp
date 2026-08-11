@@ -47,7 +47,7 @@ def build_restaurant_agent(
         tools=MVP_TOOLS,
         system_prompt=RESTAURANT_AGENT_SYSTEM_PROMPT,
         name="restaurant-ordering-agent",
-        description="Single MVP pizza restaurant ordering assistant.",
+        description="Dom, Domino's ordering assistant.",
         session_manager=session_manager,
         callback_handler=None,
         record_direct_tool_call=True,
