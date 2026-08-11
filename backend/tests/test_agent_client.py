@@ -413,6 +413,14 @@ def test_agentcore_runtime_session_falls_back_to_agent_session_without_request_i
 
 def test_agent_runtime_factory_uses_agentcore_when_runtime_arn_is_set(monkeypatch):
     get_agent_runtime_client.cache_clear()
+    captured = {}
+
+    class FakeAgentCoreRuntimeClient:
+        def __init__(self, *, runtime_arn, aws_region):
+            captured["runtime_arn"] = runtime_arn
+            captured["aws_region"] = aws_region
+            self.runtime_arn = runtime_arn
+
     monkeypatch.setattr(
         "src.agent_client.factory.get_settings",
         lambda: SimpleNamespace(
@@ -420,11 +428,19 @@ def test_agent_runtime_factory_uses_agentcore_when_runtime_arn_is_set(monkeypatc
             aws_region="us-east-1",
         ),
     )
+    monkeypatch.setattr(
+        "src.agent_client.factory.AgentCoreRuntimeClient",
+        FakeAgentCoreRuntimeClient,
+    )
 
     client = get_agent_runtime_client()
 
-    assert isinstance(client, AgentCoreRuntimeClient)
+    assert isinstance(client, FakeAgentCoreRuntimeClient)
     assert client.runtime_arn == "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/example"
+    assert captured == {
+        "runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/example",
+        "aws_region": "us-east-1",
+    }
     get_agent_runtime_client.cache_clear()
 
 

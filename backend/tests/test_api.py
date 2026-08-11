@@ -3349,7 +3349,7 @@ def test_chat_blocks_whatsapp_transaction_text_without_backend_result(monkeypatc
     )
 
 
-def test_old_runtime_missing_grounding_metadata_fails_closed(caplog):
+def test_old_runtime_missing_grounding_metadata_allows_conversation(caplog):
     context = AgentRequestContext(
         user_id="user", agent_session_id="session",
         customer_id="user", channel="whatsapp",
@@ -3366,20 +3366,15 @@ def test_old_runtime_missing_grounding_metadata_fails_closed(caplog):
         ),
     )
 
-    assert response.text == (
-        "I couldn't verify that change, so I haven't treated it as completed. "
-        "Please tell me what you'd like to do next, or ask me to check the current cart."
-    )
+    assert response.text == "Everything is locked in and checkout is ready."
     completed = next(
         record
         for record in caplog.records
         if getattr(record, "event", None) == "backend_grounding_completed"
     )
     assert completed.assessment_origin == "boundary_missing_synthetic"
-    assert completed.assessment_transport_status == "missing"
-    assert completed.backend_grounding_rejection_reason == (
-        "unsupported_transactional_effect"
-    )
+    assert completed.assessment_transport_status == "missing_allowed_conversation"
+    assert completed.backend_grounding_rejection_reason is None
     public = response.model_dump()
     assert "grounding_rejection_reason" not in public
     assert "assessment_origin" not in public

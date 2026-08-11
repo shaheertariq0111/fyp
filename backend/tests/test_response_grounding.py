@@ -159,7 +159,7 @@ def test_search_selection_grounding_preserves_supported_bounded_model_response()
     assert result.required_next_effect == "item_selected"
 
 
-def test_pending_effect_blocks_requested_prose_progression_without_evidence():
+def test_pending_effect_preserves_requested_prose_without_progression_claim():
     result = ground_agent_response(
         text="Great, which size would you like?",
         tool_calls=[],
@@ -172,7 +172,7 @@ def test_pending_effect_blocks_requested_prose_progression_without_evidence():
         ),
     )
 
-    assert result.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert result.text == "Great, which size would you like?"
     assert result.required_next_effect == "item_selected"
 
 
@@ -1317,6 +1317,7 @@ def test_grounding_observes_missing_assessment_without_behavior_change():
         required_effect="item_selected",
     )
     _assert_observed_rejection(result, "claim_assessment_missing")
+    assert result.required_next_effect == "item_selected"
 
 
 def test_grounding_observes_unsupported_effect_without_behavior_change():
@@ -1334,7 +1335,7 @@ def test_grounding_observes_unsupported_effect_without_behavior_change():
     assert result.diagnostics.unsupported_effects == ("item_added",)
 
 
-def test_grounding_observes_required_effect_not_satisfied():
+def test_grounding_observes_required_effect_without_rejecting_conversation():
     result = ground_agent_response(
         text="Which size would you like?",
         tool_calls=[],
@@ -1347,14 +1348,17 @@ def test_grounding_observes_required_effect_not_satisfied():
         required_effect="item_selected",
         available_options=[{"id": "item-1", "label": "First"}],
     )
-    _assert_observed_rejection(result, "required_effect_not_satisfied")
+    assert result.text == "Which size would you like?"
+    assert result.source == "conversation"
+    assert result.rejection_reason is None
+    assert result.required_next_effect == "item_selected"
 
 
 @pytest.mark.parametrize(
     ("selected_option", "reason"),
     [(None, "selected_option_missing"), ("item-2", "selected_option_invalid")],
 )
-def test_grounding_observes_selected_option_contract_rejection(selected_option, reason):
+def test_grounding_observes_selected_option_contract_without_rejection(selected_option, reason):
     result = ground_agent_response(
         text="Which size would you like?",
         tool_calls=[tool_call(
@@ -1371,7 +1375,9 @@ def test_grounding_observes_selected_option_contract_rejection(selected_option, 
         required_effect="item_selected",
         available_options=[{"id": "item-1", "label": "First"}],
     )
-    _assert_observed_rejection(result, reason)
+    assert result.text == "Which size would you like?"
+    assert result.source == "conversation"
+    assert result.rejection_reason is None
     assert result.diagnostics.selected_option_present is (selected_option is not None)
     assert result.diagnostics.selected_option_contract_evaluated is True
 

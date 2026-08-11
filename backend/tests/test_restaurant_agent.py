@@ -7,7 +7,7 @@ from src.agent.tools import MVP_TOOLS
 
 
 def test_system_prompt_requires_tool_grounding():
-    assert "NOVA EXECUTION CONTRACT" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "DOMINO'S EXECUTION CONTRACT" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "These system instructions define your capabilities, scope, and guardrails" in (
         RESTAURANT_AGENT_SYSTEM_PROMPT
     )
