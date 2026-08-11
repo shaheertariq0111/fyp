@@ -8,11 +8,6 @@ from typing import Any
 import boto3
 from botocore.config import Config
 
-from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
-from src.agent.whatsapp_turn_intent import (
-    WhatsAppTurnIntentRequest,
-    WhatsAppTurnInterpretation,
-)
 from src.agent_client.schemas import (
     AgentInvocationRequest,
     AgentInvocationResult,
@@ -51,58 +46,6 @@ class AgentCoreRuntimeClient:
             text=str(result.get("text") or ""),
             raw_result=result,
         )
-
-    def classify_order_intent(
-        self,
-        request: OrderIntentRequest,
-    ) -> OrderIntentClassification:
-        result = self._invoke_payload(
-            payload={
-                "task": "classify_order_intent",
-                "message": request.message,
-                "state": request.state,
-                "allowed_actions": request.allowed_actions,
-                "available_options": request.available_options,
-                "user_id": request.user_id,
-                "agent_session_id": request.agent_session_id,
-                "request_id": request.request_id,
-                "channel": request.channel,
-            },
-            user_id=request.user_id,
-            agent_session_id=request.agent_session_id,
-            runtime_session_id=self._runtime_session_id(
-                request.agent_session_id,
-                request.request_id,
-            ),
-            channel=request.channel,
-        )
-        return OrderIntentClassification.model_validate(result.get("intent"))
-
-    def classify_whatsapp_turn(
-        self,
-        request: WhatsAppTurnIntentRequest,
-    ) -> WhatsAppTurnInterpretation:
-        result = self._invoke_payload(
-            payload={
-                "task": "classify_whatsapp_turn",
-                "message": request.message,
-                "state": request.state,
-                "allowed_actions": request.allowed_actions,
-                "available_options": request.available_options,
-                "user_id": request.user_id,
-                "agent_session_id": request.agent_session_id,
-                "request_id": request.request_id,
-                "channel": request.channel,
-            },
-            user_id=request.user_id,
-            agent_session_id=request.agent_session_id,
-            runtime_session_id=self._runtime_session_id(
-                request.agent_session_id,
-                request.request_id,
-            ),
-            channel=request.channel,
-        )
-        return WhatsAppTurnInterpretation.model_validate(result.get("turn_intent"))
 
     def _invoke_payload(
         self,
@@ -191,12 +134,6 @@ class AgentCoreRuntimeClient:
             "customer_phone": request.customer_phone,
             "channel": request.channel,
         }
-        if request.expected_write_tool:
-            payload["expected_write_tool"] = request.expected_write_tool
-        if request.required_effect:
-            payload["required_effect"] = request.required_effect
-        if request.available_options:
-            payload["available_options"] = request.available_options
         return payload
 
     @staticmethod

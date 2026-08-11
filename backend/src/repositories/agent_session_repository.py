@@ -1,8 +1,6 @@
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
-from src.models.tool_responses import TransactionalEffect
-
 from .base import from_dynamodb, to_dynamodb
 
 
@@ -17,16 +15,6 @@ VERIFIED_ORDER_FIELDS = (
     "verified_order_status",
     "verified_order_at",
 )
-WHATSAPP_ORDER_STATE_FIELDS = (
-    "offered_menu_items",
-    "whatsapp_menu_query",
-    "shown_menu_item_ids",
-    "whatsapp_menu_has_more",
-    "whatsapp_required_effect",
-    "whatsapp_order_state_updated_at",
-)
-
-
 class SupportStateConflictError(RuntimeError):
     pass
 
@@ -92,100 +80,6 @@ class AgentSessionRepository:
             for field in VERIFIED_ORDER_FIELDS
             if field in session
         }
-
-    def get_whatsapp_order_state(
-        self,
-        customer_id: str,
-        agent_session_id: str,
-    ) -> dict:
-        session = self._get_owned_session(customer_id, agent_session_id)
-        return {
-            field: session[field]
-            for field in WHATSAPP_ORDER_STATE_FIELDS
-            if field in session
-        }
-
-    def update_whatsapp_order_state(
-        self,
-        customer_id: str,
-        agent_session_id: str,
-        *,
-        offered_menu_items: list[dict],
-        menu_query: str | None,
-        shown_menu_item_ids: list[str],
-        menu_has_more: bool,
-        required_effect: TransactionalEffect,
-        updated_at: str,
-    ) -> None:
-        session = self._get_owned_session(customer_id, agent_session_id)
-        self._update_support_attributes(
-            session,
-            update_expression=(
-                "SET #items = :items, #menu_query = :menu_query, "
-                "#shown_ids = :shown_ids, #has_more = :has_more, "
-                "#required_effect = :required_effect, #updated_at = :updated_at"
-            ),
-            condition_expression=(
-                "attribute_exists(#pk) "
-                "AND #customer_id = :customer_id "
-                "AND #agent_session_id = :agent_session_id"
-            ),
-            names={
-                "#pk": "PK",
-                "#customer_id": "customer_id",
-                "#agent_session_id": "agent_session_id",
-                "#items": "offered_menu_items",
-                "#menu_query": "whatsapp_menu_query",
-                "#shown_ids": "shown_menu_item_ids",
-                "#has_more": "whatsapp_menu_has_more",
-                "#required_effect": "whatsapp_required_effect",
-                "#updated_at": "whatsapp_order_state_updated_at",
-            },
-            values={
-                ":customer_id": customer_id,
-                ":agent_session_id": agent_session_id,
-                ":items": offered_menu_items,
-                ":menu_query": menu_query or "",
-                ":shown_ids": shown_menu_item_ids,
-                ":has_more": menu_has_more,
-                ":required_effect": required_effect,
-                ":updated_at": updated_at,
-            },
-        )
-
-    def clear_whatsapp_order_state(
-        self,
-        customer_id: str,
-        agent_session_id: str,
-    ) -> None:
-        session = self._get_owned_session(customer_id, agent_session_id)
-        self._update_support_attributes(
-            session,
-            update_expression=(
-                "REMOVE #items, #menu_query, #shown_ids, #has_more, "
-                "#required_effect, #updated_at"
-            ),
-            condition_expression=(
-                "attribute_exists(#pk) "
-                "AND #customer_id = :customer_id "
-                "AND #agent_session_id = :agent_session_id"
-            ),
-            names={
-                "#pk": "PK",
-                "#customer_id": "customer_id",
-                "#agent_session_id": "agent_session_id",
-                "#items": "offered_menu_items",
-                "#menu_query": "whatsapp_menu_query",
-                "#shown_ids": "shown_menu_item_ids",
-                "#has_more": "whatsapp_menu_has_more",
-                "#required_effect": "whatsapp_required_effect",
-                "#updated_at": "whatsapp_order_state_updated_at",
-            },
-            values={
-                ":customer_id": customer_id,
-                ":agent_session_id": agent_session_id,
-            },
-        )
 
     def update_verified_order_context(
         self,

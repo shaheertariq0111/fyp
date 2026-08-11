@@ -28,12 +28,8 @@ from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
 from src.agent.dependencies import get_services
 from src.agent.response_grounding import (
-    boundary_claim_assessment,
     ground_agent_response,
-    grounding_comparison_log_fields,
     grounding_decision_log_fields,
-    safe_assessment_origin_log_value,
-    safe_semantic_classifier_status_log_value,
 )
 from src.agent_client import get_agent_runtime_client
 from src.api.schemas import (
@@ -693,173 +689,18 @@ def _chat_response_from_invocation(
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
     if context.channel == "whatsapp":
-        expected_write_tool = (
-            result.get("expected_write_tool")
-            if isinstance(result, dict)
-            else getattr(result, "expected_write_tool", None)
-        )
-        required_effect = (
-            result.get("required_effect")
-            if isinstance(result, dict)
-            else getattr(result, "required_effect", None)
-        )
-        available_options = (
-            result.get("available_options")
-            if isinstance(result, dict)
-            else getattr(result, "available_options", None)
-        )
-        assessment_payload = (
-            result.get("claim_assessment")
-            if isinstance(result, dict)
-            else getattr(result, "claim_assessment", None)
-        )
-        runtime_source = (
-            result.get("grounding_source")
-            if isinstance(result, dict)
-            else getattr(result, "grounding_source", None)
-        )
-        runtime_reason = (
-            result.get("grounding_rejection_reason")
-            if isinstance(result, dict)
-            else getattr(result, "grounding_rejection_reason", None)
-        )
-        authoritative_fast_path = (
-            (
-                result.get("semantic_classifier_status")
-                if isinstance(result, dict)
-                else getattr(result, "semantic_classifier_status", None)
-            )
-            == "not_run_authoritative_fast_path"
-        )
-        if assessment_payload is None:
-            if not authoritative_fast_path:
-                logger.info(
-                    "Runtime grounding metadata was missing",
-                    extra={
-                        "event": "grounding_boundary_metadata_issue",
-                        "boundary_metadata_issue": "claim_assessment_missing",
-                        "assessment_origin": "boundary_missing_synthetic",
-                    },
-                )
-        try:
-            boundary_assessment = boundary_claim_assessment(
-                assessment_payload=assessment_payload,
-                authoritative_fast_path=authoritative_fast_path,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Runtime grounding metadata was invalid",
-                extra={
-                    "event": "grounding_boundary_metadata_issue",
-                    "boundary_metadata_issue": "claim_assessment_invalid",
-                    "exception_type": type(exc).__name__,
-                },
-            )
-            raise
-        assessment = boundary_assessment.assessment
-        assessment_transport_status = boundary_assessment.assessment_transport_status
         backend_grounded = ground_agent_response(
             text=invocation.text,
             tool_calls=tool_calls,
-            claim_assessment=assessment,
-            no_write_authorized=(
-                result.get("no_write_authorized", False)
-                if isinstance(result, dict)
-                else getattr(result, "no_write_authorized", False)
-            ),
-            informational_turn=(
-                result.get("informational_turn", False)
-                if isinstance(result, dict)
-                else getattr(result, "informational_turn", False)
-            ),
-            expected_write_tool=expected_write_tool,
-            required_effect=required_effect,
-            available_options=available_options,
         )
         response_text = backend_grounded.text
-        semantic_classifier_status = (
-            result.get("semantic_classifier_status")
-            if isinstance(result, dict)
-            else getattr(result, "semantic_classifier_status", None)
-        ) or boundary_assessment.semantic_classifier_status
-        assessment_origin = (
-            result.get("assessment_origin")
-            if isinstance(result, dict)
-            else getattr(result, "assessment_origin", None)
-        ) or boundary_assessment.assessment_origin
-        logged_assessment_origin = safe_assessment_origin_log_value(
-            assessment_origin
-        )
-        logged_classifier_status = safe_semantic_classifier_status_log_value(
-            semantic_classifier_status
-        )
-        runtime_metadata_present = bool(
-            semantic_classifier_status
-            or assessment_origin
-            or (
-                isinstance(result, dict)
-                and "grounding_rejection_reason" in result
-            )
-            or (
-                not isinstance(result, dict)
-                and hasattr(result, "grounding_rejection_reason")
-            )
-        )
-        if runtime_source is None:
-            logger.info(
-                "Runtime grounding source was missing",
-                extra={
-                    "event": "grounding_boundary_metadata_issue",
-                    "boundary_metadata_issue": "grounding_source_missing",
-                },
-            )
-        rejection_reason_present = (
-            "grounding_rejection_reason" in result
-            if isinstance(result, dict)
-            else hasattr(result, "grounding_rejection_reason")
-        )
-        if (
-            runtime_source == "ungrounded_transaction_fallback"
-            and not rejection_reason_present
-        ):
-            logger.info(
-                "Runtime grounding rejection reason was missing",
-                extra={
-                    "event": "grounding_boundary_metadata_issue",
-                    "boundary_metadata_issue": "grounding_rejection_reason_missing",
-                },
-            )
-        comparison = grounding_comparison_log_fields(
-            runtime_grounding_source=runtime_source,
-            runtime_grounding_rejection_reason=runtime_reason,
-            runtime_text=invocation.text,
-            backend_response=backend_grounded,
-            runtime_claim_assessment_present=assessment_payload is not None,
-            runtime_grounding_metadata_present=runtime_metadata_present,
-            assessment_transport_status=assessment_transport_status,
-        )
         logger.info(
-            "Backend WhatsApp response grounded",
+            "Backend WhatsApp response selected",
             extra={
-                "event": "backend_grounding_completed",
-                "assessment_origin": (
-                    logged_assessment_origin
-                    if assessment_transport_status != "missing"
-                    else "boundary_missing_synthetic"
-                ),
-                "semantic_classifier_status": logged_classifier_status,
+                "event": "backend_response_selected",
                 **grounding_decision_log_fields(backend_grounded),
-                **comparison,
             },
         )
-        if not comparison["runtime_backend_grounding_agree"]:
-            logger.warning(
-                "Runtime and backend grounding decisions differed",
-                extra={
-                    "event": "grounding_decision_mismatch",
-                    **comparison,
-                },
-            )
     else:
         response_text = _menu_grounded_response_from_tool_calls(tool_calls) or invocation.text
     return ChatResponse(
