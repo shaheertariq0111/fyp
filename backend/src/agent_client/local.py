@@ -20,6 +20,19 @@ from src.agent_client.schemas import AgentInvocationRequest, AgentInvocationResu
 logger = logging.getLogger(__name__)
 
 
+def _safe_tool_names(tool_calls) -> list[str]:
+    names: list[str] = []
+    for call in tool_calls:
+        name = (
+            call.get("tool_name")
+            if isinstance(call, dict)
+            else getattr(call, "tool_name", None)
+        )
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
 class LocalStrandsAgentRuntimeClient:
     """Local adapter used until the Strands agent moves behind AgentCore Runtime."""
 
@@ -63,14 +76,17 @@ class LocalStrandsAgentRuntimeClient:
             )
             response_text = agent_result_text(raw_result)
             if request.channel == "whatsapp":
+                tool_calls = list(getattr(raw_result, "tool_calls", []) or [])
                 grounded = ground_agent_response(
                     text=response_text,
-                    tool_calls=list(getattr(raw_result, "tool_calls", []) or []),
+                    tool_calls=tool_calls,
                 )
                 logger.info(
                     "Local WhatsApp response selected",
                     extra={
                         "event": "whatsapp_response_selected",
+                        "tool_call_count": len(tool_calls),
+                        "tool_names": _safe_tool_names(tool_calls),
                         **grounding_decision_log_fields(grounded),
                     },
                 )

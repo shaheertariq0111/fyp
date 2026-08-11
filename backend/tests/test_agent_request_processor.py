@@ -199,9 +199,15 @@ def build_response(*, text, tool_calls, channel="whatsapp"):
     )
 
 
-def test_backend_whatsapp_menu_read_preserves_main_agent_response():
+def test_backend_whatsapp_menu_read_uses_authoritative_artifact():
+    authoritative = (
+        "Here are the current menu options I found:\n"
+        "1. Pepperoni Passion - MYR 29.90\n"
+        "Those are all the matching items I found.\n"
+        "Which item would you like?"
+    )
     response = build_response(
-        text="Pepperoni Passion is available for MYR 29.90.",
+        text="Imaginary Supreme is available for MYR 19.90.",
         tool_calls=[
             {
                 "tool_name": "search_menu",
@@ -219,13 +225,17 @@ def test_backend_whatsapp_menu_read_preserves_main_agent_response():
                             }
                         ]
                     },
-                    "grounding": {"authoritative_domains": ["menu"]},
+                    "grounding": {
+                        "authoritative_domains": ["menu"],
+                        "exact_customer_text": authoritative,
+                    },
                 },
             }
         ],
     )
 
-    assert response.text == "Pepperoni Passion is available for MYR 29.90."
+    assert response.text == authoritative
+    assert "Imaginary Supreme" not in response.text
 
 
 def test_backend_whatsapp_failed_write_uses_authoritative_failure():

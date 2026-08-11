@@ -1067,6 +1067,42 @@ def test_search_menu_tool_uses_configured_customer_limit(monkeypatch):
     assert result["data"]["limit"] == 3
 
 
+def test_search_menu_tool_forwards_exclusions_and_records_read_call(
+    monkeypatch,
+    caplog,
+):
+    menu = MenuStub()
+    monkeypatch.setattr(tools, "get_services", lambda: SimpleNamespace(menu=menu))
+    context = AgentRequestContext(
+        "trusted-user",
+        "trusted-session",
+        channel="whatsapp",
+    )
+
+    with caplog.at_level("INFO"), request_context(context):
+        result = tools.search_menu(
+            query="recommend",
+            exclude_product_ids=["item-1", "item-2"],
+        )
+
+    assert result["data"]["exclude_product_ids"] == ["item-1", "item-2"]
+    assert context.tool_calls[-1] == {
+        "tool_name": "search_menu",
+        "success": True,
+        "is_write": False,
+        "result": result,
+        "error_code": None,
+    }
+    completed = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "agent_tool_completed"
+        and getattr(record, "tool_name", None) == "search_menu"
+    )
+    assert completed.tool_success is True
+    assert completed.is_write is False
+
+
 def test_get_active_cart_uses_trusted_user_and_session(monkeypatch):
     container = SimpleNamespace(carts=CartStub())
     monkeypatch.setattr(tools, "get_services", lambda: container)

@@ -14,6 +14,7 @@ from src.agent.whatsapp_submission_safety import (
 )
 
 GroundingSource = Literal[
+    "authoritative_read",
     "conversation",
     "exact_artifact",
     "failed_read",
@@ -23,6 +24,7 @@ GroundingSource = Literal[
     "submission_safety_fallback",
 ]
 GroundingRejectionReason = Literal[
+    "authoritative_menu_read_missing_exact_artifact",
     "authoritative_read_failed",
     "authoritative_write_failed",
     "successful_write_missing_safe_grounding",
@@ -34,6 +36,9 @@ FAILED_TRANSACTION_FALLBACK = (
 )
 FAILED_READ_FALLBACK = (
     "I couldn't retrieve that information right now. Please try again."
+)
+AUTHORITATIVE_MENU_READ_TOOLS = frozenset(
+    {"search_menu", "get_menu_item", "search_menu_options"}
 )
 
 
@@ -148,6 +153,13 @@ def ground_authoritative_tool_response(
         )
         if exact_text:
             return GroundedAgentResponse(exact_text, "exact_artifact")
+        if _value(call, "tool_name") in AUTHORITATIVE_MENU_READ_TOOLS:
+            return GroundedAgentResponse(
+                _clean_text(_result(call).get("user_message"))
+                or FAILED_READ_FALLBACK,
+                "authoritative_read",
+                "authoritative_menu_read_missing_exact_artifact",
+            )
     return None
 
 

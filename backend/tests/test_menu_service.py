@@ -79,6 +79,130 @@ def test_configured_customer_result_limit_bounds_default_search_page():
     assert len(result.grounding.offered_options) == 2
 
 
+def test_search_menu_exact_customer_text_uses_only_returned_limited_records():
+    menu = MenuService(
+        MemoryMenuRepository([
+            item("first", name="First", score=10, starting_price=10),
+            item("second", name="Second", score=20, starting_price=11),
+            item("third", name="Third", score=30, starting_price=12),
+            item("fourth", name="Fourth", score=40, starting_price=13),
+        ], []),
+        customer_result_limit=2,
+    )
+
+    result = menu.search_menu()
+
+    assert [entry["product_id"] for entry in result.data["items"]] == [
+        "fourth",
+        "third",
+    ]
+    assert result.data["has_more"] is True
+    assert result.grounding.exact_customer_text == (
+        "Here are the current menu options I found:\n"
+        "1. Fourth - from CUR 13\n"
+        "2. Third - from CUR 12\n"
+        "More matching items are available. "
+        "Would you like to see more, or choose one of these?"
+    )
+    assert "First" not in result.grounding.exact_customer_text
+    assert "Second" not in result.grounding.exact_customer_text
+
+
+def test_search_menu_exact_customer_text_marks_complete_result_set():
+    result = service([
+        item("first", name="First", score=20, price=10),
+        item("second", name="Second", score=10, price=11),
+    ]).search_menu()
+
+    assert result.data["has_more"] is False
+    assert result.grounding.exact_customer_text == (
+        "Here are the current menu options I found:\n"
+        "1. First - CUR 10\n"
+        "2. Second - CUR 11\n"
+        "Those are all the matching items I found.\n"
+        "Which item would you like?"
+    )
+    assert "More matching items are available" not in (
+        result.grounding.exact_customer_text
+    )
+
+
+def test_search_menu_exact_customer_text_omits_missing_price():
+    result = service([
+        item("without-price", name="Price Pending"),
+    ]).search_menu()
+
+    assert result.grounding.exact_customer_text == (
+        "Here are the current menu options I found:\n"
+        "1. Price Pending\n"
+        "Those are all the matching items I found.\n"
+        "Which item would you like?"
+    )
+    assert "price shown" not in result.grounding.exact_customer_text
+
+
+def test_search_menu_exact_customer_text_does_not_expose_base_price_keys():
+    result = service([
+        item(
+            "configured",
+            name="Configured Item",
+            base_prices={"private-price-key-a": 12, "private-price-key-b": 9},
+        ),
+    ]).search_menu()
+
+    assert "Configured Item - from CUR 9" in result.grounding.exact_customer_text
+    assert "private-price-key-a" not in result.grounding.exact_customer_text
+    assert "private-price-key-b" not in result.grounding.exact_customer_text
+
+
+def test_search_menu_exact_customer_text_prefers_authoritative_starting_price():
+    result = service([
+        item(
+            "configured",
+            name="Configured Item",
+            starting_price=9,
+            price=99,
+        ),
+    ]).search_menu(max_price=10)
+
+    assert "Configured Item - from CUR 9" in result.grounding.exact_customer_text
+    assert "CUR 99" not in result.grounding.exact_customer_text
+
+
+def test_search_menu_no_match_has_authoritative_customer_text():
+    result = service([
+        item("pizza", name="Pizza"),
+    ]).search_menu(query="unlisted platter")
+
+    assert result.data == {"items": [], "has_more": False}
+    assert result.grounding.exact_customer_text == (
+        "I couldn't find a matching available menu item."
+    )
+
+
+def test_descriptive_pepperoni_search_artifact_is_data_driven():
+    result = service([
+        item(
+            "matching-record",
+            name="Configured Savory Pie",
+            description="A menu record with pepperoni and herbs.",
+            price=25,
+        ),
+        item(
+            "other-record",
+            name="Configured Garden Pie",
+            description="A menu record with vegetables.",
+            price=20,
+        ),
+    ]).search_menu(query="something with pepperoni")
+
+    assert [entry["product_id"] for entry in result.data["items"]] == [
+        "matching-record"
+    ]
+    assert "Configured Savory Pie" in result.grounding.exact_customer_text
+    assert "Configured Garden Pie" not in result.grounding.exact_customer_text
+
+
 def test_search_menu_excludes_items_already_shown():
     menu = service([
         item(f"item-{index}", score=index, starting_price=10 + index)
@@ -93,6 +217,197 @@ def test_search_menu_excludes_items_already_shown():
         "item-1", "item-0"
     ]
     assert second.data["has_more"] is False
+
+
+def test_search_menu_exact_text_tracks_cumulative_and_repeated_exclusions():
+    menu = MenuService(
+        MemoryMenuRepository([
+            item(f"item-{index}", name=f"Item {index}", score=index, price=10 + index)
+            for index in range(5)
+        ], []),
+        customer_result_limit=2,
+    )
+
+    first = menu.search_menu()
+    first_ids = [entry["product_id"] for entry in first.data["items"]]
+    second = menu.search_menu(
+        exclude_product_ids=[*first_ids, *first_ids],
+    )
+    second_ids = [entry["product_id"] for entry in second.data["items"]]
+    third = menu.search_menu(
+        exclude_product_ids=[*first_ids, *second_ids, *first_ids],
+    )
+    third_ids = [entry["product_id"] for entry in third.data["items"]]
+    exhausted = menu.search_menu(
+        exclude_product_ids=[*first_ids, *second_ids, *third_ids, *second_ids],
+    )
+
+    assert first_ids == ["item-4", "item-3"]
+    assert second_ids == ["item-2", "item-1"]
+    assert third_ids == ["item-0"]
+    assert second.data["has_more"] is True
+    assert third.data["has_more"] is False
+    assert second.grounding.exact_customer_text == (
+        "Here are the current menu options I found:\n"
+        "1. Item 2 - CUR 12\n"
+        "2. Item 1 - CUR 11\n"
+        "More matching items are available. "
+        "Would you like to see more, or choose one of these?"
+    )
+    assert third.grounding.exact_customer_text == (
+        "Here are the current menu options I found:\n"
+        "1. Item 0 - CUR 10\n"
+        "These are the last matching items.\n"
+        "Which item would you like?"
+    )
+    assert exhausted.data == {"items": [], "has_more": False}
+    assert exhausted.grounding.exact_customer_text == (
+        "There are no more matching menu items to show."
+    )
+
+
+def test_get_menu_item_exact_customer_text_uses_returned_item_and_groups():
+    configured = item(
+        "configured",
+        name="Configured Pizza",
+        starting_price=15,
+    )
+    configured["customization_group_ids"] = ["size"]
+    menu = MenuService(MemoryMenuRepository([configured], [{
+        "option_group_id": "size",
+        "name": "Size",
+        "type": "single",
+        "required": True,
+        "question": "Which size?",
+        "options": [
+            {"option_id": "small", "name": "Small", "available": True},
+            {"option_id": "large", "name": "Large", "available": True},
+        ],
+        "min_select": 1,
+        "max_select": 1,
+    }]))
+
+    result = menu.get_menu_item("configured")
+
+    assert result.grounding.exact_customer_text == (
+        "Configured Pizza - from CUR 15\n"
+        "Configured menu description\n"
+        "Options:\n"
+        "Size: Small, Large"
+    )
+
+
+def test_search_menu_options_exact_customer_text_uses_returned_occurrences():
+    configured = item("configured", name="Configured Pizza", price=20)
+    configured["customization_group_ids"] = ["toppings"]
+    menu = MenuService(MemoryMenuRepository([configured], [{
+        "option_group_id": "toppings",
+        "name": "Toppings",
+        "type": "multiple",
+        "required": False,
+        "question": "Choose toppings",
+        "options": [{
+            "option_id": "extra-cheese",
+            "name": "Extra Cheese",
+            "price_delta": 3,
+            "available": True,
+        }],
+        "min_select": 0,
+        "max_select": 3,
+    }]))
+
+    result = menu.search_menu_options("Extra Cheese")
+
+    assert result.grounding.exact_customer_text == (
+        "I found this choice in the current menu:\n"
+        "- Extra Cheese: Toppings for Configured Pizza"
+    )
+
+
+def test_search_menu_options_ignores_choice_without_available_host_item():
+    menu = MenuService(MemoryMenuRepository([], [{
+        "option_group_id": "orphan-group",
+        "name": "Extras",
+        "type": "multiple",
+        "required": False,
+        "question": "Choose extras",
+        "options": [{
+            "option_id": "orphan-option",
+            "name": "Configured Choice",
+            "available": True,
+        }],
+        "min_select": 0,
+        "max_select": 1,
+    }]))
+
+    result = menu.search_menu_options("Configured Choice")
+
+    assert result.data == {"occurrences": []}
+    assert result.grounding.exact_customer_text == result.user_message
+    assert "Configured Choice" not in result.grounding.exact_customer_text
+
+
+def test_search_menu_exact_customer_text_does_not_expose_internal_item_id():
+    configured = item("private-product-id", name="Temporary")
+    configured["name"] = " "
+
+    result = service([configured]).search_menu()
+
+    assert result.grounding.exact_customer_text == result.user_message
+    assert result.grounding.offered_options == []
+    assert "private-product-id" not in result.grounding.exact_customer_text
+
+
+def test_get_menu_item_exact_customer_text_does_not_expose_internal_ids():
+    configured = item("private-product-id", name="Temporary")
+    configured["name"] = " "
+    configured["customization_group_ids"] = ["private-group-id"]
+    menu = MenuService(MemoryMenuRepository([configured], [{
+        "option_group_id": "private-group-id",
+        "name": " ",
+        "type": "single",
+        "required": True,
+        "question": "Choose",
+        "options": [
+            {"option_id": "private-option-id", "name": " ", "available": True},
+        ],
+        "min_select": 1,
+        "max_select": 1,
+    }]))
+
+    result = menu.get_menu_item("private-product-id")
+
+    assert result.grounding.exact_customer_text == result.user_message
+    assert "private-product-id" not in result.grounding.exact_customer_text
+    assert "private-group-id" not in result.grounding.exact_customer_text
+    assert "private-option-id" not in result.grounding.exact_customer_text
+
+
+def test_search_menu_options_exact_customer_text_does_not_expose_internal_ids():
+    configured = item("private-product-id", name="Temporary")
+    configured["name"] = " "
+    configured["customization_group_ids"] = ["private-group-id"]
+    menu = MenuService(MemoryMenuRepository([configured], [{
+        "option_group_id": "private-group-id",
+        "name": " ",
+        "type": "multiple",
+        "required": False,
+        "question": "Choose",
+        "options": [{
+            "option_id": "private-option-id",
+            "name": " ",
+            "available": True,
+        }],
+        "min_select": 0,
+        "max_select": 1,
+    }]))
+
+    result = menu.search_menu_options("private-option-id")
+
+    assert result.grounding.exact_customer_text == result.user_message
+    assert "private-product-id" not in result.grounding.exact_customer_text
+    assert "private-group-id" not in result.grounding.exact_customer_text
+    assert "private-option-id" not in result.grounding.exact_customer_text
 
 
 def test_search_matches_tags_and_metadata_best_for():
@@ -214,6 +529,51 @@ def test_unavailable_items_are_excluded_by_default():
         item("unavailable", available=False, score=100),
     ]).search_menu()
     assert [entry["product_id"] for entry in result.data["items"]] == ["available"]
+
+
+def test_unavailable_audit_results_are_never_presented_as_customer_choices():
+    archived = item("private-archived", name="Archived Item", available=True)
+    archived["archived"] = True
+
+    result = service([
+        item("private-unavailable", name="Unavailable Item", available=False),
+        archived,
+    ]).search_menu(available_only=False)
+
+    assert [entry["product_id"] for entry in result.data["items"]] == [
+        "private-unavailable"
+    ]
+    assert result.user_message == (
+        "I found matching menu items, but they are currently unavailable."
+    )
+    assert result.grounding.exact_customer_text == (
+        "Here are the matching menu items I found:\n"
+        "1. Unavailable Item (currently unavailable)\n"
+        "These matching menu items are currently unavailable.\n"
+        "Would you like me to search for an available alternative?"
+    )
+    assert result.grounding.offered_options == []
+    assert "Archived Item" not in result.grounding.exact_customer_text
+
+
+def test_unfiltered_has_more_copy_does_not_imply_remaining_items_are_orderable():
+    menu = MenuService(
+        MemoryMenuRepository([
+            item("available", name="Available Item", available=True, score=10),
+            item("unavailable", name="Unavailable Item", available=False, score=0),
+        ], []),
+        customer_result_limit=1,
+    )
+
+    result = menu.search_menu(available_only=False)
+
+    assert result.data["has_more"] is True
+    assert "There are more matching menu items to show." in (
+        result.grounding.exact_customer_text
+    )
+    assert "More matching items are available" not in (
+        result.grounding.exact_customer_text
+    )
 
 
 def test_archived_items_are_excluded_from_customer_menu_search():

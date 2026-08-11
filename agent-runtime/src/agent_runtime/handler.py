@@ -131,6 +131,8 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                         "WhatsApp response selected",
                         extra={
                             "event": "whatsapp_response_selected",
+                            "tool_call_count": len(tool_calls),
+                            "tool_names": [call.tool_name for call in tool_calls],
                             **grounding_decision_log_fields(grounded),
                         },
                     )

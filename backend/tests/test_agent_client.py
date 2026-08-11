@@ -109,10 +109,12 @@ def install_local_whatsapp_agent(monkeypatch, *, raw_text, tool_calls):
     return manager
 
 
-def test_local_whatsapp_menu_read_preserves_main_response_and_one_memory_message(
+def test_local_whatsapp_menu_read_uses_exact_artifact_and_logs_safe_tool_summary(
     monkeypatch,
+    caplog,
 ):
-    raw = "Pepperoni Passion is available for MYR 29.90."
+    raw = "Imaginary Supreme is available."
+    authoritative = "1. Real Pizza Alpha — MYR 20"
     manager = install_local_whatsapp_agent(
         monkeypatch,
         raw_text=raw,
@@ -123,20 +125,35 @@ def test_local_whatsapp_menu_read_preserves_main_response_and_one_memory_message
                 is_write=False,
                 result={
                     "success": True,
-                    "grounding": {"authoritative_domains": ["menu"]},
+                    "user_message": "I found current menu options.",
+                    "grounding": {
+                        "authoritative_domains": ["menu"],
+                        "exact_customer_text": authoritative,
+                    },
                 },
             )
         ],
     )
 
-    result = LocalStrandsAgentRuntimeClient().invoke(
-        request(message="Pepperoni", channel="whatsapp")
-    )
+    with caplog.at_level("INFO"):
+        result = LocalStrandsAgentRuntimeClient().invoke(
+            request(message="Pepperoni", channel="whatsapp")
+        )
 
-    assert result.text == raw
+    assert result.text == authoritative
     assert manager.messages == [
-        {"role": "assistant", "content": [{"text": raw}]},
+        {"role": "assistant", "content": [{"text": authoritative}]},
     ]
+    assert raw not in str(manager.messages)
+    selected = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "whatsapp_response_selected"
+    )
+    assert selected.grounding_source == "exact_artifact"
+    assert selected.grounding_rejection_reason is None
+    assert selected.tool_call_count == 1
+    assert selected.tool_names == ["search_menu"]
 
 
 def test_local_whatsapp_failed_write_replaces_raw_draft_in_memory(monkeypatch):

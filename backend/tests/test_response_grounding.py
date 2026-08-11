@@ -203,6 +203,52 @@ def test_exact_read_artifact_is_authoritative():
     assert result.source == "exact_artifact"
 
 
+def test_search_menu_exact_artifact_replaces_fabricated_model_listing():
+    authoritative = (
+        "Here are the current menu options I found:\n"
+        "1. Real Pizza Alpha — MYR 20\n"
+        "2. Real Pizza Beta — MYR 24"
+    )
+    result = ground_agent_response(
+        text="Imaginary Supreme and Imaginary Deluxe are available.",
+        tool_calls=[
+            tool_call(
+                tool_name="search_menu",
+                is_write=False,
+                user_message="I found current menu options.",
+                grounding={"exact_customer_text": authoritative},
+            )
+        ],
+    )
+
+    assert result.text == authoritative
+    assert "Real Pizza Alpha" in result.text
+    assert "Real Pizza Beta" in result.text
+    assert "Imaginary" not in result.text
+    assert result.source == "exact_artifact"
+
+
+def test_search_menu_without_exact_artifact_never_uses_model_listing():
+    result = ground_agent_response(
+        text="Imaginary Supreme is available.",
+        tool_calls=[
+            tool_call(
+                tool_name="search_menu",
+                is_write=False,
+                user_message="I found current menu options.",
+                grounding={"authoritative_domains": ["menu"]},
+            )
+        ],
+    )
+
+    assert result.text == "I found current menu options."
+    assert "Imaginary Supreme" not in result.text
+    assert result.source == "authoritative_read"
+    assert result.rejection_reason == (
+        "authoritative_menu_read_missing_exact_artifact"
+    )
+
+
 @pytest.mark.parametrize(
     ("tool_name", "user_message", "outer_success", "inner_success"),
     [
@@ -266,22 +312,22 @@ def test_failed_read_without_backend_text_uses_safe_read_fallback():
 
 
 def test_successful_read_recovery_ignores_earlier_failed_read():
-    raw = "Here are the currently available menu options."
+    raw = "Your support ticket is currently being reviewed."
     result = ground_agent_response(
         text=raw,
         tool_calls=[
             tool_call(
-                tool_name="search_menu",
+                tool_name="get_support_ticket_status",
                 is_write=False,
                 outer_success=False,
                 inner_success=False,
-                user_message="The first menu lookup failed.",
+                user_message="The first support lookup failed.",
             ),
             tool_call(
-                tool_name="search_menu",
+                tool_name="get_support_ticket_status",
                 is_write=False,
-                user_message="The menu was retrieved.",
-                grounding={"authoritative_domains": ["menu"]},
+                user_message="The support ticket was retrieved.",
+                grounding={"authoritative_domains": ["support"]},
             ),
         ],
     )
@@ -290,20 +336,20 @@ def test_successful_read_recovery_ignores_earlier_failed_read():
     assert result.source == "conversation"
 
 
-def test_successful_menu_read_preserves_main_agent_response_without_classifier():
+def test_successful_non_menu_read_preserves_main_agent_response_without_classifier():
     result = ground_agent_response(
-        text="Pepperoni Passion is available for MYR 29.90.",
+        text="Your support ticket is currently being reviewed.",
         tool_calls=[
             tool_call(
-                tool_name="search_menu",
+                tool_name="get_support_ticket_status",
                 is_write=False,
-                user_message="Found one item.",
-                grounding={"authoritative_domains": ["menu"]},
+                user_message="The support ticket was retrieved.",
+                grounding={"authoritative_domains": ["support"]},
             )
         ],
     )
 
-    assert result.text == "Pepperoni Passion is available for MYR 29.90."
+    assert result.text == "Your support ticket is currently being reviewed."
     assert result.source == "conversation"
 
 
