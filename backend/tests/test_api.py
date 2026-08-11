@@ -2799,10 +2799,12 @@ def test_chat_menu_tool_without_menu_data_does_not_replace_invocation_text(monke
 
 
 def test_chat_menu_response_is_grounded_in_search_tool_results(monkeypatch):
-    model_text = (
-        "Here are two current options:\n"
+    model_text = "Imaginary Supreme is available for PKR 999."
+    authoritative_text = (
+        "Here are the current menu options I found:\n"
         "1. Classic Pepperoni Pizza - small PKR 899, large PKR 1599\n"
         "2. Pepperoni Feast - from PKR 1299\n"
+        "Those are all the matching items I found.\n"
         "Which item would you like?"
     )
     stub_agent_client(
@@ -2838,6 +2840,7 @@ def test_chat_menu_response_is_grounded_in_search_tool_results(monkeypatch):
                     "grounding": {
                         "authoritative_domains": ["menu"],
                         "presentation": {"max_items": 5},
+                        "exact_customer_text": authoritative_text,
                     },
                 },
                 "error_code": None,
@@ -2860,7 +2863,8 @@ def test_chat_menu_response_is_grounded_in_search_tool_results(monkeypatch):
         test_client,
         submitted.json()["request_id"],
     )
-    assert completed["text"] == model_text
+    assert completed["text"] == authoritative_text
+    assert "Imaginary Supreme" not in completed["text"]
     assert completed["tool_calls"][0]["tool_name"] == "search_menu"
 
 

@@ -112,12 +112,15 @@ def _result(tool_name: str, call: Callable[[], ToolResponse], *, is_write: bool 
 @tool
 def search_menu(query: str | None = None, category: str | None = None,
                 tags: list[str] | None = None, max_price: int | None = None,
-                available_only: bool = True, max_results: int | None = None) -> dict:
+                available_only: bool = True, max_results: int | None = None,
+                exclude_product_ids: list[str] | None = None) -> dict:
     """Search current menu data for browsing and recommendations.
 
     Use query for descriptive user terms such as "pizza", "chicken", "spicy",
     "deal", or an item name. Use category only when you know the exact menu
-    category id returned by menu data, such as "classic-flavors".
+    category id returned by menu data, such as "classic-flavors". For another
+    page of the same search, preserve the prior filters and pass previously
+    returned product IDs in exclude_product_ids.
     """
     menu = get_services().menu
     configured_limit = menu.customer_result_limit
@@ -125,6 +128,7 @@ def search_menu(query: str | None = None, category: str | None = None,
     return _result("search_menu", lambda: menu.search_menu(
         query=query, category=category, tags=tags, max_price=max_price,
         available_only=available_only, limit=limit,
+        exclude_product_ids=exclude_product_ids,
     ))
 
 

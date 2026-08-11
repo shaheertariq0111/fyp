@@ -1,6 +1,6 @@
 import re
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from src.scripts.import_menu import normalize_records
 from src.models.tool_responses import (
@@ -36,6 +36,8 @@ class MenuService:
         query_terms = self._menu_relevant_tokens(normalized_query, corpus_terms) if normalized_query else []
         matches = []
         for item, searchable, searchable_tokens in searchable_index:
+            if item.get("archived"):
+                continue
             metadata = item.get("metadata") or {}
             match_score = 0
             if normalized_query:
@@ -60,6 +62,7 @@ class MenuService:
         matches.sort(key=lambda entry: (-entry[0], self._recommendation_sort_key(entry[1])))
         matches = [item for _, item in matches]
         excluded = {str(value) for value in exclude_product_ids or [] if value}
+        is_continuation = bool(excluded)
         if excluded:
             matches = [
                 item for item in matches
@@ -70,24 +73,53 @@ class MenuService:
             matches = matches[:min(limit, self.customer_result_limit)]
         else:
             matches = matches[:self.customer_result_limit]
+        has_more = total_matches > len(matches)
+        available_matches = [
+            item for item in matches if item.get("available") is True
+        ]
+        offered_matches = [
+            item for item in available_matches
+            if self._customer_item_name(item) is not None
+        ]
+        user_message = (
+            "I found current menu options."
+            if available_matches
+            else (
+                "I found matching menu items, but they are currently unavailable."
+                if matches
+                else (
+                    "There are no more matching menu items to show."
+                    if is_continuation
+                    else "I couldn't find a matching available menu item."
+                )
+            )
+        )
         return ToolResponse.ok(
-            data={"items": matches, "has_more": total_matches > len(matches)},
-            user_message=("I found current menu options." if matches
-                          else "I couldn't find a matching available menu item."),
+            data={"items": matches, "has_more": has_more},
+            user_message=user_message,
             next_action="present_menu_results",
             grounding=GroundingEvidence(
                 authoritative_domains=["menu"],
-                required_next_effect="item_selected" if matches else None,
+                required_next_effect=(
+                    "item_selected" if offered_matches else None
+                ),
                 offered_options=[
                     GroundingOption(
                         id=str(item["product_id"]),
                         label=str(item.get("name") or item["product_id"]),
                     )
-                    for item in matches
+                    for item in offered_matches
                     if item.get("product_id")
                 ],
                 presentation=PresentationConstraints(
                     max_items=self.customer_result_limit,
+                ),
+                exact_customer_text=self._search_menu_customer_text(
+                    matches,
+                    has_more=has_more,
+                    availability_filtered=available_only,
+                    is_continuation=is_continuation,
+                    fallback_text=user_message,
                 ),
             ),
         )
@@ -107,11 +139,18 @@ class MenuService:
                 groups.append(self._public_group(group))
         result = self._public_item(item)
         result["customization_groups"] = groups
+        user_message = "Here are the current item details."
         return ToolResponse.ok(
             data={"item": result},
-            user_message="Here are the current item details.",
+            user_message=user_message,
             next_action="present_item",
-            grounding=GroundingEvidence(authoritative_domains=["menu"]),
+            grounding=GroundingEvidence(
+                authoritative_domains=["menu"],
+                exact_customer_text=self._menu_item_customer_text(
+                    result,
+                    fallback_text=user_message,
+                ),
+            ),
         )
 
     def search_menu_options(self, query: str) -> ToolResponse:
@@ -136,6 +175,8 @@ class MenuService:
                 if group.get("option_group_id")
                 in (item.get("customization_group_ids") or [])
             ]
+            if not hosts:
+                continue
             public_group = self._public_group(group)
             for option in matching_options:
                 occurrences.append({
@@ -149,15 +190,22 @@ class MenuService:
                     "group": public_group,
                     "menu_items": hosts,
                 })
+        user_message = (
+            "I found that choice in the current menu."
+            if occurrences
+            else "I couldn't find that item or choice in the current menu."
+        )
         return ToolResponse.ok(
             data={"occurrences": occurrences},
-            user_message=(
-                "I found that choice in the current menu."
-                if occurrences
-                else "I couldn't find that item or choice in the current menu."
-            ),
+            user_message=user_message,
             next_action="present_menu_information",
-            grounding=GroundingEvidence(authoritative_domains=["menu"]),
+            grounding=GroundingEvidence(
+                authoritative_domains=["menu"],
+                exact_customer_text=self._menu_options_customer_text(
+                    occurrences,
+                    fallback_text=user_message,
+                ),
+            ),
         )
 
     def admin_list_entities(self, entity_type: str) -> dict:
@@ -272,6 +320,200 @@ class MenuService:
                    "requires_customization", "customization_group_ids", "upsell_group_ids",
                    "tags", "image_url", "metadata", "customization_rules")
         return {key: item.get(key) for key in allowed if key in item}
+
+    @classmethod
+    def _search_menu_customer_text(
+        cls,
+        items: list[dict],
+        *,
+        has_more: bool,
+        availability_filtered: bool,
+        is_continuation: bool,
+        fallback_text: str,
+    ) -> str:
+        if not items:
+            return fallback_text
+        availability = [item.get("available") for item in items]
+        if any(value not in (True, False) for value in availability):
+            return fallback_text
+        item_lines = [cls._customer_item_line(item) for item in items]
+        if any(line is None for line in item_lines):
+            return fallback_text
+        has_available = any(availability)
+        has_unavailable = not all(availability)
+        lines = [
+            "Here are the matching menu items I found:"
+            if has_unavailable
+            else "Here are the current menu options I found:"
+        ]
+        lines.extend(
+            f"{index}. {line}"
+            for index, line in enumerate(item_lines, start=1)
+        )
+        if has_more:
+            if has_unavailable or not availability_filtered:
+                lines.append("There are more matching menu items to show.")
+                lines.append(
+                    "Would you like to see more, or choose an available item shown here?"
+                    if has_available
+                    else "Would you like to see more?"
+                )
+            else:
+                lines.append(
+                    "More matching items are available. "
+                    "Would you like to see more, or choose one of these?"
+                )
+        elif not has_available:
+            lines.append("These matching menu items are currently unavailable.")
+            lines.append("Would you like me to search for an available alternative?")
+        elif is_continuation:
+            lines.append("These are the last matching items.")
+            lines.append(
+                "Which available item would you like?"
+                if has_unavailable
+                else "Which item would you like?"
+            )
+        else:
+            lines.append("Those are all the matching items I found.")
+            lines.append(
+                "Which available item would you like?"
+                if has_unavailable
+                else "Which item would you like?"
+            )
+        return "\n".join(lines)
+
+    @classmethod
+    def _menu_item_customer_text(cls, item: dict, *, fallback_text: str) -> str:
+        item_line = cls._customer_item_line(item)
+        if item_line is None:
+            return fallback_text
+        lines = [item_line]
+        description = item.get("description")
+        if isinstance(description, str) and description.strip():
+            lines.append(description.strip())
+
+        option_lines = []
+        for group in item.get("customization_groups") or []:
+            if not isinstance(group, dict):
+                continue
+            option_names = []
+            for option in group.get("options") or []:
+                if not isinstance(option, dict) or not option.get("available", True):
+                    continue
+                option_name = cls._customer_name(option.get("name"))
+                if option_name:
+                    option_names.append(option_name)
+            if not option_names:
+                continue
+            group_name = cls._customer_name(group.get("name"))
+            option_lines.append(
+                f"{group_name}: {', '.join(option_names)}"
+                if group_name
+                else ", ".join(option_names)
+            )
+        if option_lines:
+            lines.append("Options:")
+            lines.extend(option_lines)
+        return "\n".join(lines)
+
+    @classmethod
+    def _menu_options_customer_text(
+        cls,
+        occurrences: list[dict],
+        *,
+        fallback_text: str,
+    ) -> str:
+        if not occurrences:
+            return fallback_text
+        option_lines = []
+        for occurrence in occurrences:
+            if not isinstance(occurrence, dict):
+                continue
+            option = occurrence.get("option") or {}
+            group = occurrence.get("group") or {}
+            if not isinstance(option, dict) or not isinstance(group, dict):
+                continue
+            option_name = cls._customer_name(option.get("name"))
+            if not option_name:
+                continue
+            group_name = cls._customer_name(group.get("name"))
+            host_names = []
+            for item in occurrence.get("menu_items") or []:
+                if not isinstance(item, dict):
+                    continue
+                host_name = cls._customer_item_name(item)
+                if host_name:
+                    host_names.append(host_name)
+            if group_name and host_names:
+                context = f"{group_name} for {', '.join(host_names)}"
+            elif group_name:
+                context = group_name
+            elif host_names:
+                context = f"available for {', '.join(host_names)}"
+            else:
+                context = None
+            option_lines.append(
+                f"- {option_name}: {context}" if context else f"- {option_name}"
+            )
+        if not option_lines:
+            return fallback_text
+        return "\n".join([
+            "I found this choice in the current menu:",
+            *option_lines,
+        ])
+
+    @staticmethod
+    def _customer_name(value: object) -> str | None:
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    @classmethod
+    def _customer_item_name(cls, item: dict) -> str | None:
+        return cls._customer_name(item.get("name"))
+
+    @classmethod
+    def _customer_item_line(cls, item: dict) -> str | None:
+        name = cls._customer_item_name(item)
+        if name is None:
+            return None
+        price = cls._customer_price_label(item)
+        line = f"{name} - {price}" if price else name
+        if item.get("available") is False:
+            return f"{line} (currently unavailable)"
+        return line
+
+    @staticmethod
+    def _customer_price_label(item: dict) -> str | None:
+        currency = str(item.get("currency") or "").strip()
+        if item.get("starting_price") is not None:
+            amount = " ".join(
+                part
+                for part in (currency, str(item["starting_price"]))
+                if part
+            )
+            return f"from {amount}"
+        if item.get("price") is not None:
+            return " ".join(
+                part for part in (currency, str(item["price"])) if part
+            )
+        base_prices = item.get("base_prices")
+        if isinstance(base_prices, dict):
+            prices = []
+            for value in base_prices.values():
+                if value is None:
+                    continue
+                try:
+                    numeric_value = Decimal(str(value))
+                except (InvalidOperation, ValueError):
+                    continue
+                if numeric_value.is_finite():
+                    prices.append((numeric_value, value))
+            if prices:
+                minimum = min(prices, key=lambda entry: entry[0])[1]
+                amount = " ".join(
+                    part for part in (currency, str(minimum)) if part
+                )
+                return f"from {amount}"
+        return None
 
     @staticmethod
     def _tokens(value: str) -> list[str]:

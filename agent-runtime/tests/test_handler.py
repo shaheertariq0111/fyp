@@ -144,10 +144,76 @@ def install_fake_agent(monkeypatch, *, text, tool_calls=None, capture=None):
     return capture
 
 
-def test_whatsapp_successful_menu_read_survives_without_semantic_classifier(
+def test_whatsapp_response_selection_log_has_only_safe_tool_summary(monkeypatch):
+    class RecordingLogger:
+        def __init__(self):
+            self.infos = []
+
+        def info(self, message, *, extra):
+            self.infos.append((message, extra))
+
+        def exception(self, message, *, extra):
+            raise AssertionError(f"unexpected exception log: {message} {extra}")
+
+    private_text = "private customer response"
+    private_result = "private backend result"
+    authoritative_text = "Safe authoritative menu response."
+    tool_calls = [
+        {
+            "tool_name": "search_menu",
+            "success": True,
+            "is_write": False,
+            "result": {
+                "success": True,
+                "user_message": private_result,
+                "data": {"private": private_result},
+                "grounding": {"exact_customer_text": authoritative_text},
+            },
+        },
+        {
+            "tool_name": "get_menu_item",
+            "success": True,
+            "is_write": False,
+            "result": {
+                "success": True,
+                "user_message": private_result,
+                "data": {"private": private_result},
+                "grounding": {"exact_customer_text": authoritative_text},
+            },
+        },
+    ]
+    install_fake_agent(
+        monkeypatch,
+        text=private_text,
+        tool_calls=tool_calls,
+    )
+    recording_logger = RecordingLogger()
+    monkeypatch.setattr(handler, "logger", recording_logger)
+
+    handler.invoke(runtime_payload(channel="whatsapp"))
+
+    selected = next(
+        extra
+        for _message, extra in recording_logger.infos
+        if extra.get("event") == "whatsapp_response_selected"
+    )
+    assert selected == {
+        "event": "whatsapp_response_selected",
+        "grounding_source": "exact_artifact",
+        "grounding_rejection_reason": None,
+        "tool_call_count": 2,
+        "tool_names": ["search_menu", "get_menu_item"],
+    }
+    assert private_text not in repr(selected)
+    assert private_result not in repr(selected)
+    assert authoritative_text not in repr(selected)
+
+
+def test_whatsapp_menu_read_uses_authoritative_artifact_without_classifier(
     monkeypatch,
 ):
-    raw = "Pepperoni Passion is available. Would you like to customize it?"
+    raw = "Imaginary Supreme is available."
+    authoritative = "1. Pepperoni Passion - MYR 10"
     install_fake_agent(
         monkeypatch,
         text=raw,
@@ -167,7 +233,10 @@ def test_whatsapp_successful_menu_read_survives_without_semantic_classifier(
                             }
                         ]
                     },
-                    "grounding": {"authoritative_domains": ["menu"]},
+                    "grounding": {
+                        "authoritative_domains": ["menu"],
+                        "exact_customer_text": authoritative,
+                    },
                 },
             }
         ],
@@ -181,11 +250,12 @@ def test_whatsapp_successful_menu_read_survives_without_semantic_classifier(
 
     response = handler.invoke(runtime_payload(message="Pepperoni", channel="whatsapp"))
 
-    assert response["text"] == raw
+    assert response["text"] == authoritative
     history = next(iter(FakeMemorySessionManager.history_by_session.values()))
     assert history == [
-        {"role": "assistant", "content": [{"text": raw}]},
+        {"role": "assistant", "content": [{"text": authoritative}]},
     ]
+    assert raw not in str(history)
 
 
 def test_whatsapp_general_conversation_survives_without_semantic_classifier(

@@ -67,6 +67,38 @@ def test_json_formatter_omits_exception_traceback_and_exception_message():
     assert "secret nested request body" not in json.dumps(payload)
 
 
+def test_json_formatter_includes_safe_response_selection_fields():
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="selected",
+        args=(),
+        exc_info=None,
+    )
+    record.event = "whatsapp_response_selected"
+    record.grounding_source = "authoritative_read"
+    record.grounding_rejection_reason = (
+        "authoritative_menu_read_missing_exact_artifact"
+    )
+    record.tool_call_count = 1
+    record.tool_names = ["search_menu"]
+    record.tool_arguments = {"query": "private customer wording"}
+    record.tool_results = {"items": ["private menu payload"]}
+
+    payload = json.loads(JsonFormatter().format(record))
+
+    assert payload["grounding_source"] == "authoritative_read"
+    assert payload["grounding_rejection_reason"] == (
+        "authoritative_menu_read_missing_exact_artifact"
+    )
+    assert payload["tool_call_count"] == 1
+    assert payload["tool_names"] == ["search_menu"]
+    assert "tool_arguments" not in payload
+    assert "tool_results" not in payload
+
+
 def test_configure_logging_suppresses_url_bearing_access_loggers():
     root = logging.getLogger()
     logger_names = ("httpx", "httpcore", "uvicorn.access")

@@ -189,6 +189,30 @@ def test_system_prompt_requires_tool_grounding():
     )
 
 
+def test_system_prompt_keeps_live_menu_continuations_authoritative_and_chat_native():
+    prompt = " ".join(RESTAURANT_AGENT_SYSTEM_PROMPT.split())
+
+    assert (
+        "Every live-menu turn, including a follow-up or continuation, must call "
+        "search_menu or get_menu_item in that same turn before answering."
+        in prompt
+    )
+    assert (
+        "reuse the same authoritative query, category, tags, max_price, and "
+        "available_only filters"
+        in prompt
+    )
+    assert "exclude_product_ids" in prompt
+    assert "product_id values already returned" in prompt
+    assert "Keep normal WhatsApp menu browsing and continuation in chat." in prompt
+    assert (
+        "Only call create_menu_session_link when the customer explicitly asks"
+        in prompt
+    )
+    assert "offer another page or the menu website" not in prompt
+    assert "ask whether to build it in chat or open it on the website" not in prompt
+
+
 def test_build_bedrock_model_uses_runtime_settings(monkeypatch):
     captured = {}
 
