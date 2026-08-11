@@ -3,27 +3,18 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Callable, get_args
+from typing import Callable
 
 from pydantic_core import PydanticCustomError
 
 from src.models.ticket import MAX_DESCRIPTION_LENGTH, normalize_ticket_timestamp
-from src.models.tool_responses import TransactionalEffect
 from src.repositories.agent_session_repository import SupportStateConflictError
 
 
 SUPPORT_STATE_TTL = timedelta(minutes=30)
 SUPPORT_STATE_MAX_CLOCK_SKEW = timedelta(seconds=5)
 VERIFIED_ORDER_TTL = SUPPORT_STATE_TTL
-WHATSAPP_ORDER_STATE_TTL = SUPPORT_STATE_TTL
-
-
 logger = logging.getLogger(__name__)
-_TRANSACTIONAL_EFFECTS = frozenset(get_args(TransactionalEffect))
-
-
-def _safe_transactional_effect_log_value(value: object) -> str | None:
-    return value if isinstance(value, str) and value in _TRANSACTIONAL_EFFECTS else None
 
 
 class AgentSessionService:
@@ -145,114 +136,6 @@ class AgentSessionService:
             "verified_order_status": status,
             "verified_order_at": verified_at,
         }
-
-    def save_whatsapp_order_state(
-        self,
-        customer_id: str,
-        agent_session_id: str,
-        *,
-        offered_menu_items: list[dict],
-        menu_query: str | None = None,
-        shown_menu_item_ids: list[str] | None = None,
-        menu_has_more: bool = False,
-        required_effect: TransactionalEffect,
-    ) -> dict:
-        if not isinstance(offered_menu_items, list) or not offered_menu_items:
-            raise ValueError("offered menu items are required")
-        updated_at = self._now().isoformat()
-        stored_shown_ids = shown_menu_item_ids or [
-            str(item["product_id"])
-            for item in offered_menu_items
-            if item.get("product_id")
-        ]
-        self.repository.update_whatsapp_order_state(
-            customer_id,
-            agent_session_id,
-            offered_menu_items=offered_menu_items,
-            menu_query=menu_query,
-            shown_menu_item_ids=stored_shown_ids,
-            menu_has_more=menu_has_more,
-            required_effect=required_effect,
-            updated_at=updated_at,
-        )
-        return {
-            "offered_menu_items": offered_menu_items,
-            "whatsapp_menu_query": menu_query or "",
-            "shown_menu_item_ids": stored_shown_ids,
-            "whatsapp_menu_has_more": menu_has_more,
-            "whatsapp_required_effect": required_effect,
-            "whatsapp_order_state_updated_at": updated_at,
-        }
-
-    def get_whatsapp_order_state(
-        self,
-        customer_id: str,
-        agent_session_id: str,
-    ) -> dict:
-        state = self.repository.get_whatsapp_order_state(
-            customer_id,
-            agent_session_id,
-        )
-        updated_at = state.get("whatsapp_order_state_updated_at")
-        try:
-            normalized = normalize_ticket_timestamp(updated_at)
-        except (PydanticCustomError, TypeError, ValueError):
-            normalized = None
-        timestamp = None
-        now = None
-        if normalized is not None and normalized == updated_at:
-            timestamp = datetime.fromisoformat(normalized)
-            now = self._now()
-            if (
-                timestamp <= now + SUPPORT_STATE_MAX_CLOCK_SKEW
-                and now - timestamp < WHATSAPP_ORDER_STATE_TTL
-                and isinstance(state.get("offered_menu_items"), list)
-            ):
-                return state
-        if state:
-            self.repository.clear_whatsapp_order_state(customer_id, agent_session_id)
-            rejection_reason = "malformed"
-            if timestamp is not None and now is not None:
-                if timestamp > now + SUPPORT_STATE_MAX_CLOCK_SKEW:
-                    rejection_reason = "future_timestamp"
-                elif now - timestamp >= WHATSAPP_ORDER_STATE_TTL:
-                    rejection_reason = "expired"
-            logger.info(
-                "WhatsApp grounding state was cleared",
-                extra={
-                    "event": "whatsapp_grounding_state_transition",
-                    "state_action": "contract_cleared_expired_or_invalid",
-                    "existing_contract_present": True,
-                    "new_contract_produced": False,
-                    "existing_option_count": (
-                        len(state.get("offered_menu_items"))
-                        if isinstance(state.get("offered_menu_items"), list)
-                        else 0
-                    ),
-                    "produced_option_count": 0,
-                    "contract_created": False,
-                    "contract_retained": False,
-                    "contract_replaced": False,
-                    "state_cleared": True,
-                    "state_clear_reason": rejection_reason,
-                    "required_effect_present": bool(
-                        _safe_transactional_effect_log_value(
-                            state.get("whatsapp_required_effect")
-                        )
-                    ),
-                    "required_effect": _safe_transactional_effect_log_value(
-                        state.get("whatsapp_required_effect")
-                    ),
-                },
-            )
-        return {}
-
-    def clear_whatsapp_order_state(
-        self,
-        customer_id: str,
-        agent_session_id: str,
-    ) -> None:
-        self.repository.clear_whatsapp_order_state(customer_id, agent_session_id)
 
     def get_active_verified_order_context(
         self,

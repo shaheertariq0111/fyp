@@ -6,27 +6,14 @@ import os
 import time
 from typing import Any
 
-from src.agent.order_intent import classify_order_intent
 from src.agent.response_grounding import (
-    AssistantClaimAssessment,
     GroundedAssistantMemoryBuffer,
-    SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
-    SemanticClassifierTimeout,
-    assess_assistant_claims,
-    ground_authoritative_tool_response,
     ground_agent_response,
     grounding_decision_log_fields,
-    tool_evidence_payload,
-    run_semantic_classifier,
 )
-from src.agent.whatsapp_turn_intent import classify_whatsapp_turn
 from src.agent.restaurant_agent import agent_result_text, build_restaurant_agent, invoke_restaurant_agent
 from src.agent.dependencies import get_services
 from src.infrastructure.config import get_settings
-from src.models.tool_responses import (
-    apply_legacy_item_selection_compatibility,
-)
-
 from agent_runtime.config import get_agentcore_runtime_settings, get_secret_value
 from agent_runtime.logging import configure_logging
 from agent_runtime.memory import agentcore_actor_id, require_agentcore_memory_id
@@ -80,71 +67,6 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     request = RuntimeRequest.model_validate(event)
     settings = get_agentcore_runtime_settings()
     configure_logging(settings.log_level)
-    if request.task == "classify_whatsapp_turn":
-        if not request.state or not request.allowed_actions:
-            raise ValueError(
-                "WhatsApp turn classification requires state and allowed_actions"
-            )
-        turn_intent = run_semantic_classifier(
-            classifier_name="whatsapp_turn",
-            timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
-            operation=lambda: classify_whatsapp_turn(
-                message=request.message,
-                state=request.state,
-                allowed_actions=request.allowed_actions,
-                available_options=request.available_options,
-            ),
-        )
-        return RuntimeResponse(
-            text="",
-            turn_intent=turn_intent,
-        ).model_dump(exclude_none=True)
-    if request.task == "classify_order_intent":
-        if not request.state or not request.allowed_actions:
-            raise ValueError(
-                "Intent classification requires state and allowed_actions"
-            )
-        started = time.perf_counter()
-        logger.info(
-            "Classifying WhatsApp order intent",
-            extra={
-                "event": "order_intent_classification_started",
-                "actor_id": request.user_id,
-                "agent_session_id": request.agent_session_id,
-                "channel": request.channel,
-                "order_state": request.state,
-            },
-        )
-        intent = run_semantic_classifier(
-            classifier_name="order_intent",
-            timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
-            operation=lambda: classify_order_intent(
-                message=request.message,
-                state=request.state,
-                allowed_actions=request.allowed_actions,
-                available_options=request.available_options,
-            ),
-        )
-        logger.info(
-            "WhatsApp order intent classified",
-            extra={
-                "event": "order_intent_classification_completed",
-                "actor_id": request.user_id,
-                "agent_session_id": request.agent_session_id,
-                "channel": request.channel,
-                "order_state": request.state,
-                "interpreted_action": intent.action,
-                "intent_confidence": intent.confidence,
-                "response_time_ms": round(
-                    (time.perf_counter() - started) * 1000,
-                    2,
-                ),
-            },
-        )
-        return RuntimeResponse(
-            text="",
-            intent=intent,
-        ).model_dump(exclude_none=True)
     ensure_session_token_secret(settings)
     memory_id = require_agentcore_memory_id(settings)
     actor_id = agentcore_actor_id(customer_id=request.customer_id, user_id=request.user_id)
@@ -199,97 +121,20 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                     for call in (getattr(result, "tool_calls", []) or [])
                 ]
                 raw_text = agent_result_text(result)
-                claim_assessment = None
                 grounded_text = raw_text
-                no_write_authorized = False
-                informational_turn = False
-                expected_write_tool = request.expected_write_tool
-                required_effect, expected_write_tool = (
-                    apply_legacy_item_selection_compatibility(
-                        request.required_effect,
-                        expected_write_tool=expected_write_tool,
-                    )
-                )
-                grounding_source = None
-                grounding_rejection_reason = None
-                assessment_origin = None
-                semantic_classifier_status = None
                 if request.channel == "whatsapp":
-                    grounded = ground_authoritative_tool_response(
+                    grounded = ground_agent_response(
+                        text=raw_text,
                         tool_calls=tool_calls,
-                        expected_write_tool=expected_write_tool,
-                        required_effect=required_effect,
                     )
-                    authoritative_fast_path = grounded is not None
-                    if grounded is None:
-                        try:
-                            claim_assessment = run_semantic_classifier(
-                                classifier_name="grounding_assessment",
-                                timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
-                                operation=lambda: assess_assistant_claims(
-                                    customer_message=request.message,
-                                    assistant_message=raw_text,
-                                    tool_evidence=tool_evidence_payload(tool_calls),
-                                    required_effect=required_effect,
-                                    available_options=request.available_options,
-                                ),
-                            )
-                            assessment_origin = "model"
-                            semantic_classifier_status = "completed"
-                        except SemanticClassifierTimeout:
-                            claim_assessment = AssistantClaimAssessment(
-                                claims_transactional_progression=True,
-                                claimed_actions=["other_transactional_progression"],
-                                customer_requests_required_effect=bool(required_effect),
-                            )
-                            assessment_origin = "timeout_synthetic"
-                            semantic_classifier_status = "timed_out"
-                        except Exception:
-                            claim_assessment = AssistantClaimAssessment(
-                                claims_transactional_progression=True,
-                                claimed_actions=["other_transactional_progression"],
-                                customer_requests_required_effect=bool(required_effect),
-                            )
-                            assessment_origin = "exception_synthetic"
-                            semantic_classifier_status = "failed"
-                        no_write_authorized = not (
-                            required_effect
-                            and claim_assessment.customer_requests_required_effect
-                        )
-                        informational_turn = claim_assessment.informational_turn
-                        grounded = ground_agent_response(
-                            text=raw_text,
-                            tool_calls=tool_calls,
-                            claim_assessment=claim_assessment,
-                            no_write_authorized=no_write_authorized,
-                            informational_turn=informational_turn,
-                            expected_write_tool=expected_write_tool,
-                            required_effect=required_effect,
-                            available_options=request.available_options,
-                        )
-                    else:
-                        semantic_classifier_status = "not_run_authoritative_fast_path"
                     logger.info(
-                        "WhatsApp response grounded",
+                        "WhatsApp response selected",
                         extra={
-                            "event": "whatsapp_grounding_completed",
-                            "authoritative_fast_path": authoritative_fast_path,
-                            "assessment_origin": assessment_origin,
-                            "semantic_classifier_status": semantic_classifier_status,
+                            "event": "whatsapp_response_selected",
                             **grounding_decision_log_fields(grounded),
                         },
                     )
                     grounded_text = grounded.text
-                    grounding_source = grounded.source
-                    grounding_rejection_reason = grounded.rejection_reason
-                    expected_write_tool = grounded.expected_transactional_action
-                    required_effect = grounded.required_next_effect
-                    required_effect, expected_write_tool = (
-                        apply_legacy_item_selection_compatibility(
-                            required_effect,
-                            expected_write_tool=expected_write_tool,
-                        )
-                    )
                 if memory_buffer is not None:
                     memory_buffer.commit(grounded_text, runtime_agent)
             finally:
@@ -345,15 +190,6 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             "actor_id": actor_id,
             "session_id": memory_session_id,
         },
-        claim_assessment=claim_assessment,
-        no_write_authorized=no_write_authorized,
-        informational_turn=informational_turn,
-        expected_write_tool=expected_write_tool,
-        required_effect=required_effect if request.channel == "whatsapp" else None,
-        grounding_source=grounding_source,
-        grounding_rejection_reason=grounding_rejection_reason,
-        assessment_origin=assessment_origin,
-        semantic_classifier_status=semantic_classifier_status,
     )
     return response.model_dump(exclude_none=True)
 

@@ -37,29 +37,6 @@ TransactionalEffect = Literal[
     "other_transactional_progression",
 ]
 
-LEGACY_ITEM_SELECTION_TOOL = "start_cart_item_customization"
-LEGACY_ITEM_SELECTION_EFFECT: TransactionalEffect = "item_selected"
-
-
-def apply_legacy_item_selection_compatibility(
-    required_effect: TransactionalEffect | None,
-    *,
-    expected_write_tool: str | None = None,
-    has_legacy_offered_options: bool = False,
-) -> tuple[TransactionalEffect | None, str | None]:
-    """Bridge legacy menu-selection state; remove after old callers/rows retire."""
-    if required_effect is None and (
-        expected_write_tool == LEGACY_ITEM_SELECTION_TOOL
-        or has_legacy_offered_options
-    ):
-        required_effect = LEGACY_ITEM_SELECTION_EFFECT
-    if required_effect == LEGACY_ITEM_SELECTION_EFFECT:
-        expected_write_tool = LEGACY_ITEM_SELECTION_TOOL
-    elif expected_write_tool == LEGACY_ITEM_SELECTION_TOOL:
-        expected_write_tool = None
-    return required_effect, expected_write_tool
-
-
 class PresentationConstraints(BaseModel):
     max_items: int | None = Field(default=None, ge=1, le=50)
 
