@@ -11,6 +11,10 @@ from agent_runtime.schemas import RuntimeRequest
 from src.agent import order_intent, restaurant_agent
 from src.agent.order_intent import OrderIntentClassification
 from src.agent.whatsapp_turn_intent import WhatsAppTurnInterpretation
+from src.agent.response_grounding import (
+    AssistantClaimAssessment,
+    UNGROUNDED_TRANSACTION_FALLBACK,
+)
 from src.agent_client.schemas import AgentInvocationResult
 from src.agent.context import AgentRequestContext
 from src.api import main as api_main
@@ -71,7 +75,7 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+        lambda *, session_manager: FakeAgent(session_manager),
     )
     monkeypatch.setattr(
         handler,
@@ -119,15 +123,20 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
     )
     monkeypatch.setattr(
         handler,
-        "run_semantic_classifier",
-        lambda **_kwargs: pytest.fail("conversation classifier must not run"),
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
+            presented_authoritative_item_count=2,
+        ),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
     response = handler.invoke(runtime_payload(channel="whatsapp"))
 
-    assert response["option_contract_protocol_version"] == 1
-    assert response["grounding_protocol_version"] == 2
     assert response["text"].endswith("Which item would you like?")
     assert "size" not in response["text"].lower()
     assert FakeMemorySessionManager.redactions == []
@@ -177,7 +186,7 @@ def test_whatsapp_search_response_and_memory_share_grounded_next_question(monkey
         ),
     ],
 )
-def test_natural_tool_response_uses_classifier_free_v2_grounding(
+def test_natural_tool_response_uses_one_post_agent_semantic_call(
     monkeypatch,
     tool_name,
     is_write,
@@ -192,7 +201,7 @@ def test_natural_tool_response_uses_classifier_free_v2_grounding(
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+        lambda *, session_manager: FakeAgent(session_manager),
     )
     monkeypatch.setattr(
         handler,
@@ -221,19 +230,39 @@ def test_natural_tool_response_uses_classifier_free_v2_grounding(
             AssertionError("separate turn classifier must not run")
         ),
     )
-    monkeypatch.setattr(
-        handler,
-        "run_semantic_classifier",
-        lambda **_kwargs: pytest.fail("conversation classifier must not run"),
-    )
+    semantic_calls = []
+
+    def one_semantic_call(**kwargs):
+        semantic_calls.append(kwargs)
+        return AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            depends_on_authoritative_state=depends_on_domain is not None,
+            authoritative_state_domains=(
+                [depends_on_domain] if depends_on_domain else []
+            ),
+            authoritative_claims_supported=depends_on_domain is not None,
+            presented_authoritative_item_count=(
+                1 if tool_name == "any_menu_search" else 0
+            ),
+            claimed_immutable_facts=(
+                [
+                    {"path": "order.order_id", "value": "ORD-ONE"},
+                    {"path": "order.status", "value": "preparing"},
+                ]
+                if tool_name == "any_order_read"
+                else []
+            ),
+        )
+
+    monkeypatch.setattr(handler, "assess_assistant_claims", one_semantic_call)
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
     response = handler.invoke(runtime_payload(channel="whatsapp"))
 
-    assert response["text"] == ("Backend fallback." if is_write else raw)
-    assert response["grounding_protocol_version"] == 2
-    assert "assessment_origin" not in response
-    assert "semantic_classifier_status" not in response
+    assert response["text"] == raw
+    assert len(semantic_calls) == 1
+    assert response["assessment_origin"] == "model"
+    assert response["semantic_classifier_status"] == "completed"
     assert "grounding_rejection_reason" not in response
 
 
@@ -246,7 +275,7 @@ def test_whatsapp_get_menu_item_preserves_supported_natural_continuation(monkeyp
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+        lambda *, session_manager: FakeAgent(session_manager),
     )
     monkeypatch.setattr(
         handler,
@@ -281,6 +310,17 @@ def test_whatsapp_get_menu_item_preserves_supported_natural_continuation(monkeyp
             informational_only=True,
             wants_to_order=False,
             target_items=["First Item"],
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["menu"],
+            authoritative_claims_supported=True,
         ),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
@@ -318,7 +358,7 @@ def test_transactional_customer_can_receive_conversational_continuation(monkeypa
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+        lambda *, session_manager: FakeAgent(session_manager),
     )
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: text)
@@ -332,6 +372,14 @@ def test_transactional_customer_can_receive_conversational_continuation(monkeypa
             wants_to_order=True,
         ),
     )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        ),
+    )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
     response = handler.invoke(runtime_payload(
@@ -340,8 +388,7 @@ def test_transactional_customer_can_receive_conversational_continuation(monkeypa
     ))
 
     assert response["text"] == text
-    assert response["grounding_protocol_version"] == 2
-    assert "claim_assessment" not in response
+    assert response["claim_assessment"]["claims_transactional_progression"] is False
     assert FakeMemorySessionManager.created[0].history[-1] == {
         "role": "assistant",
         "content": [{"text": text}],
@@ -402,7 +449,7 @@ def test_explicit_new_transaction_intent_is_not_hijacked_by_existing_orders(
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+        lambda *, session_manager: FakeAgent(session_manager),
     )
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: model_reply)
@@ -414,6 +461,14 @@ def test_explicit_new_transaction_intent_is_not_hijacked_by_existing_orders(
             confidence=0.99,
             informational_only=False,
             wants_to_order=True,
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
         ),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
@@ -452,7 +507,7 @@ def test_pending_write_survives_conversational_detour(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+        lambda *, session_manager: FakeAgent(session_manager),
     )
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: text)
@@ -464,6 +519,14 @@ def test_pending_write_survives_conversational_detour(monkeypatch):
             confidence=0.99,
             informational_only=False,
             wants_to_order=False,
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
         ),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
@@ -536,10 +599,34 @@ def test_two_turn_search_selection_blocks_prose_progression_across_production_pa
             selected_option="item-1",
         )
 
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(handler, "classify_whatsapp_turn", classify_turn)
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=(kwargs["assistant_message"].startswith("1.")),
+            authoritative_state_domains=(
+                ["menu"] if kwargs["assistant_message"].startswith("1.") else []
+            ),
+            authoritative_claims_supported=(kwargs["assistant_message"].startswith("1.")),
+            presented_authoritative_item_count=(
+                2 if kwargs["assistant_message"].startswith("1.") else 0
+            ),
+            customer_requests_required_effect=(
+                kwargs["assistant_message"].startswith("You selected")
+            ),
+            selected_option=(
+                "item-1"
+                if kwargs["assistant_message"].startswith("You selected")
+                else None
+            ),
+        ),
+    )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
     first = handler.invoke(runtime_payload(message="show me the menu", channel="whatsapp"))
@@ -578,59 +665,136 @@ def test_two_turn_search_selection_blocks_prose_progression_across_production_pa
     assert first["required_effect"] == "item_selected"
     assert observed_histories[1][-1]["content"][0]["text"] == first["text"]
     assert second["tool_calls"] == []
-    assert second["text"] == "You selected Pepperoni Hot. Which size would you like?"
-    assert reply.reply == second["text"]
-    assert second["required_effect"] == "item_selected"
-    assert second["grounding_protocol_version"] == 2
+    assert second["text"] == UNGROUNDED_TRANSACTION_FALLBACK
+    assert reply.reply == UNGROUNDED_TRANSACTION_FALLBACK
     history = FakeMemorySessionManager.created[-1].history
-    assert history[-1]["content"][0]["text"] == second["text"]
+    assert all("You selected Pepperoni Hot" not in str(message) for message in history)
+    assert history[-1]["content"][0]["text"] == UNGROUNDED_TRANSACTION_FALLBACK
 
 
-@pytest.mark.parametrize(
-    ("message", "response_text"),
-    [
-        ("Hello", "Hi! How can I help?"),
-        ("I want help with ordering", "Of course. What would you like to order?"),
-    ],
-)
-def test_no_tool_conversation_never_runs_grounding_classifier(
-    monkeypatch, message, response_text,
-):
+def test_assistant_classifier_exception_fails_closed_before_memory_commit(monkeypatch):
     class FakeAgent:
         def __init__(self, session_manager):
             self.session_manager = session_manager
 
     def fake_invoke(message, **kwargs):
         agent = kwargs["agent"]
+        raw = "Your selections are now locked in."
         agent.session_manager.append_message(
-            {"role": "assistant", "content": [{"text": response_text}]}, agent
+            {"role": "assistant", "content": [{"text": raw}]}, agent
         )
-        return SimpleNamespace(
-            message={"content": [{"text": response_text}]}, tool_calls=[]
-        )
+        return SimpleNamespace(message={"content": [{"text": raw}]}, tool_calls=[])
 
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
-    monkeypatch.setattr(handler, "agent_result_text", lambda result: response_text)
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(
         handler,
-        "run_semantic_classifier",
-        lambda **_kwargs: pytest.fail("conversation classifier must not run"),
+        "classify_whatsapp_turn",
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="general_chat", confidence=0.99,
+            informational_only=False, wants_to_order=False,
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("malformed")),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
-    response = handler.invoke(runtime_payload(
-        message=message,
-        channel="whatsapp",
-    ))
+    response = handler.invoke(runtime_payload(channel="whatsapp"))
 
-    assert response["text"] == response_text
-    assert response["grounding_protocol_version"] == 2
-    assert response["grounding_source"] == "conversation"
-    assert "claim_assessment" not in response
-    assert "assessment_origin" not in response
-    assert "semantic_classifier_status" not in response
-    assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == response_text
+    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
+    assert response["grounding_rejection_reason"] == (
+        "unsupported_transactional_effect"
+    )
+    assert response["assessment_origin"] == "exception_synthetic"
+    assert response["semantic_classifier_status"] == "failed"
+    assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == (
+        UNGROUNDED_TRANSACTION_FALLBACK
+    )
+    assert "selections are now locked" not in str(FakeMemorySessionManager.created[0].history)
+
+
+def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(
+    monkeypatch,
+):
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    raw = "Your selections are now locked in."
+
+    def fake_invoke(message, **kwargs):
+        agent = kwargs["agent"]
+        agent.session_manager.append_message(
+            {"role": "assistant", "content": [{"text": raw}]}, agent
+        )
+        return SimpleNamespace(message={"content": [{"text": raw}]}, tool_calls=[])
+
+    def slow_claim_classifier(**kwargs):
+        time.sleep(0.3)
+        return AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+        )
+
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: raw)
+    monkeypatch.setattr(
+        handler,
+        "classify_whatsapp_turn",
+        lambda **kwargs: WhatsAppTurnInterpretation(
+            action="general_chat", confidence=0.99,
+            informational_only=False, wants_to_order=False,
+        ),
+    )
+    monkeypatch.setattr(handler, "assess_assistant_claims", slow_claim_classifier)
+    monkeypatch.setattr(handler, "SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
+    logged_events = []
+    monkeypatch.setattr(
+        handler.logger,
+        "info",
+        lambda _message, *, extra=None: logged_events.append(extra or {}),
+    )
+
+    started = time.perf_counter()
+    response = handler.invoke(runtime_payload(channel="whatsapp"))
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.15
+    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
+    assert response["grounding_source"] == "ungrounded_transaction_fallback"
+    assert response["grounding_rejection_reason"] == (
+        "unsupported_transactional_effect"
+    )
+    assert response["assessment_origin"] == "timeout_synthetic"
+    assert response["semantic_classifier_status"] == "timed_out"
+    assert raw not in str(FakeMemorySessionManager.created[0].history)
+    assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == (
+        UNGROUNDED_TRANSACTION_FALLBACK
+    )
+    grounded_event = next(
+        event
+        for event in logged_events
+        if event.get("event") == "whatsapp_grounding_completed"
+    )
+    for prohibited_field in (
+        "customer_message",
+        "assistant_message",
+        "customer_name",
+        "phone_number",
+        "order_id",
+        "ticket_id",
+        "product_id",
+        "option_id",
+        "immutable_fact_values",
+        "exception_message",
+    ):
+        assert prohibited_field not in grounded_event
 
 
 @pytest.mark.parametrize(
@@ -662,7 +826,7 @@ def test_write_outcome_commits_only_authoritative_message(monkeypatch, success, 
             }],
         )
 
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(
@@ -672,8 +836,8 @@ def test_write_outcome_commits_only_authoritative_message(monkeypatch, success, 
     )
     monkeypatch.setattr(
         handler,
-        "run_semantic_classifier",
-        lambda **_kwargs: pytest.fail("conversation classifier must not run"),
+        "assess_assistant_claims",
+        lambda **kwargs: pytest.fail("write evidence must bypass classification"),
     )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
@@ -683,8 +847,9 @@ def test_write_outcome_commits_only_authoritative_message(monkeypatch, success, 
     assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == user_message
     assert "every customization" not in str(FakeMemorySessionManager.created[0].history)
     assert response["grounding_source"] == ("successful_write" if success else "failed_write")
-    assert response["grounding_protocol_version"] == 2
-    assert "semantic_classifier_status" not in response
+    assert response["semantic_classifier_status"] == (
+        "not_run_authoritative_fast_path"
+    )
     assert "assessment_origin" not in response
     if success:
         assert "grounding_rejection_reason" not in response
@@ -692,87 +857,13 @@ def test_write_outcome_commits_only_authoritative_message(monkeypatch, success, 
         assert response["grounding_rejection_reason"] == "authoritative_write_failed"
 
 
-@pytest.mark.parametrize(
-    ("success", "grounding", "expected_text", "expected_source"),
-    [
-        (
-            False,
-            None,
-            "I couldn't find that order.",
-            "failed_read",
-        ),
-        (
-            True,
-            {"exact_customer_text": "Exact verified order status."},
-            "Exact verified order status.",
-            "exact_artifact",
-        ),
-    ],
-)
-def test_authoritative_read_failure_and_exact_artifact_replace_model_text(
-    monkeypatch, success, grounding, expected_text, expected_source,
-):
-    class FakeAgent:
-        def __init__(self, session_manager):
-            self.session_manager = session_manager
-
-    raw = "The model invented a successful order state."
-
-    def fake_invoke(_message, **kwargs):
-        agent = kwargs["agent"]
-        agent.session_manager.append_message(
-            {"role": "assistant", "content": [{"text": raw}]}, agent
-        )
-        result = {
-            "success": success,
-            "user_message": (
-                "Verified order status."
-                if success
-                else "I couldn't find that order."
-            ),
-        }
-        if grounding is not None:
-            result["grounding"] = grounding
-        return SimpleNamespace(
-            message={"content": [{"text": raw}]},
-            tool_calls=[{
-                "tool_name": "get_order_status",
-                "success": success,
-                "is_write": False,
-                "result": result,
-                "error_code": None if success else "ORDER_NOT_FOUND",
-            }],
-        )
-
-    monkeypatch.setattr(
-        handler, "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
-    )
-    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
-    monkeypatch.setattr(handler, "agent_result_text", lambda _result: raw)
-    monkeypatch.setattr(
-        handler,
-        "run_semantic_classifier",
-        lambda **_kwargs: pytest.fail("conversation classifier must not run"),
-    )
-    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
-
-    response = handler.invoke(runtime_payload(channel="whatsapp"))
-
-    assert response["text"] == expected_text
-    assert response["grounding_source"] == expected_source
-    assert response["grounding_protocol_version"] == 2
-    assert raw not in str(FakeMemorySessionManager.created[0].history)
-    assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == expected_text
-
-
-def test_successful_cart_read_uses_primary_narration_without_classifier(monkeypatch):
+def test_unsupported_cart_claim_fails_closed_despite_cart_read(monkeypatch):
     class FakeAgent:
         def __init__(self, session_manager):
             self.session_manager = session_manager
 
     raw = "The model invented a cart item."
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
     monkeypatch.setattr(
         handler,
         "invoke_restaurant_agent",
@@ -803,6 +894,17 @@ def test_successful_cart_read_uses_primary_narration_without_classifier(monkeypa
             wants_to_order=False,
         ),
     )
+    monkeypatch.setattr(
+        handler,
+        "assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            depends_on_authoritative_state=True,
+            authoritative_state_domains=["cart"],
+            authoritative_claims_supported=False,
+        ),
+    )
     monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
 
     response = handler.invoke(runtime_payload(
@@ -810,11 +912,10 @@ def test_successful_cart_read_uses_primary_narration_without_classifier(monkeypa
         expected_write_tool="start_cart_item_customization",
     ))
 
-    assert response["text"] == raw
+    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
     assert response["expected_write_tool"] == "start_cart_item_customization"
-    assert response["grounding_source"] == "conversation"
-    assert response["grounding_protocol_version"] == 2
-    assert raw in str(FakeMemorySessionManager.created[0].history)
+    assert response["grounding_source"] == "ungrounded_transaction_fallback"
+    assert raw not in str(FakeMemorySessionManager.created[0].history)
 
 
 def test_memory_commit_failure_leaves_no_raw_turn_for_next_invocation(monkeypatch):
@@ -853,7 +954,7 @@ def test_memory_commit_failure_leaves_no_raw_turn_for_next_invocation(monkeypatc
         "load_agentcore_memory_integration",
         lambda: (FakeMemoryConfig, FailingMemory),
     )
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": FakeAgent(session_manager))
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: FakeAgent(session_manager))
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(
@@ -879,8 +980,11 @@ def test_memory_commit_failure_leaves_no_raw_turn_for_next_invocation(monkeypatc
     FailingMemory.fail_assistant = False
     response = handler.invoke(payload)
 
-    assert response["text"] == "Raw undelivered assistant progression."
-    assert FailingMemory.shared_history[-1]["content"][0]["text"] == response["text"]
+    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
+    assert "Raw undelivered" not in str(FailingMemory.shared_history)
+    assert FailingMemory.shared_history[-1]["content"][0]["text"] == (
+        UNGROUNDED_TRANSACTION_FALLBACK
+    )
 
 
 def settings(
@@ -933,9 +1037,8 @@ def test_handler_invokes_existing_restaurant_agent_with_agentcore_memory(monkeyp
         def __init__(self, session_manager):
             self.session_manager = session_manager
 
-    def fake_build_restaurant_agent(*, session_manager, channel="web"):
+    def fake_build_restaurant_agent(*, session_manager):
         captured["session_manager"] = session_manager
-        captured["build_channel"] = channel
         return FakeAgent(session_manager)
 
     def fake_invoke_restaurant_agent(message, **kwargs):
@@ -977,7 +1080,6 @@ def test_handler_invokes_existing_restaurant_agent_with_agentcore_memory(monkeyp
     assert captured["agent"].session_manager is FakeMemorySessionManager.created[0]
     assert captured["agent_session_id"] == "session-1"
     assert captured["request_id"] == "req-trusted"
-    assert captured["build_channel"] == "web"
     assert FakeMemorySessionManager.closed == [FakeMemorySessionManager.created[0]]
 
 
@@ -988,8 +1090,7 @@ def test_handler_uses_versioned_agentcore_memory_session_for_whatsapp(monkeypatc
         def __init__(self, session_manager):
             self.session_manager = session_manager
 
-    def fake_build_restaurant_agent(*, session_manager, channel="web"):
-        captured["build_channel"] = channel
+    def fake_build_restaurant_agent(*, session_manager):
         return FakeAgent(session_manager)
 
     def fake_invoke_restaurant_agent(message, **kwargs):
@@ -1006,24 +1107,12 @@ def test_handler_uses_versioned_agentcore_memory_session_for_whatsapp(monkeypatc
         lambda: settings(whatsapp_memory_namespace="wa-clean-v3"),
     )
 
-    option_contract = {
-        "contract_id": "contract-1", "contract_version": 1,
-        "contract_kind": "selection_offer", "required_effect": "item_selected",
-        "consumer_capability": "start_cart_item_customization",
-        "source_capability": "search_menu", "source_request_id": "request-1",
-        "scope": {}, "options": [{"id": "item-1", "label": "First"}],
-        "created_at": "2026-08-10T08:00:00+00:00",
-        "expires_at": "2026-08-10T08:30:00+00:00",
-    }
     response = handler.invoke(runtime_payload(
         agent_session_id="whatsapp-session-1",
         channel="whatsapp",
-        option_contract=option_contract,
     ))
 
     assert captured["agent_session_id"] == "whatsapp-session-1"
-    assert captured["build_channel"] == "whatsapp"
-    assert captured["option_contract"] == option_contract
     assert response["memory"] == {
         "memory_id": "memory-1",
         "actor_id": "customer-1",
@@ -1044,241 +1133,6 @@ def test_runtime_request_accepts_missing_request_id():
     request = RuntimeRequest.model_validate(payload)
 
     assert request.request_id is None
-
-
-def test_runtime_request_preserves_typed_option_contract():
-    option_contract = {
-        "contract_id": "contract-1",
-        "contract_version": 1,
-        "consumer_capability": "start_cart_item_customization",
-        "options": [{"id": "item-5", "label": "Fifth"}],
-    }
-
-    request = RuntimeRequest.model_validate(runtime_payload(
-        channel="whatsapp",
-        option_contract=option_contract,
-    ))
-
-    assert request.option_contract == option_contract
-
-
-def _active_menu_contract():
-    return {
-        "contract_id": "private-contract",
-        "contract_version": 3,
-        "contract_kind": "selection_offer",
-        "required_effect": "item_selected",
-        "consumer_capability": "start_cart_item_customization",
-        "source_capability": "search_menu",
-        "source_request_id": "request-1",
-        "scope": {},
-        "options": [{"id": "private-item-5", "label": "Private Label"}],
-        "created_at": "2026-08-10T08:00:00+00:00",
-        "expires_at": "2026-08-10T08:30:00+00:00",
-    }
-
-
-def test_active_contract_zero_tool_result_has_no_retry_or_consumption(monkeypatch):
-    invocations = []
-    logged_events = []
-
-    class FakeAgent:
-        def __init__(self, session_manager):
-            self.session_manager = session_manager
-
-    def fake_invoke(message, **kwargs):
-        invocations.append((message, kwargs))
-        if len(invocations) == 1:
-            return SimpleNamespace(
-                message={"content": [{"text": "I will handle that."}]},
-                tool_calls=[],
-            )
-        return SimpleNamespace(
-            message={"content": [{"text": "Internal model wording."}]},
-            tool_calls=[{
-                "tool_name": "start_cart_item_customization",
-                "success": True,
-                "is_write": True,
-                "result": {
-                    "success": True,
-                    "user_message": "Which size would you like?",
-                    "grounding": {"transactional_effects": ["item_selected"]},
-                },
-                "error_code": None,
-            }],
-        )
-
-    monkeypatch.setattr(
-        handler, "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
-    )
-    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
-    monkeypatch.setattr(
-        handler,
-        "run_semantic_classifier",
-        lambda **_kwargs: pytest.fail("conversation classifier must not run"),
-    )
-    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
-    monkeypatch.setattr(
-        handler.logger, "info",
-        lambda _message, *, extra=None: logged_events.append(extra or {}),
-    )
-    contract = _active_menu_contract()
-
-    response = handler.invoke(runtime_payload(
-        message="private customer wording",
-        channel="whatsapp",
-        required_effect="item_selected",
-        expected_write_tool="start_cart_item_customization",
-        available_options=[{"id": "private-item-5", "label": "Private Label"}],
-        option_contract=contract,
-    ))
-
-    assert len(invocations) == 1
-    assert invocations[0][1]["option_contract"] == contract
-    assert "primary_contract_recovery" not in invocations[0][1]
-    assert response["tool_calls"] == []
-    assert response["text"] == "I will handle that."
-    assert response["required_effect"] == "item_selected"
-    assert response["grounding_protocol_version"] == 2
-    assert "primary_contract_recovery_attempted" not in response
-    assert "primary_contract_recovery_succeeded" not in response
-    event = next(
-        item for item in logged_events
-        if item.get("event") == "whatsapp_grounding_completed"
-    )
-    assert event["grounding_protocol_version"] == 2
-    for private_value in (
-        "private customer wording", "private-contract", "private-item-5",
-        "Private Label",
-    ):
-        assert private_value not in repr(event)
-
-
-def test_normal_contract_selection_tool_call_does_not_retry(monkeypatch):
-    invocation_count = 0
-
-    class FakeAgent:
-        def __init__(self, session_manager):
-            self.session_manager = session_manager
-
-    def fake_invoke(_message, **_kwargs):
-        nonlocal invocation_count
-        invocation_count += 1
-        return SimpleNamespace(
-            message={"content": [{"text": "Selection executed."}]},
-            tool_calls=[{
-                "tool_name": "start_cart_item_customization",
-                "success": True,
-                "is_write": True,
-                "result": {
-                    "success": True,
-                    "user_message": "Which size would you like?",
-                    "grounding": {"transactional_effects": ["item_selected"]},
-                },
-                "error_code": None,
-            }],
-        )
-
-    monkeypatch.setattr(
-        handler, "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
-    )
-    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
-    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
-
-    response = handler.invoke(runtime_payload(
-        channel="whatsapp",
-        required_effect="item_selected",
-        expected_write_tool="start_cart_item_customization",
-        available_options=[{"id": "private-item-5", "label": "Private Label"}],
-        option_contract=_active_menu_contract(),
-    ))
-
-    assert invocation_count == 1
-    assert response["tool_calls"][0]["tool_name"] == (
-        "start_cart_item_customization"
-    )
-    assert response["text"] == "Which size would you like?"
-    assert response["grounding_protocol_version"] == 2
-    assert "primary_contract_recovery_attempted" not in response
-
-
-def test_active_contract_primary_is_invoked_exactly_once(monkeypatch):
-    invocation_count = 0
-
-    class FakeAgent:
-        def __init__(self, session_manager):
-            self.session_manager = session_manager
-
-    def fake_invoke(_message, **_kwargs):
-        nonlocal invocation_count
-        invocation_count += 1
-        return SimpleNamespace(
-            message={"content": [{"text": "I will handle that."}]},
-            tool_calls=[],
-        )
-
-    monkeypatch.setattr(
-        handler, "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
-    )
-    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
-    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
-
-    response = handler.invoke(runtime_payload(
-        channel="whatsapp",
-        required_effect="item_selected",
-        expected_write_tool="start_cart_item_customization",
-        available_options=[{"id": "private-item-5", "label": "Private Label"}],
-        option_contract=_active_menu_contract(),
-    ))
-
-    assert invocation_count == 1
-    assert response["text"] == "I will handle that."
-    assert response["required_effect"] == "item_selected"
-    assert response["tool_calls"] == []
-
-
-@pytest.mark.parametrize(
-    ("requests_effect", "selected_option"),
-    [(False, None), (True, "not-offered")],
-)
-def test_nonqualifying_contract_turn_does_not_retry(
-    monkeypatch, requests_effect, selected_option,
-):
-    invocation_count = 0
-
-    class FakeAgent:
-        def __init__(self, session_manager):
-            self.session_manager = session_manager
-
-    def fake_invoke(_message, **_kwargs):
-        nonlocal invocation_count
-        invocation_count += 1
-        return SimpleNamespace(
-            message={"content": [{"text": "Verified information only."}]},
-            tool_calls=[],
-        )
-
-    monkeypatch.setattr(
-        handler, "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
-    )
-    monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke)
-    monkeypatch.setattr(handler, "get_agentcore_runtime_settings", lambda: settings())
-
-    response = handler.invoke(runtime_payload(
-        channel="whatsapp",
-        required_effect="item_selected",
-        expected_write_tool="start_cart_item_customization",
-        available_options=[{"id": "private-item-5", "label": "Private Label"}],
-        option_contract=_active_menu_contract(),
-    ))
-
-    assert invocation_count == 1
-    assert response["grounding_protocol_version"] == 2
-    assert "primary_contract_recovery_attempted" not in response
 
 
 def test_handler_classifies_order_intent_without_tools_or_conversation_memory(monkeypatch):
@@ -1418,7 +1272,7 @@ def test_handler_forwards_missing_request_id_without_substitute(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": SimpleNamespace(
+        lambda *, session_manager: SimpleNamespace(
             session_manager=session_manager
         ),
     )
@@ -1448,7 +1302,7 @@ def test_handler_forwards_missing_request_id_without_substitute(monkeypatch):
 
 
 def test_handler_uses_user_id_as_actor_when_customer_id_missing(monkeypatch):
-    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager, channel="web": lambda message, **kwargs: "ok")
+    monkeypatch.setattr(handler, "build_restaurant_agent", lambda *, session_manager: lambda message, **kwargs: "ok")
     monkeypatch.setattr(
         handler,
         "invoke_restaurant_agent",
@@ -1479,7 +1333,7 @@ def test_same_session_id_restores_conversation_history(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": FakeAgent(session_manager),
+        lambda *, session_manager: FakeAgent(session_manager),
     )
     monkeypatch.setattr(handler, "invoke_restaurant_agent", fake_invoke_restaurant_agent)
     monkeypatch.setattr(handler, "agent_result_text", lambda result: result.message["content"][0]["text"])
@@ -1502,7 +1356,7 @@ def test_file_session_manager_is_not_used_in_agentcore_runtime(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": SimpleNamespace(session_manager=session_manager),
+        lambda *, session_manager: SimpleNamespace(session_manager=session_manager),
     )
     monkeypatch.setattr(
         handler,
@@ -1532,7 +1386,7 @@ def test_session_manager_cleanup_occurs_after_invocation_failure(monkeypatch):
     monkeypatch.setattr(
         handler,
         "build_restaurant_agent",
-        lambda *, session_manager, channel="web": SimpleNamespace(session_manager=session_manager),
+        lambda *, session_manager: SimpleNamespace(session_manager=session_manager),
     )
 
     def fail_invoke(message, **kwargs):

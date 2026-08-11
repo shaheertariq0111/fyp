@@ -62,7 +62,6 @@ def apply_legacy_item_selection_compatibility(
 
 class PresentationConstraints(BaseModel):
     max_items: int | None = Field(default=None, ge=1, le=50)
-    role: Literal["selection_offer", "informational_reference"] | None = None
 
 
 class GroundingOption(BaseModel):
@@ -83,8 +82,6 @@ class GroundingEvidence(BaseModel):
     immutable_facts: list[ImmutableFact] = Field(default_factory=list, max_length=50)
     exact_customer_text: str | None = None
     presentation: PresentationConstraints | None = None
-    option_contract_proposal: dict[str, Any] | None = None
-    option_contract_consumption: dict[str, Any] | None = None
 
 
 class ToolResponse(BaseModel):

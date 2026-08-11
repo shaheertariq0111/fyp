@@ -6,7 +6,6 @@ import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import urlparse
 
 from src.api.schemas import ChatRequest
 from src.api.whatsapp import WhatsAppInboundMessage
@@ -21,10 +20,6 @@ UNGROUNDED_ORDER_SUBMISSION_ERROR_CODE = (
     "UNGROUNDED_ORDER_SUBMISSION_CLAIM"
 )
 AUTHORITATIVE_SUBMISSION_TOOLS = {"confirm_order", "update_order_flow"}
-WHATSAPP_MENU_LINK_FORBIDDEN_ERROR_CODE = "WHATSAPP_MENU_LINK_FORBIDDEN"
-WHATSAPP_MENU_LINK_FORBIDDEN_FALLBACK = (
-    "I can help you browse the menu and complete your order here in WhatsApp."
-)
 _ORDER_SUBMISSION_CLAIM_PATTERNS = (
     re.compile(
         r"\b(?:your|the|this)\s+order\s+"
@@ -284,38 +279,10 @@ def whatsapp_reply_from_response(
     customer_id: str,
     resumed: bool = False,
     logger: logging.Logger | None = None,
-    menu_site_base_url: str | None = None,
 ) -> WhatsAppConversationReply | None:
     reply = response.get("text") if isinstance(response, dict) else None
     if not isinstance(reply, str) or not reply.strip():
         return None
-
-    if menu_site_base_url is None:
-        try:
-            from src.infrastructure.config import get_settings
-            menu_site_base_url = str(get_settings().menu_site_base_url)
-        except Exception:
-            menu_site_base_url = None
-    if _contains_forbidden_menu_session_evidence(response) or (
-        menu_site_base_url and _contains_configured_menu_site_url(reply, menu_site_base_url)
-    ):
-        (logger or logging.getLogger(__name__)).warning(
-            "WhatsApp menu-session artifact blocked",
-            extra={
-                "event": "whatsapp_menu_link_forbidden",
-                "error_code": WHATSAPP_MENU_LINK_FORBIDDEN_ERROR_CODE,
-                "channel": "whatsapp",
-                "request_id": request_id,
-                "agent_session_id": session_id,
-            },
-        )
-        return WhatsAppConversationReply(
-            WHATSAPP_MENU_LINK_FORBIDDEN_FALLBACK,
-            request_id,
-            session_id,
-            customer_id,
-            resumed=resumed,
-        )
 
     submission = authoritative_order_submission_from_response(response)
     submitted_order_id = None
@@ -404,43 +371,3 @@ def _is_canonical_string(value: Any) -> bool:
         and bool(value)
         and value == value.strip()
     )
-
-
-def _contains_forbidden_menu_session_evidence(response: Any) -> bool:
-    if not isinstance(response, dict) or not isinstance(response.get("tool_calls"), list):
-        return False
-    for call in response["tool_calls"]:
-        if not isinstance(call, dict) or call.get("success") is not True:
-            continue
-        result = call.get("result")
-        if not isinstance(result, dict) or result.get("success") is not True:
-            continue
-        grounding = result.get("grounding")
-        if not isinstance(grounding, dict):
-            continue
-        if "menu_session_created" in (grounding.get("transactional_effects") or []):
-            return True
-        for artifact in grounding.get("artifacts") or []:
-            if isinstance(artifact, dict) and artifact.get("kind") in {
-                "menu_session", "menu_site"
-            }:
-                return True
-    return False
-
-
-def _contains_configured_menu_site_url(text: str, base_url: str) -> bool:
-    base = urlparse(base_url)
-    base_path = base.path.rstrip("/")
-    for candidate in re.findall(r"https?://[^\s<>\]\[()]+", text):
-        parsed = urlparse(candidate.rstrip(".,!?;:'\""))
-        candidate_path = parsed.path.rstrip("/")
-        if (
-            parsed.scheme.casefold() == base.scheme.casefold()
-            and parsed.netloc.casefold() == base.netloc.casefold()
-            and (
-                candidate_path == base_path
-                or candidate_path.startswith(f"{base_path}/")
-            )
-        ):
-            return True
-    return False

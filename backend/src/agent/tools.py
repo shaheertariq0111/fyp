@@ -1,24 +1,12 @@
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
 import logging
 from typing import Literal
-import uuid
 
 from strands import tool
 
 from src.agent.context import get_request_context
 from src.agent.dependencies import get_services
-from src.models.tool_responses import (
-    GroundingOption,
-    PresentationConstraints,
-    ToolResponse,
-)
-from src.models.conversation_contracts import (
-    OPTION_CONTRACT_TTL_SECONDS,
-    OptionContract,
-    OptionContractConsumption,
-    PresentationRole,
-)
+from src.models.tool_responses import ToolResponse
 
 
 logger = logging.getLogger(__name__)
@@ -72,18 +60,9 @@ def _record_tool_call(tool_name: str, is_write: bool, result: dict) -> None:
     })
 
 
-def _result(
-    tool_name: str,
-    call: Callable[[], ToolResponse],
-    *,
-    is_write: bool = False,
-    transform: Callable[[ToolResponse], ToolResponse] | None = None,
-) -> dict:
+def _result(tool_name: str, call: Callable[[], ToolResponse], *, is_write: bool = False) -> dict:
     try:
-        response = call()
-        if transform is not None:
-            response = transform(response)
-        result = response.model_dump(exclude_none=True)
+        result = call().model_dump(exclude_none=True)
     except Exception as exc:
         try:
             context = get_request_context()
@@ -130,151 +109,10 @@ def _result(
     return result
 
 
-def _with_option_contract_proposal(
-    response: ToolResponse,
-    *,
-    source_capability: str,
-    consumer_capability: str,
-    presentation_role: PresentationRole,
-    scope: dict[str, str] | None = None,
-) -> ToolResponse:
-    if presentation_role != "selection_offer" or not response.success:
-        return response
-    evidence = response.grounding
-    if not evidence or not evidence.required_next_effect or not evidence.offered_options:
-        return response
-    consumer_capability = {
-        "set_customization_mode": "set_customization_mode",
-        "ask_customization_choice": "save_customization_choice",
-        "choose_upsell": "handle_cart_upsell",
-        "ask_fulfillment_method": "update_order_flow",
-    }.get(response.next_action, consumer_capability)
-    data = response.data if isinstance(response.data, dict) else {}
-    derived_scope = {
-        key: str(data[key])
-        for key in ("cart_id", "cart_item_id", "field_name", "order_id")
-        if data.get(key)
-    }
-    context = get_request_context()
-    now = datetime.now(timezone.utc)
-    request_id = context.request_id or context.agent_session_id
-    call_index = len(context.tool_calls)
-    contract = OptionContract(
-        contract_id=str(uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"{context.agent_session_id}:{request_id}:{source_capability}:{call_index}",
-        )),
-        contract_version=1,
-        required_effect=evidence.required_next_effect,
-        consumer_capability=consumer_capability,
-        source_capability=source_capability,
-        source_request_id=request_id,
-        scope={**derived_scope, **(scope or {})},
-        options=[option.model_dump() for option in evidence.offered_options],
-        created_at=now.isoformat(),
-        expires_at=(now + timedelta(seconds=OPTION_CONTRACT_TTL_SECONDS)).isoformat(),
-    )
-    evidence.option_contract_proposal = contract.model_dump()
-    return response
-
-
-def _with_fulfillment_option_evidence(response: ToolResponse) -> ToolResponse:
-    data = response.data if isinstance(response.data, dict) else {}
-    if response.success and data.get("status") == "awaiting_fulfillment_method":
-        evidence = response.grounding
-        if evidence is not None:
-            evidence.required_next_effect = "fulfillment_saved"
-            evidence.offered_options = [
-                GroundingOption(id="set_delivery", label="Delivery"),
-                GroundingOption(id="set_takeaway", label="Takeaway"),
-            ]
-            evidence.exact_customer_text = (
-                f"{response.user_message}\n\nWould you like delivery or takeaway?"
-            )
-    return response
-
-
-def _contract_validation(
-    capability: str,
-    contract_id: str | None,
-    contract_version: int | None,
-    selected_option_id: str | None,
-    scope: dict[str, str] | None = None,
-    bound_option_id: str | None = None,
-) -> ToolResponse | OptionContract | None:
-    context = get_request_context()
-    if context.channel != "whatsapp":
-        return None
-    return get_services().agent_sessions.validate_option_contract_consumption(
-        context.customer_id or context.user_id,
-        context.agent_session_id,
-        consumer_capability=capability,
-        contract_id=contract_id,
-        contract_version=contract_version,
-        selected_option_id=selected_option_id,
-        scope=scope or {},
-        bound_option_id=bound_option_id,
-    )
-
-
-def _contract_write(
-    tool_name: str,
-    call: Callable[[], ToolResponse],
-    *,
-    contract_id: str | None,
-    contract_version: int | None,
-    selected_option_id: str | None,
-    successor_consumer: str | None = None,
-    successor_role: PresentationRole = "selection_offer",
-    successor_scope: Callable[[ToolResponse], dict[str, str]] | None = None,
-    scope: dict[str, str] | None = None,
-    validated_call: Callable[[OptionContract], ToolResponse] | None = None,
-    bound_option_id: str | None = None,
-) -> dict:
-    validation = _contract_validation(
-        tool_name,
-        contract_id,
-        contract_version,
-        selected_option_id,
-        scope,
-        bound_option_id,
-    )
-    if isinstance(validation, ToolResponse):
-        return _result(tool_name, lambda: validation, is_write=True)
-
-    def transform(response: ToolResponse) -> ToolResponse:
-        if response.success and isinstance(validation, OptionContract):
-            evidence = response.grounding
-            if evidence and validation.required_effect in evidence.transactional_effects:
-                evidence.option_contract_consumption = OptionContractConsumption(
-                    contract_id=validation.contract_id,
-                    contract_version=validation.contract_version,
-                    effect=validation.required_effect,
-                    selected_option_id=selected_option_id or "",
-                ).model_dump()
-        if successor_consumer:
-            response = _with_option_contract_proposal(
-                response,
-                source_capability=tool_name,
-                consumer_capability=successor_consumer,
-                presentation_role=successor_role,
-                scope=successor_scope(response) if successor_scope else {},
-            )
-        return response
-
-    write_call = (
-        lambda: validated_call(validation)
-        if validated_call and isinstance(validation, OptionContract)
-        else call()
-    )
-    return _result(tool_name, write_call, is_write=True, transform=transform)
-
-
 @tool
 def search_menu(query: str | None = None, category: str | None = None,
                 tags: list[str] | None = None, max_price: int | None = None,
-                available_only: bool = True, max_results: int | None = None,
-                presentation_role: PresentationRole = "selection_offer") -> dict:
+                available_only: bool = True, max_results: int | None = None) -> dict:
     """Search current menu data for browsing and recommendations.
 
     Use query for descriptive user terms such as "pizza", "chicken", "spicy",
@@ -287,12 +125,6 @@ def search_menu(query: str | None = None, category: str | None = None,
     return _result("search_menu", lambda: menu.search_menu(
         query=query, category=category, tags=tags, max_price=max_price,
         available_only=available_only, limit=limit,
-        presentation_role=presentation_role,
-    ), transform=lambda response: _with_option_contract_proposal(
-        response,
-        source_capability="search_menu",
-        consumer_capability="start_cart_item_customization",
-        presentation_role=presentation_role,
     ))
 
 
@@ -312,87 +144,25 @@ def create_menu_session_link(item_id: str | None = None) -> dict:
     ))
 
 
-def _start_cart_item_customization(
-    item_id: str,
-    quantity: int = 1,
-    contract_id: str | None = None,
-    contract_version: int | None = None,
-    selected_option_id: str | None = None,
-) -> dict:
+@tool
+def start_cart_item_customization(item_id: str, quantity: int = 1) -> dict:
     """Start chat customization; multiple customizable units require a mode choice."""
     context = get_request_context()
-    def start(*, creation_idempotency_key: str | None = None) -> ToolResponse:
-        return get_services().carts.start_item_customization(
-            context.user_id, context.agent_session_id, item_id, quantity,
-            customer_id=context.customer_id,
-            customer_name=context.customer_name,
-            customer_phone=context.customer_phone,
-            channel=context.channel,
-            creation_idempotency_key=creation_idempotency_key,
-        )
-
-    return _contract_write("start_cart_item_customization", start,
-        contract_id=contract_id, contract_version=contract_version,
-        selected_option_id=selected_option_id or item_id,
-        scope=None,
-        successor_consumer="save_customization_choice",
-        validated_call=lambda contract: start(creation_idempotency_key=(
-            f"{contract.contract_id}:{contract.contract_version}"
-        )),
-        bound_option_id=(item_id if context.channel == "whatsapp" else None))
+    return _result("start_cart_item_customization", lambda: get_services().carts.start_item_customization(
+        context.user_id, context.agent_session_id, item_id, quantity,
+        customer_id=context.customer_id,
+        customer_name=context.customer_name,
+        customer_phone=context.customer_phone,
+        channel=context.channel,
+    ), is_write=True)
 
 
 @tool
-def start_cart_item_customization(
-    item_id: str,
-    quantity: int = 1,
-    contract_id: str | None = None,
-    contract_version: int | None = None,
-    selected_option_id: str | None = None,
-) -> dict:
-    """Start chat customization; web callers may omit option-contract fields."""
-    return _start_cart_item_customization(
-        item_id,
-        quantity,
-        contract_id,
-        contract_version,
-        selected_option_id,
-    )
-
-
-@tool(name="start_cart_item_customization")
-def whatsapp_start_cart_item_customization(
-    item_id: str,
-    contract_id: str,
-    contract_version: int,
-    selected_option_id: str,
-    quantity: int = 1,
-) -> dict:
-    """Start WhatsApp customization from a trusted active option contract.
-
-    Pass item_id and selected_option_id as the exact same chosen opaque option
-    ID, together with the trusted active contract_id and contract_version.
-    """
-    return _start_cart_item_customization(
-        item_id,
-        quantity,
-        contract_id,
-        contract_version,
-        selected_option_id,
-    )
-
-
-@tool
-def set_customization_mode(cart_id: str, mode: str, contract_id: str | None = None,
-                           contract_version: int | None = None,
-                           selected_option_id: str | None = None) -> dict:
+def set_customization_mode(cart_id: str, mode: str) -> dict:
     """Set multiple units to same or separate customization, validated by the cart service."""
     context = get_request_context()
-    return _contract_write("set_customization_mode", lambda: get_services().carts.set_customization_mode(context.user_id, cart_id, mode),
-        contract_id=contract_id, contract_version=contract_version,
-        selected_option_id=selected_option_id or mode,
-        scope={"cart_id": cart_id},
-        successor_consumer="save_customization_choice")
+    return _result("set_customization_mode", lambda: get_services().carts.set_customization_mode(context.user_id, cart_id, mode),
+                   is_write=True)
 
 
 @tool
@@ -400,9 +170,6 @@ def save_customization_choice(
     cart_item_id: str,
     field_name: str,
     selected_option_id: str | list[str],
-    contract_id: str | None = None,
-    contract_version: int | None = None,
-    contract_selected_option_id: str | None = None,
 ) -> dict:
     """Save authoritative single- or multi-select customization choices."""
 
@@ -426,78 +193,45 @@ def save_customization_choice(
         if not cart_id:
             return response
 
-        upsell = services.carts.handle_upsell(
+        return services.carts.handle_upsell(
             context.user_id,
             cart_id,
             "get_options",
         )
-        if response.grounding and upsell.grounding:
-            upsell.grounding.transactional_effects = list(dict.fromkeys([
-                *response.grounding.transactional_effects,
-                *upsell.grounding.transactional_effects,
-            ]))
-        return upsell
 
-    selected_for_contract = contract_selected_option_id or (
-        selected_option_id if isinstance(selected_option_id, str) else None
-    )
-    return _contract_write(
+    return _result(
         "save_customization_choice",
         save_and_fetch_upsells,
-        contract_id=contract_id,
-        contract_version=contract_version,
-        selected_option_id=selected_for_contract,
-        scope={"cart_item_id": cart_item_id, "field_name": field_name},
-        successor_consumer="save_customization_choice",
+        is_write=True,
     )
 
 
 @tool
 def handle_cart_upsell(cart_id: str, action: str, item_id: str | None = None,
-                       quantity: int = 1, contract_id: str | None = None,
-                       contract_version: int | None = None,
-                       selected_option_id: str | None = None) -> dict:
+                       quantity: int = 1) -> dict:
     """Get, add, or skip data-driven cart upsells through the cart service."""
     context = get_request_context()
-    return _contract_write("handle_cart_upsell", lambda: get_services().carts.handle_upsell(
+    return _result("handle_cart_upsell", lambda: get_services().carts.handle_upsell(
         context.user_id, cart_id, action, item_id, quantity
-    ), contract_id=contract_id, contract_version=contract_version,
-        selected_option_id=selected_option_id or item_id,
-        scope={"cart_id": cart_id},
-        successor_consumer="save_customization_choice")
+    ), is_write=True)
 
 
 @tool
 def create_pending_order_from_cart(cart_id: str) -> dict:
     """Validate and convert a ready chat cart into a pending-confirmation order."""
     context = get_request_context()
-    return _result(
-        "create_pending_order_from_cart",
-        lambda: get_services().carts.create_pending_order(context.user_id, cart_id),
-        is_write=True,
-        transform=lambda response: _with_option_contract_proposal(
-            _with_fulfillment_option_evidence(response),
-            source_capability="create_pending_order_from_cart",
-            consumer_capability="update_order_flow",
-            presentation_role="selection_offer",
-        ),
-    )
+    return _result("create_pending_order_from_cart", lambda: get_services().carts.create_pending_order(context.user_id, cart_id),
+                   is_write=True)
 
 
 @tool
 def update_order_flow(order_id: str, action: str, value: str | None = None,
-                      idempotency_key: str | None = None,
-                      contract_id: str | None = None,
-                      contract_version: int | None = None,
-                      selected_option_id: str | None = None) -> dict:
+                      idempotency_key: str | None = None) -> dict:
     """Apply a validated order action: confirm, cancel, fulfillment, or address."""
     context = get_request_context()
-    return _contract_write("update_order_flow", lambda: get_services().orders.update_order_flow(
+    return _result("update_order_flow", lambda: get_services().orders.update_order_flow(
         context.user_id, order_id, action, value, idempotency_key
-    ), contract_id=contract_id, contract_version=contract_version,
-        selected_option_id=selected_option_id or action,
-        scope={"order_id": order_id},
-        successor_consumer="update_order_flow")
+    ), is_write=True)
 
 
 @tool
@@ -508,12 +242,6 @@ def begin_checkout(cart_id: str) -> dict:
         "begin_checkout",
         lambda: get_services().carts.create_pending_order(context.user_id, cart_id),
         is_write=True,
-        transform=lambda response: _with_option_contract_proposal(
-            _with_fulfillment_option_evidence(response),
-            source_capability="begin_checkout",
-            consumer_capability="update_order_flow",
-            presentation_role="selection_offer",
-        ),
     )
 
 
@@ -610,78 +338,16 @@ def cancel_order(order_id: str) -> dict:
 
 
 @tool
-def get_active_cart(
-    presentation_role: PresentationRole = "informational_reference",
-) -> dict:
+def get_active_cart() -> dict:
     """Read the current active chat cart for the trusted user/session."""
     context = get_request_context()
     return _result("get_active_cart", lambda: get_services().carts.get_active_cart(
         context.user_id, context.agent_session_id
-    ), transform=lambda response: _with_option_contract_proposal(
-        response,
-        source_capability="get_active_cart",
-        consumer_capability="save_customization_choice",
-        presentation_role=presentation_role,
     ))
 
 
-def _with_order_status_presentation(
-    response: ToolResponse,
-    presentation_role: PresentationRole,
-) -> ToolResponse:
-    evidence = response.grounding
-    if evidence is not None:
-        evidence.required_next_effect = None
-        evidence.offered_options = []
-        evidence.presentation = PresentationConstraints(
-            role="informational_reference"
-        )
-
-    selected = _selected_verified_order(response)
-    eligible = bool(
-        presentation_role == "selection_offer"
-        and selected is not None
-        and selected["status"] == "awaiting_fulfillment_method"
-        and evidence is not None
-    )
-    response.agent = dict(response.agent or {})
-    if not eligible:
-        response.agent["instruction"] = (
-            "Present only the verified order-status facts. Do not invite an "
-            "actionable delivery or takeaway selection from this result."
-        )
-        return response
-
-    evidence.required_next_effect = "fulfillment_saved"
-    evidence.offered_options = [
-        GroundingOption(id="set_delivery", label="Delivery"),
-        GroundingOption(id="set_takeaway", label="Takeaway"),
-    ]
-    evidence.presentation = PresentationConstraints(role="selection_offer")
-    response = _with_option_contract_proposal(
-        response,
-        source_capability="get_order_status",
-        consumer_capability="update_order_flow",
-        presentation_role="selection_offer",
-        scope={"order_id": selected["order_id"]},
-    )
-    if evidence.option_contract_proposal is not None:
-        evidence.exact_customer_text = (
-            f"{response.user_message}\n\n"
-            "Would you like delivery or takeaway for this order?"
-        )
-        response.agent["instruction"] = (
-            "Present the exact_customer_text fulfillment question. Its choices "
-            "are backed by the typed option contract proposal in this result."
-        )
-    return response
-
-
 @tool
-def get_order_status(
-    order_id: str | None = None,
-    presentation_role: PresentationRole = "informational_reference",
-) -> dict:
+def get_order_status(order_id: str | None = None) -> dict:
     """Read one authorized order or the current user's active orders from DynamoDB."""
     context = get_request_context()
 
@@ -711,20 +377,7 @@ def get_order_status(
                 )
         return response
 
-    return _result(
-        "get_order_status",
-        get_and_remember_order,
-        transform=(
-            (
-                lambda response: _with_order_status_presentation(
-                    response,
-                    presentation_role,
-                )
-            )
-            if context.channel == "whatsapp"
-            else None
-        ),
-    )
+    return _result("get_order_status", get_and_remember_order)
 
 
 def _selected_verified_order(response: ToolResponse) -> dict | None:
@@ -1021,15 +674,3 @@ MVP_TOOLS = [
     save_customer_address,
     retrieve_restaurant_knowledge,
 ]
-
-
-def tools_for_channel(channel: str) -> list[Callable]:
-    """Return capabilities selected only from trusted channel metadata."""
-    if channel == "whatsapp":
-        return [
-            whatsapp_start_cart_item_customization
-            if capability is start_cart_item_customization else capability
-            for capability in MVP_TOOLS
-            if capability is not create_menu_session_link
-        ]
-    return list(MVP_TOOLS)

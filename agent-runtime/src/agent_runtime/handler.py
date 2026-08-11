@@ -8,10 +8,15 @@ from typing import Any
 
 from src.agent.order_intent import classify_order_intent
 from src.agent.response_grounding import (
+    AssistantClaimAssessment,
     GroundedAssistantMemoryBuffer,
     SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
-    ground_agent_response_v2,
+    SemanticClassifierTimeout,
+    assess_assistant_claims,
+    ground_authoritative_tool_response,
+    ground_agent_response,
     grounding_decision_log_fields,
+    tool_evidence_payload,
     run_semantic_classifier,
 )
 from src.agent.whatsapp_turn_intent import classify_whatsapp_turn
@@ -175,8 +180,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             )
             try:
                 runtime_agent = build_restaurant_agent(
-                    session_manager=memory_buffer or session_manager,
-                    channel=request.channel,
+                    session_manager=memory_buffer or session_manager
                 )
                 result = invoke_restaurant_agent(
                     request.message,
@@ -189,14 +193,16 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                     customer_phone=request.customer_phone,
                     channel=request.channel,
                     agent=runtime_agent,
-                    option_contract=request.option_contract,
                 )
                 tool_calls = [
                     ToolCallResult.model_validate(call)
                     for call in (getattr(result, "tool_calls", []) or [])
                 ]
                 raw_text = agent_result_text(result)
+                claim_assessment = None
                 grounded_text = raw_text
+                no_write_authorized = False
+                informational_turn = False
                 expected_write_tool = request.expected_write_tool
                 required_effect, expected_write_tool = (
                     apply_legacy_item_selection_compatibility(
@@ -206,19 +212,70 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 )
                 grounding_source = None
                 grounding_rejection_reason = None
+                assessment_origin = None
+                semantic_classifier_status = None
                 if request.channel == "whatsapp":
-                    grounded = ground_agent_response_v2(
+                    grounded = ground_authoritative_tool_response(
                         tool_calls=tool_calls,
-                        text=raw_text,
                         expected_write_tool=expected_write_tool,
                         required_effect=required_effect,
-                        available_options=request.available_options,
                     )
+                    authoritative_fast_path = grounded is not None
+                    if grounded is None:
+                        try:
+                            claim_assessment = run_semantic_classifier(
+                                classifier_name="grounding_assessment",
+                                timeout_seconds=SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS,
+                                operation=lambda: assess_assistant_claims(
+                                    customer_message=request.message,
+                                    assistant_message=raw_text,
+                                    tool_evidence=tool_evidence_payload(tool_calls),
+                                    required_effect=required_effect,
+                                    available_options=request.available_options,
+                                ),
+                            )
+                            assessment_origin = "model"
+                            semantic_classifier_status = "completed"
+                        except SemanticClassifierTimeout:
+                            claim_assessment = AssistantClaimAssessment(
+                                claims_transactional_progression=True,
+                                claimed_actions=["other_transactional_progression"],
+                                customer_requests_required_effect=bool(required_effect),
+                            )
+                            assessment_origin = "timeout_synthetic"
+                            semantic_classifier_status = "timed_out"
+                        except Exception:
+                            claim_assessment = AssistantClaimAssessment(
+                                claims_transactional_progression=True,
+                                claimed_actions=["other_transactional_progression"],
+                                customer_requests_required_effect=bool(required_effect),
+                            )
+                            assessment_origin = "exception_synthetic"
+                            semantic_classifier_status = "failed"
+                        no_write_authorized = not (
+                            required_effect
+                            and claim_assessment.customer_requests_required_effect
+                        )
+                        informational_turn = claim_assessment.informational_turn
+                        grounded = ground_agent_response(
+                            text=raw_text,
+                            tool_calls=tool_calls,
+                            claim_assessment=claim_assessment,
+                            no_write_authorized=no_write_authorized,
+                            informational_turn=informational_turn,
+                            expected_write_tool=expected_write_tool,
+                            required_effect=required_effect,
+                            available_options=request.available_options,
+                        )
+                    else:
+                        semantic_classifier_status = "not_run_authoritative_fast_path"
                     logger.info(
                         "WhatsApp response grounded",
                         extra={
                             "event": "whatsapp_grounding_completed",
-                            "grounding_protocol_version": 2,
+                            "authoritative_fast_path": authoritative_fast_path,
+                            "assessment_origin": assessment_origin,
+                            "semantic_classifier_status": semantic_classifier_status,
                             **grounding_decision_log_fields(grounded),
                         },
                     )
@@ -282,18 +339,21 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     )
     response = RuntimeResponse(
         text=grounded_text,
-        grounding_protocol_version=(2 if request.channel == "whatsapp" else None),
-        option_contract_protocol_version=1,
         tool_calls=tool_calls,
         memory={
             "memory_id": memory_id,
             "actor_id": actor_id,
             "session_id": memory_session_id,
         },
+        claim_assessment=claim_assessment,
+        no_write_authorized=no_write_authorized,
+        informational_turn=informational_turn,
         expected_write_tool=expected_write_tool,
         required_effect=required_effect if request.channel == "whatsapp" else None,
         grounding_source=grounding_source,
         grounding_rejection_reason=grounding_rejection_reason,
+        assessment_origin=assessment_origin,
+        semantic_classifier_status=semantic_classifier_status,
     )
     return response.model_dump(exclude_none=True)
 
