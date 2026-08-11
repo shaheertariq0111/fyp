@@ -2,6 +2,8 @@ import json
 import logging
 
 from agent_runtime.logging import JsonFormatter
+from agent_runtime import logging as agent_runtime_logging
+from src.infrastructure.logging import SAFE_LOG_FIELDS as BACKEND_SAFE_LOG_FIELDS
 
 
 def _record(**extra):
@@ -75,6 +77,31 @@ def test_json_formatter_serializes_existing_and_phase_one_fields():
     for key, value in fields.items():
         expected = list(value) if isinstance(value, tuple) else value
         assert payload[key] == expected
+
+
+def test_json_formatter_includes_option_contract_failure_reason():
+    payload = json.loads(JsonFormatter().format(
+        _record(option_contract_failure_reason="scope_mismatch")
+    ))
+
+    assert payload["option_contract_failure_reason"] == "scope_mismatch"
+
+
+def test_agent_runtime_field_allowlist_matches_backend_with_one_documented_exception():
+    # agent_runtime installs its own root-logger formatter (see configure_logging),
+    # so any backend logger code that executes inside the AgentCore Runtime process
+    # (e.g. agent_session_service.py, which runs there for WhatsApp tool calls) is
+    # filtered by *this* module's field list, not backend's SAFE_LOG_FIELDS. A field
+    # added to only one list is silently dropped from that code's log output with no
+    # error anywhere. agent_runtime.logging.SAFE_LOG_FIELDS is derived directly from
+    # backend's tuple, so that can only happen now via a deliberate, named exception
+    # (see agent_runtime/logging.py) — this test fails loudly if any other, undocumented
+    # difference appears instead.
+    backend_only = set(BACKEND_SAFE_LOG_FIELDS) - set(agent_runtime_logging.SAFE_LOG_FIELDS)
+    agent_runtime_only = set(agent_runtime_logging.SAFE_LOG_FIELDS) - set(BACKEND_SAFE_LOG_FIELDS)
+
+    assert backend_only == {"exception_message"}
+    assert agent_runtime_only == set()
 
 
 def test_json_formatter_rejects_unknown_sensitive_extras():
