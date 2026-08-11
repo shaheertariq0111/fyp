@@ -3386,79 +3386,6 @@ def test_old_runtime_missing_grounding_metadata_fails_closed(caplog):
     assert "semantic_classifier_status" not in public
 
 
-def test_protocol_v2_no_tool_whatsapp_response_needs_no_assessment(caplog):
-    context = AgentRequestContext(
-        user_id="user", agent_session_id="session",
-        customer_id="user", channel="whatsapp",
-    )
-    response = main._chat_response_from_invocation(
-        context,
-        {
-            "customer": {"customer_id": "user", "phone_verified": True},
-            "session": {"session_id": "session", "channel": "whatsapp"},
-        },
-        AgentInvocationResult(
-            text="How can I help with your order?",
-            raw_result={
-                "grounding_protocol_version": 2,
-                "tool_calls": [],
-                "grounding_source": "conversation",
-            },
-        ),
-    )
-
-    assert response.text == "How can I help with your order?"
-    completed = next(
-        record
-        for record in caplog.records
-        if getattr(record, "event", None) == "backend_grounding_completed"
-    )
-    assert completed.grounding_protocol_version == 2
-    assert completed.assessment_transport_status == "not_required_v2"
-    assert completed.runtime_backend_expected_action_agree is True
-    assert completed.runtime_backend_required_effect_agree is True
-    assert not any(
-        getattr(record, "assessment_origin", None) == "boundary_missing_synthetic"
-        for record in caplog.records
-    )
-
-
-def test_protocol_v2_http_boundary_preserves_exact_artifact():
-    context = AgentRequestContext(
-        user_id="user", agent_session_id="session",
-        customer_id="user", channel="whatsapp",
-    )
-    response = main._chat_response_from_invocation(
-        context,
-        {
-            "customer": {"customer_id": "user", "phone_verified": True},
-            "session": {"session_id": "session", "channel": "whatsapp"},
-        },
-        AgentInvocationResult(
-            text="Exact order confirmation.",
-            raw_result={
-                "grounding_protocol_version": 2,
-                "tool_calls": [{
-                    "tool_name": "get_order_status",
-                    "success": True,
-                    "is_write": False,
-                    "result": {
-                        "success": True,
-                        "user_message": "Service message.",
-                        "grounding": {
-                            "exact_customer_text": "Exact order confirmation.",
-                        },
-                    },
-                    "error_code": None,
-                }],
-                "grounding_source": "exact_artifact",
-            },
-        ),
-    )
-
-    assert response.text == "Exact order confirmation."
-
-
 def test_chat_preserves_authoritative_submitted_order_cancel_protection():
     context = AgentRequestContext(
         user_id="user",
@@ -3720,8 +3647,7 @@ def test_chat_route_delegates_cart_and_order_language_to_agent(monkeypatch):
             "expected_write_tool": None,
             "required_effect": None,
             "available_options": None,
-            "option_contract": None,
-        }
+    }
 
 
 def test_successful_chat_logs_exclude_trusted_request_and_session_ids(

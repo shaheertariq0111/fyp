@@ -7,6 +7,7 @@ import pytest
 
 from src.agent_client.agentcore import AgentCoreRuntimeClient
 from src.agent.order_intent import OrderIntentClassification, OrderIntentRequest
+from src.agent.response_grounding import AssistantClaimAssessment
 from src.agent.whatsapp_turn_intent import (
     WhatsAppTurnIntentRequest,
     WhatsAppTurnInterpretation,
@@ -31,26 +32,6 @@ def test_agent_invocation_request_supports_optional_request_id():
 
     assert request.request_id == "req-trusted"
     assert legacy_request.request_id is None
-
-
-def test_typed_option_contract_survives_agentcore_request_transport():
-    option_contract = {
-        "contract_id": "contract-1",
-        "contract_version": 1,
-        "consumer_capability": "start_cart_item_customization",
-        "options": [{"id": "item-5", "label": "Fifth"}],
-    }
-    request = AgentInvocationRequest(
-        message="select an item",
-        user_id="customer-1",
-        agent_session_id="session-1",
-        channel="whatsapp",
-        option_contract=option_contract,
-    )
-
-    payload = AgentCoreRuntimeClient._payload(request)
-
-    assert payload["option_contract"] == option_contract
 
 
 def test_local_agent_runtime_client_invokes_existing_strands_agent(monkeypatch):
@@ -122,7 +103,7 @@ def test_local_agent_runtime_client_preserves_missing_request_id(monkeypatch):
     assert captured["request_id"] is None
 
 
-def test_local_whatsapp_client_uses_classifier_free_v2_and_commits_final_text(monkeypatch):
+def test_local_whatsapp_client_commits_grounded_message_without_raw_redaction(monkeypatch):
     class Manager:
         def __init__(self):
             self.messages = []
@@ -147,11 +128,10 @@ def test_local_whatsapp_client_uses_classifier_free_v2_and_commits_final_text(mo
         )
 
     monkeypatch.setattr("src.agent_client.local.build_session_manager", lambda session_id: manager)
-    built_channels = []
-    def build_agent(*, session_manager, channel="web"):
-        built_channels.append(channel)
-        return SimpleNamespace(session_manager=session_manager)
-    monkeypatch.setattr("src.agent_client.local.build_restaurant_agent", build_agent)
+    monkeypatch.setattr(
+        "src.agent_client.local.build_restaurant_agent",
+        lambda *, session_manager: SimpleNamespace(session_manager=session_manager),
+    )
     monkeypatch.setattr("src.agent_client.local.invoke_restaurant_agent", fake_invoke)
     monkeypatch.setattr("src.agent_client.local.agent_result_text", lambda result: result.message["content"][0]["text"])
     monkeypatch.setattr(
@@ -163,8 +143,11 @@ def test_local_whatsapp_client_uses_classifier_free_v2_and_commits_final_text(mo
         ),
     )
     monkeypatch.setattr(
-        "src.agent_client.local.run_semantic_classifier",
-        lambda **_kwargs: pytest.fail("conversation grounding classifier must not run"),
+        "src.agent_client.local.assess_assistant_claims",
+        lambda **kwargs: AssistantClaimAssessment(
+            claims_transactional_progression=True,
+            claimed_actions=["item_selected"],
+        ),
     )
 
     result = LocalStrandsAgentRuntimeClient().invoke(AgentInvocationRequest(
@@ -176,13 +159,13 @@ def test_local_whatsapp_client_uses_classifier_free_v2_and_commits_final_text(mo
         available_options=[{"id": "item-1", "label": "First Item"}],
     ))
 
-    assert built_channels == ["whatsapp"]
+    assert "I selected" not in str(manager.messages)
     assert manager.messages[-1]["content"][0]["text"] == result.text
-    assert result.text == "I selected the item and saved a size."
-    assert result.raw_result.grounding_protocol_version == 2
-    assert result.raw_result.grounding_source == "conversation"
-    assert not hasattr(result.raw_result, "claim_assessment")
-    assert not hasattr(result.raw_result, "semantic_classifier_status")
+    assert result.raw_result.assessment_origin == "model"
+    assert result.raw_result.semantic_classifier_status == "completed"
+    assert result.raw_result.grounding_rejection_reason == (
+        "unsupported_transactional_effect"
+    )
 
 
 def test_local_agent_runtime_client_async_methods_are_agentcore_boundary():

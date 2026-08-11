@@ -3,7 +3,6 @@ from types import SimpleNamespace
 from botocore.exceptions import ClientError
 import pytest
 
-from src.models.conversation_contracts import OptionContract
 from src.services.agent_request_processor import (
     AgentRequestProcessor,
     PreparedAgentRequest,
@@ -309,10 +308,10 @@ def test_search_results_persist_expected_item_selection_write_and_options(caplog
         for record in caplog.records
         if getattr(record, "event", None) == "whatsapp_grounding_state_loaded"
     )
-    assert loaded.typed_contract_present is False
+    assert loaded.contract_present is True
     assert loaded.required_effect_present is True
     assert loaded.required_effect == "item_selected"
-    assert loaded.legacy_option_count == 2
+    assert loaded.available_option_count == 2
     transition = next(
         record
         for record in caplog.records
@@ -322,67 +321,6 @@ def test_search_results_persist_expected_item_selection_write_and_options(caplog
     assert transition.contract_created is True
     assert transition.contract_replaced is False
     assert transition.produced_option_count == 2
-
-
-def test_typed_non_item_selection_contract_logs_present_independent_of_legacy_items(caplog):
-    fulfillment_contract = OptionContract(
-        contract_id="fulfillment-contract",
-        contract_version=1,
-        required_effect="fulfillment_saved",
-        consumer_capability="update_order_flow",
-        source_capability="get_order_status",
-        source_request_id="request-1",
-        scope={"order_id": "ORD-1"},
-        options=[
-            {"id": "set_delivery", "label": "Delivery"},
-            {"id": "set_takeaway", "label": "Takeaway"},
-        ],
-        created_at="2026-08-10T08:00:00+00:00",
-        expires_at="2026-08-10T08:30:00+00:00",
-    )
-
-    class Sessions:
-        def get_active_option_contract(self, customer_id, session_id):
-            return fulfillment_contract
-
-        def get_whatsapp_order_state(self, customer_id, session_id):
-            # Stale legacy menu-selection state left over from an earlier,
-            # unrelated turn; must not be conflated with the typed contract.
-            return {
-                "offered_menu_items": [
-                    {"product_id": "item-1", "name": "First Item"},
-                    {"product_id": "item-2", "name": "Second Item"},
-                    {"product_id": "item-3", "name": "Third Item"},
-                ],
-                "whatsapp_required_effect": "item_selected",
-            }
-
-    processor = AgentRequestProcessor(
-        services_provider=lambda: SimpleNamespace(agent_sessions=Sessions()),
-        agent_client_provider=ForbiddenCall(),
-        identity_resolver=ForbiddenCall(),
-        response_builder=ForbiddenCall(),
-    )
-    context = SimpleNamespace(
-        channel="whatsapp", customer_id="customer-1",
-        user_id="user-1", agent_session_id="session-1",
-    )
-
-    with caplog.at_level("INFO"):
-        state = processor._whatsapp_grounding_state(context)
-
-    assert state["expected_write_tool"] == "update_order_flow"
-    assert state["required_effect"] == "fulfillment_saved"
-
-    loaded = next(
-        record
-        for record in caplog.records
-        if getattr(record, "event", None) == "whatsapp_grounding_state_loaded"
-    )
-    assert loaded.typed_contract_present is True
-    assert loaded.legacy_option_count == 3
-    assert not hasattr(loaded, "contract_present")
-    assert not hasattr(loaded, "available_option_count")
 
 
 def test_legacy_whatsapp_menu_state_is_inferred_only_at_orchestration_boundary():
@@ -566,68 +504,6 @@ def test_backend_grounding_logs_runtime_agreement_without_public_diagnostics(cap
     assert "grounding_rejection_reason" not in public
     assert "assessment_origin" not in public
     assert "semantic_classifier_status" not in public
-
-
-def test_backend_grounding_v2_accepts_no_tool_conversation_without_assessment(caplog):
-    response = _grounding_response_builder()(
-        _grounding_context(),
-        {"customer": {}},
-        SimpleNamespace(
-            text="How can I help with your order?",
-            raw_result={
-                "grounding_protocol_version": 2,
-                "tool_calls": [],
-                "grounding_source": "conversation",
-            },
-        ),
-    )
-
-    completed = next(
-        record
-        for record in caplog.records
-        if getattr(record, "event", None) == "backend_grounding_completed"
-    )
-    assert response.text == "How can I help with your order?"
-    assert completed.grounding_protocol_version == 2
-    assert completed.assessment_transport_status == "not_required_v2"
-    assert completed.runtime_backend_grounding_agree is True
-    assert completed.runtime_backend_expected_action_agree is True
-    assert completed.runtime_backend_required_effect_agree is True
-    assert not any(
-        getattr(record, "event", None) == "grounding_boundary_metadata_issue"
-        for record in caplog.records
-    )
-    assert not any(
-        getattr(record, "assessment_origin", None) == "boundary_missing_synthetic"
-        for record in caplog.records
-    )
-
-
-def test_backend_grounding_v2_reapplies_authoritative_failed_write():
-    response = _grounding_response_builder()(
-        _grounding_context(),
-        {"customer": {}},
-        SimpleNamespace(
-            text="I couldn't complete that change.",
-            raw_result={
-                "grounding_protocol_version": 2,
-                "tool_calls": [{
-                    "tool_name": "submit_order",
-                    "success": False,
-                    "is_write": True,
-                    "result": {
-                        "success": False,
-                        "user_message": "I couldn't complete that change.",
-                    },
-                    "error_code": "INVALID_ORDER_STATE",
-                }],
-                "grounding_source": "failed_write",
-                "grounding_rejection_reason": "authoritative_write_failed",
-            },
-        ),
-    )
-
-    assert response.text == "I couldn't complete that change."
 
 
 def test_backend_grounding_logs_runtime_disagreement_without_changing_text(caplog):

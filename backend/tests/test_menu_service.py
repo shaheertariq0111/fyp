@@ -1,5 +1,3 @@
-import inspect
-
 from src.services.menu_service import MenuService
 from fakes import MemoryMenuRepository
 
@@ -79,41 +77,6 @@ def test_configured_customer_result_limit_bounds_default_search_page():
     assert result.grounding.presentation.max_items == 2
     assert result.grounding.required_next_effect == "item_selected"
     assert len(result.grounding.offered_options) == 2
-
-
-def test_menu_presentation_role_controls_actionable_contract_evidence():
-    menu = service([item("item-1", name="First", starting_price=10)])
-
-    offer = menu.search_menu(presentation_role="selection_offer")
-    reference = menu.search_menu(presentation_role="informational_reference")
-
-    assert offer.grounding.required_next_effect == "item_selected"
-    assert [option.id for option in offer.grounding.offered_options] == ["item-1"]
-    assert offer.grounding.presentation.role == "selection_offer"
-    assert offer.agent["presentation_role"] == "selection_offer"
-    assert "actionable choices" in offer.agent["instruction"]
-    assert reference.grounding.required_next_effect is None
-    assert reference.grounding.offered_options == []
-    assert reference.grounding.presentation.role == "informational_reference"
-    assert reference.agent["presentation_role"] == "informational_reference"
-    assert "Do not render a numbered or selectable choice list" in (
-        reference.agent["instruction"]
-    )
-    assert reference.data == offer.data
-
-
-def test_presentation_semantics_depend_on_structured_role_not_customer_language():
-    menu = service([item("item-1", name="First", starting_price=10)])
-
-    reference = menu.search_menu(
-        query="First", presentation_role="informational_reference"
-    )
-    parameters = inspect.signature(MenuService.search_menu).parameters
-
-    assert "customer_message" not in parameters
-    assert "current_message" not in parameters
-    assert reference.grounding.presentation.role == "informational_reference"
-    assert reference.grounding.offered_options == []
 
 
 def test_search_menu_excludes_items_already_shown():

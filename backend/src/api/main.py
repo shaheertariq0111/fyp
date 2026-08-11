@@ -30,7 +30,6 @@ from src.agent.dependencies import get_services
 from src.agent.response_grounding import (
     AssistantClaimAssessment,
     ground_agent_response,
-    ground_agent_response_v2,
     grounding_comparison_log_fields,
     grounding_decision_log_fields,
     safe_assessment_origin_log_value,
@@ -693,74 +692,7 @@ def _chat_response_from_invocation(
     if write_succeeded:
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
-    grounding_protocol_version = (
-        result.get("grounding_protocol_version")
-        if isinstance(result, dict)
-        else getattr(result, "grounding_protocol_version", None)
-    )
-    if context.channel == "whatsapp" and grounding_protocol_version == 2:
-        backend_grounded = ground_agent_response_v2(
-            text=invocation.text,
-            tool_calls=tool_calls,
-            expected_write_tool=(
-                result.get("expected_write_tool")
-                if isinstance(result, dict)
-                else getattr(result, "expected_write_tool", None)
-            ),
-            required_effect=(
-                result.get("required_effect")
-                if isinstance(result, dict)
-                else getattr(result, "required_effect", None)
-            ),
-        )
-        response_text = backend_grounded.text
-        comparison = grounding_comparison_log_fields(
-            runtime_grounding_source=(
-                result.get("grounding_source")
-                if isinstance(result, dict)
-                else getattr(result, "grounding_source", None)
-            ),
-            runtime_grounding_rejection_reason=(
-                result.get("grounding_rejection_reason")
-                if isinstance(result, dict)
-                else getattr(result, "grounding_rejection_reason", None)
-            ),
-            runtime_text=invocation.text,
-            backend_response=backend_grounded,
-            runtime_claim_assessment_present=False,
-            runtime_grounding_metadata_present=True,
-            assessment_transport_status="not_required_v2",
-            runtime_expected_transactional_action=(
-                result.get("expected_write_tool")
-                if isinstance(result, dict)
-                else getattr(result, "expected_write_tool", None)
-            ),
-            runtime_required_next_effect=(
-                result.get("required_effect")
-                if isinstance(result, dict)
-                else getattr(result, "required_effect", None)
-            ),
-            compare_transition_metadata=True,
-        )
-        logger.info(
-            "Backend WhatsApp response grounded",
-            extra={
-                "event": "backend_grounding_completed",
-                "grounding_protocol_version": 2,
-                **grounding_decision_log_fields(backend_grounded),
-                **comparison,
-            },
-        )
-        if not comparison["runtime_backend_grounding_agree"]:
-            logger.warning(
-                "Runtime and backend grounding decisions differed",
-                extra={
-                    "event": "grounding_decision_mismatch",
-                    "grounding_protocol_version": 2,
-                    **comparison,
-                },
-            )
-    if context.channel == "whatsapp" and grounding_protocol_version != 2:
+    if context.channel == "whatsapp":
         assessment_payload = (
             result.get("claim_assessment")
             if isinstance(result, dict)
@@ -928,7 +860,7 @@ def _chat_response_from_invocation(
                     **comparison,
                 },
             )
-    if context.channel != "whatsapp":
+    else:
         response_text = _menu_grounded_response_from_tool_calls(tool_calls) or invocation.text
     return ChatResponse(
         text=response_text,

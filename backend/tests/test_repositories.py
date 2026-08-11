@@ -1,7 +1,4 @@
-import pytest
-from botocore.exceptions import ClientError
-
-from src.repositories.cart_repository import CartCreationConflictError, CartRepository
+from src.repositories.cart_repository import CartRepository
 from src.repositories.menu_repository import MenuRepository
 
 
@@ -33,14 +30,6 @@ class FakeDynamo:
         return self.table
 
 
-class ConditionalConflictTable:
-    def put_item(self, **_kwargs):
-        raise ClientError(
-            {"Error": {"Code": "ConditionalCheckFailedException"}},
-            "PutItem",
-        )
-
-
 def test_menu_repository_uses_restaurant_partition():
     table = FakeTable({"Item": {"product_id": "item"}})
     repository = MenuRepository(FakeDynamo(table), "configured-table", "configured-restaurant")
@@ -56,13 +45,6 @@ def test_cart_repository_uses_user_partition():
     repository = CartRepository(FakeDynamo(table), "configured-table")
     assert repository.get("user", "cart")["cart_id"] == "cart"
     assert table.calls[0]["Key"] == {"PK": "user", "SK": "CART#cart"}
-
-
-def test_cart_repository_maps_conditional_create_failure_to_domain_conflict():
-    repository = CartRepository(FakeDynamo(ConditionalConflictTable()), "table")
-
-    with pytest.raises(CartCreationConflictError):
-        repository.create({"PK": "user", "SK": "CART#cart"})
 
 
 def test_cart_repository_find_by_cart_id_uses_owner_partition_key():

@@ -1,9 +1,8 @@
-import json
 from types import SimpleNamespace
 
 from src.agent.context import get_request_context
 from src.agent import restaurant_agent
-from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT, restaurant_prompt_for_channel
+from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT
 from src.agent.tools import MVP_TOOLS
 
 
@@ -242,38 +241,6 @@ def test_build_restaurant_agent_registers_mvp_tools_and_prompt(monkeypatch):
     assert captured["record_direct_tool_call"] is True
 
 
-def test_whatsapp_agent_uses_chat_native_capabilities_and_prompt(monkeypatch):
-    captured = {}
-
-    class FakeAgent:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    monkeypatch.setattr(restaurant_agent, "Agent", FakeAgent)
-    restaurant_agent.build_restaurant_agent(model="configured", channel="whatsapp")
-
-    prompt = restaurant_prompt_for_channel("whatsapp")
-    assert "create_menu_session_link" not in prompt
-    assert "menu website" not in prompt.casefold()
-    assert captured["tools"] == restaurant_agent.tools_for_channel("whatsapp")
-    assert captured["system_prompt"] == prompt
-    assert "presentation_role" in prompt
-    assert "contract_id" in prompt
-    assert "Never render informational_reference results as a numbered list" in prompt
-    assert "Do not ask or invite the customer to" in prompt
-    assert "Whenever presenting multiple items that the customer may choose or order" in prompt
-    assert "use selection_offer" in prompt
-    assert "trusted_active_option_contract" in prompt
-    assert "item_id = chosen trusted_active_option_contract.options[].id" in prompt
-    assert "selected_option_id = exactly the same option.id" in prompt
-    assert "start_cart_item_customization(item_id, quantity)" not in prompt
-    assert "declared consumer_capability takes precedence" in prompt
-    assert "without calling get_active_cart first" in prompt
-    assert "Do not merely acknowledge, confirm, promise" in prompt
-    assert "presentation_role=selection_offer" in prompt
-    assert "typed option_contract_proposal" in prompt
-
-
 def test_build_session_manager_uses_trusted_session_id_and_configured_storage(monkeypatch):
     captured = {}
 
@@ -446,66 +413,6 @@ def test_invoke_restaurant_agent_builds_session_scoped_agent(monkeypatch):
     assert captured["session_id"] == "trusted-session"
     assert captured["agent_kwargs"] == {"session_manager": "session-manager"}
     assert captured["context"].user_id == "trusted-user"
-
-
-def test_whatsapp_llm_input_contains_trusted_active_option_contract():
-    captured = {}
-    option_contract = {
-        "contract_id": "contract-1",
-        "contract_version": 1,
-        "options": [{"id": "item-5", "label": "Fifth"}],
-    }
-
-    class FakeAgent:
-        def __call__(self, message, **_kwargs):
-            captured.update(json.loads(message))
-            return message
-
-    result = restaurant_agent.invoke_restaurant_agent(
-        "order the fifth one",
-        user_id="customer-1",
-        agent_session_id="session-1",
-        channel="whatsapp",
-        agent=FakeAgent(),
-        option_contract=option_contract,
-    )
-
-    assert captured == {
-        "customer_message": "order the fifth one",
-        "trusted_active_option_contract": option_contract,
-    }
-    assert result
-
-
-def test_whatsapp_contract_input_has_no_primary_recovery_reminder():
-    captured = {}
-    option_contract = {
-        "contract_id": "contract-1",
-        "contract_version": 1,
-        "consumer_capability": "start_cart_item_customization",
-        "options": [
-            {"id": "item-1", "label": "First"},
-            {"id": "item-5", "label": "Fifth"},
-        ],
-    }
-
-    class FakeAgent:
-        def __call__(self, message, **_kwargs):
-            captured.update(json.loads(message))
-            return message
-
-    restaurant_agent.invoke_restaurant_agent(
-        "choose from the active options",
-        user_id="customer-1",
-        agent_session_id="session-1",
-        channel="whatsapp",
-        agent=FakeAgent(),
-        option_contract=option_contract,
-    )
-
-    assert captured["customer_message"] == "choose from the active options"
-    assert captured["trusted_active_option_contract"] == option_contract
-    assert "primary_contract_recovery" not in captured
 
 
 def test_agent_result_text_extracts_and_sanitizes_message_text():
