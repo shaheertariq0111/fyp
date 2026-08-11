@@ -22,7 +22,7 @@ from src.models.tool_responses import (
 
 logger = logging.getLogger(__name__)
 
-SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS = 10.0
+SEMANTIC_CLASSIFIER_TIMEOUT_SECONDS = 60.0
 _CLASSIFIER_EXECUTOR = ThreadPoolExecutor(
     max_workers=4,
     thread_name_prefix="semantic-classifier",
@@ -361,6 +361,14 @@ class GroundedAgentResponse:
     diagnostics: GroundingDecisionDiagnostics | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class BoundaryClaimAssessment:
+    assessment: AssistantClaimAssessment
+    assessment_transport_status: str
+    assessment_origin: AssessmentOrigin | None
+    semantic_classifier_status: SemanticClassifierStatus | None
+
+
 class GroundedAssistantMemoryBuffer:
     """Delay only the final assistant message until customer text is grounded."""
 
@@ -448,6 +456,40 @@ def assess_assistant_claims(
     )
     return AssistantClaimAssessment.model_validate(
         getattr(result, "structured_output", None)
+    )
+
+
+def boundary_claim_assessment(
+    *,
+    assessment_payload: Any,
+    authoritative_fast_path: bool,
+) -> BoundaryClaimAssessment:
+    if assessment_payload is not None:
+        return BoundaryClaimAssessment(
+            assessment=AssistantClaimAssessment.model_validate(assessment_payload),
+            assessment_transport_status="present_valid",
+            assessment_origin=None,
+            semantic_classifier_status=None,
+        )
+    if authoritative_fast_path:
+        return BoundaryClaimAssessment(
+            assessment=AssistantClaimAssessment(
+                claims_transactional_progression=False,
+                claimed_actions=[],
+            ),
+            assessment_transport_status="not_applicable_fast_path",
+            assessment_origin=None,
+            semantic_classifier_status="not_run_authoritative_fast_path",
+        )
+    return BoundaryClaimAssessment(
+        assessment=AssistantClaimAssessment(
+            claims_transactional_progression=False,
+            claimed_actions=[],
+            customer_requests_required_effect=False,
+        ),
+        assessment_transport_status="missing_allowed_conversation",
+        assessment_origin="boundary_missing_synthetic",
+        semantic_classifier_status=None,
     )
 
 
@@ -571,40 +613,6 @@ def ground_agent_response(
             "unsupported_transactional_effect",
             diagnostics,
         )
-    if required_effect and claim_assessment.customer_requests_required_effect:
-        offered_ids = {
-            str(option.get("id"))
-            for option in available_options or []
-            if isinstance(option, dict) and option.get("id")
-        }
-        selected_option = claim_assessment.selected_option
-        if required_effect not in supported_effects:
-            return GroundedAgentResponse(
-                UNGROUNDED_TRANSACTION_FALLBACK,
-                "ungrounded_transaction_fallback",
-                expected_write_tool,
-                required_effect,
-                "required_effect_not_satisfied",
-                diagnostics,
-            )
-        if offered_ids and selected_option is None:
-            return GroundedAgentResponse(
-                UNGROUNDED_TRANSACTION_FALLBACK,
-                "ungrounded_transaction_fallback",
-                expected_write_tool,
-                required_effect,
-                "selected_option_missing",
-                diagnostics,
-            )
-        if offered_ids and selected_option not in offered_ids:
-            return GroundedAgentResponse(
-                UNGROUNDED_TRANSACTION_FALLBACK,
-                "ungrounded_transaction_fallback",
-                expected_write_tool,
-                required_effect,
-                "selected_option_invalid",
-                diagnostics,
-            )
     if claim_assessment.depends_on_authoritative_state:
         required_domains = set(claim_assessment.authoritative_state_domains)
         if not required_domains.issubset(_supported_domains(calls)):

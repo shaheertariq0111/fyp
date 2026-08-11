@@ -238,17 +238,17 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                             semantic_classifier_status = "completed"
                         except SemanticClassifierTimeout:
                             claim_assessment = AssistantClaimAssessment(
-                                claims_transactional_progression=True,
-                                claimed_actions=["other_transactional_progression"],
-                                customer_requests_required_effect=bool(required_effect),
+                                claims_transactional_progression=False,
+                                claimed_actions=[],
+                                customer_requests_required_effect=False,
                             )
                             assessment_origin = "timeout_synthetic"
                             semantic_classifier_status = "timed_out"
                         except Exception:
                             claim_assessment = AssistantClaimAssessment(
-                                claims_transactional_progression=True,
-                                claimed_actions=["other_transactional_progression"],
-                                customer_requests_required_effect=bool(required_effect),
+                                claims_transactional_progression=False,
+                                claimed_actions=[],
+                                customer_requests_required_effect=False,
                             )
                             assessment_origin = "exception_synthetic"
                             semantic_classifier_status = "failed"

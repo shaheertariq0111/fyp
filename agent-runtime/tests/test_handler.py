@@ -543,7 +543,7 @@ def test_pending_write_survives_conversational_detour(monkeypatch):
     assert response["tool_calls"] == []
 
 
-def test_two_turn_search_selection_blocks_prose_progression_across_production_path(monkeypatch):
+def test_two_turn_search_selection_preserves_prose_progression_across_production_path(monkeypatch):
     class FakeAgent:
         def __init__(self, session_manager):
             self.session_manager = session_manager
@@ -665,14 +665,15 @@ def test_two_turn_search_selection_blocks_prose_progression_across_production_pa
     assert first["required_effect"] == "item_selected"
     assert observed_histories[1][-1]["content"][0]["text"] == first["text"]
     assert second["tool_calls"] == []
-    assert second["text"] == UNGROUNDED_TRANSACTION_FALLBACK
-    assert reply.reply == UNGROUNDED_TRANSACTION_FALLBACK
+    assert second["text"] == "You selected Pepperoni Hot. Which size would you like?"
+    assert reply.reply == "You selected Pepperoni Hot. Which size would you like?"
     history = FakeMemorySessionManager.created[-1].history
-    assert all("You selected Pepperoni Hot" not in str(message) for message in history)
-    assert history[-1]["content"][0]["text"] == UNGROUNDED_TRANSACTION_FALLBACK
+    assert history[-1]["content"][0]["text"] == (
+        "You selected Pepperoni Hot. Which size would you like?"
+    )
 
 
-def test_assistant_classifier_exception_fails_closed_before_memory_commit(monkeypatch):
+def test_assistant_classifier_exception_allows_conversation_memory_commit(monkeypatch):
     class FakeAgent:
         def __init__(self, session_manager):
             self.session_manager = session_manager
@@ -705,19 +706,17 @@ def test_assistant_classifier_exception_fails_closed_before_memory_commit(monkey
 
     response = handler.invoke(runtime_payload(channel="whatsapp"))
 
-    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
-    assert response["grounding_rejection_reason"] == (
-        "unsupported_transactional_effect"
-    )
+    assert response["text"] == "Your selections are now locked in."
+    assert response["grounding_source"] == "conversation"
+    assert "grounding_rejection_reason" not in response
     assert response["assessment_origin"] == "exception_synthetic"
     assert response["semantic_classifier_status"] == "failed"
     assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == (
-        UNGROUNDED_TRANSACTION_FALLBACK
+        "Your selections are now locked in."
     )
-    assert "selections are now locked" not in str(FakeMemorySessionManager.created[0].history)
 
 
-def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(
+def test_assistant_classifier_timeout_allows_conversation_quickly(
     monkeypatch,
 ):
     class FakeAgent:
@@ -766,16 +765,13 @@ def test_assistant_classifier_timeout_fails_closed_quickly_before_memory_commit(
     elapsed = time.perf_counter() - started
 
     assert elapsed < 0.15
-    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
-    assert response["grounding_source"] == "ungrounded_transaction_fallback"
-    assert response["grounding_rejection_reason"] == (
-        "unsupported_transactional_effect"
-    )
+    assert response["text"] == raw
+    assert response["grounding_source"] == "conversation"
+    assert "grounding_rejection_reason" not in response
     assert response["assessment_origin"] == "timeout_synthetic"
     assert response["semantic_classifier_status"] == "timed_out"
-    assert raw not in str(FakeMemorySessionManager.created[0].history)
     assert FakeMemorySessionManager.created[0].history[-1]["content"][0]["text"] == (
-        UNGROUNDED_TRANSACTION_FALLBACK
+        raw
     )
     grounded_event = next(
         event
@@ -980,10 +976,9 @@ def test_memory_commit_failure_leaves_no_raw_turn_for_next_invocation(monkeypatc
     FailingMemory.fail_assistant = False
     response = handler.invoke(payload)
 
-    assert response["text"] == UNGROUNDED_TRANSACTION_FALLBACK
-    assert "Raw undelivered" not in str(FailingMemory.shared_history)
+    assert response["text"] == "Raw undelivered assistant progression."
     assert FailingMemory.shared_history[-1]["content"][0]["text"] == (
-        UNGROUNDED_TRANSACTION_FALLBACK
+        "Raw undelivered assistant progression."
     )
 
 

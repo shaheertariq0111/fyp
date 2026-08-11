@@ -9,7 +9,7 @@ from typing import Any, Callable
 from src.agent_client.schemas import AgentInvocationRequest
 from src.agent.context import AgentRequestContext
 from src.agent.response_grounding import (
-    AssistantClaimAssessment,
+    boundary_claim_assessment,
     ground_agent_response,
     ground_authoritative_tool_response,
     grounding_comparison_log_fields,
@@ -496,7 +496,6 @@ def build_response_builder(services_provider: Callable[[], Any]):
             else:
                 assessment_payload = raw.get("claim_assessment")
                 if assessment_payload is None:
-                    assessment_transport_status = "missing"
                     logger.info(
                         "Runtime grounding metadata was missing",
                         extra={
@@ -505,26 +504,25 @@ def build_response_builder(services_provider: Callable[[], Any]):
                             "assessment_origin": "boundary_missing_synthetic",
                         },
                     )
-                    assessment = AssistantClaimAssessment(
-                        claims_transactional_progression=True,
-                        claimed_actions=["other_transactional_progression"],
+                try:
+                    boundary_assessment = boundary_claim_assessment(
+                        assessment_payload=assessment_payload,
+                        authoritative_fast_path=False,
                     )
-                else:
-                    try:
-                        assessment = AssistantClaimAssessment.model_validate(
-                            assessment_payload
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Runtime grounding metadata was invalid",
-                            extra={
-                                "event": "grounding_boundary_metadata_issue",
-                                "boundary_metadata_issue": "claim_assessment_invalid",
-                                "exception_type": type(exc).__name__,
-                            },
-                        )
-                        raise
-                    assessment_transport_status = "present_valid"
+                except Exception as exc:
+                    logger.warning(
+                        "Runtime grounding metadata was invalid",
+                        extra={
+                            "event": "grounding_boundary_metadata_issue",
+                            "boundary_metadata_issue": "claim_assessment_invalid",
+                            "exception_type": type(exc).__name__,
+                        },
+                    )
+                    raise
+                assessment = boundary_assessment.assessment
+                assessment_transport_status = (
+                    boundary_assessment.assessment_transport_status
+                )
                 backend_grounded = ground_agent_response(
                     text=invocation.text,
                     tool_calls=calls,
@@ -533,13 +531,24 @@ def build_response_builder(services_provider: Callable[[], Any]):
                     informational_turn=bool(raw.get("informational_turn", False)),
                     expected_write_tool=raw.get("expected_write_tool"),
                     required_effect=raw.get("required_effect"),
+                    available_options=raw.get("available_options"),
                 )
                 response_text = backend_grounded.text
             runtime_source = raw.get("grounding_source")
             runtime_reason = raw.get("grounding_rejection_reason")
+            semantic_classifier_status = raw.get("semantic_classifier_status")
+            assessment_origin = raw.get("assessment_origin")
+            if authoritative is None:
+                semantic_classifier_status = (
+                    semantic_classifier_status
+                    or boundary_assessment.semantic_classifier_status
+                )
+                assessment_origin = (
+                    assessment_origin or boundary_assessment.assessment_origin
+                )
             runtime_metadata_present = bool(
-                raw.get("semantic_classifier_status")
-                or raw.get("assessment_origin")
+                semantic_classifier_status
+                or assessment_origin
                 or "grounding_rejection_reason" in raw
             )
             if runtime_source is None:
@@ -575,15 +584,11 @@ def build_response_builder(services_provider: Callable[[], Any]):
                 extra={
                     "event": "backend_grounding_completed",
                     "assessment_origin": (
-                        safe_assessment_origin_log_value(
-                            raw.get("assessment_origin")
-                        )
-                        if assessment_transport_status != "missing"
-                        else "boundary_missing_synthetic"
+                        safe_assessment_origin_log_value(assessment_origin)
                     ),
                     "semantic_classifier_status": (
                         safe_semantic_classifier_status_log_value(
-                            raw.get("semantic_classifier_status")
+                            semantic_classifier_status
                         )
                     ),
                     **grounding_decision_log_fields(backend_grounded),

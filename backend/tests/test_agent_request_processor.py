@@ -8,7 +8,6 @@ from src.services.agent_request_processor import (
     PreparedAgentRequest,
     build_response_builder,
 )
-from src.agent.response_grounding import UNGROUNDED_TRANSACTION_FALLBACK
 
 
 class ForbiddenCall:
@@ -535,7 +534,44 @@ def test_backend_grounding_logs_runtime_disagreement_without_changing_text(caplo
     assert mismatch.backend_changed_runtime_text is False
 
 
-def test_backend_grounding_labels_missing_assessment_synthetic_origin(caplog):
+def test_backend_grounding_allows_option_metadata_mismatch_for_normal_response():
+    response = _grounding_response_builder()(
+        _grounding_context(),
+        {"customer": {}},
+        SimpleNamespace(
+            text="Great, which size would you like?",
+            raw_result={
+                "tool_calls": [{
+                    "tool_name": "start_cart_item_customization",
+                    "success": True,
+                    "is_write": True,
+                    "result": {
+                        "success": True,
+                        "data": {},
+                        "user_message": "Which size would you like?",
+                        "grounding": {
+                            "transactional_effects": ["item_selected"],
+                        },
+                    },
+                }],
+                "claim_assessment": {
+                    "claims_transactional_progression": False,
+                    "customer_requests_required_effect": True,
+                    "selected_option": "item-2",
+                },
+                "required_effect": "item_selected",
+                "available_options": [{"id": "item-1", "label": "First Item"}],
+                "grounding_source": "conversation",
+                "assessment_origin": "model",
+                "semantic_classifier_status": "completed",
+            },
+        ),
+    )
+
+    assert response.text == "Great, which size would you like?"
+
+
+def test_backend_grounding_allows_missing_assessment_as_conversation(caplog):
     response = _grounding_response_builder()(
         _grounding_context(),
         {"customer": {}},
@@ -557,12 +593,11 @@ def test_backend_grounding_labels_missing_assessment_synthetic_origin(caplog):
         for record in caplog.records
         if getattr(record, "event", None) == "backend_grounding_completed"
     )
-    assert response.text == UNGROUNDED_TRANSACTION_FALLBACK
+    assert response.text == "Untrusted old-runtime response"
     assert issue.assessment_origin == "boundary_missing_synthetic"
     assert completed.assessment_origin == "boundary_missing_synthetic"
-    assert completed.backend_grounding_rejection_reason == (
-        "unsupported_transactional_effect"
-    )
+    assert completed.assessment_transport_status == "missing_allowed_conversation"
+    assert completed.backend_grounding_rejection_reason is None
 
 
 def test_backend_grounding_logs_malformed_assessment_before_existing_failure(caplog):

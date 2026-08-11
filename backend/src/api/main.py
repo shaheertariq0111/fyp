@@ -28,7 +28,7 @@ from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
 from src.agent.dependencies import get_services
 from src.agent.response_grounding import (
-    AssistantClaimAssessment,
+    boundary_claim_assessment,
     ground_agent_response,
     grounding_comparison_log_fields,
     grounding_decision_log_fields,
@@ -693,6 +693,21 @@ def _chat_response_from_invocation(
         state = _refresh_authoritative_state(context.user_id, context.agent_session_id, state)
     buttons = _buttons_from_tool_calls(tool_calls)
     if context.channel == "whatsapp":
+        expected_write_tool = (
+            result.get("expected_write_tool")
+            if isinstance(result, dict)
+            else getattr(result, "expected_write_tool", None)
+        )
+        required_effect = (
+            result.get("required_effect")
+            if isinstance(result, dict)
+            else getattr(result, "required_effect", None)
+        )
+        available_options = (
+            result.get("available_options")
+            if isinstance(result, dict)
+            else getattr(result, "available_options", None)
+        )
         assessment_payload = (
             result.get("claim_assessment")
             if isinstance(result, dict)
@@ -717,11 +732,6 @@ def _chat_response_from_invocation(
             == "not_run_authoritative_fast_path"
         )
         if assessment_payload is None:
-            assessment_transport_status = (
-                "not_applicable_fast_path"
-                if authoritative_fast_path
-                else "missing"
-            )
             if not authoritative_fast_path:
                 logger.info(
                     "Runtime grounding metadata was missing",
@@ -731,26 +741,23 @@ def _chat_response_from_invocation(
                         "assessment_origin": "boundary_missing_synthetic",
                     },
                 )
-            assessment = AssistantClaimAssessment(
-                claims_transactional_progression=True,
-                claimed_actions=["other_transactional_progression"],
+        try:
+            boundary_assessment = boundary_claim_assessment(
+                assessment_payload=assessment_payload,
+                authoritative_fast_path=authoritative_fast_path,
             )
-        else:
-            try:
-                assessment = AssistantClaimAssessment.model_validate(
-                    assessment_payload
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Runtime grounding metadata was invalid",
-                    extra={
-                        "event": "grounding_boundary_metadata_issue",
-                        "boundary_metadata_issue": "claim_assessment_invalid",
-                        "exception_type": type(exc).__name__,
-                    },
-                )
-                raise
-            assessment_transport_status = "present_valid"
+        except Exception as exc:
+            logger.warning(
+                "Runtime grounding metadata was invalid",
+                extra={
+                    "event": "grounding_boundary_metadata_issue",
+                    "boundary_metadata_issue": "claim_assessment_invalid",
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            raise
+        assessment = boundary_assessment.assessment
+        assessment_transport_status = boundary_assessment.assessment_transport_status
         backend_grounded = ground_agent_response(
             text=invocation.text,
             tool_calls=tool_calls,
@@ -765,28 +772,21 @@ def _chat_response_from_invocation(
                 if isinstance(result, dict)
                 else getattr(result, "informational_turn", False)
             ),
-            expected_write_tool=(
-                result.get("expected_write_tool")
-                if isinstance(result, dict)
-                else getattr(result, "expected_write_tool", None)
-            ),
-            required_effect=(
-                result.get("required_effect")
-                if isinstance(result, dict)
-                else getattr(result, "required_effect", None)
-            ),
+            expected_write_tool=expected_write_tool,
+            required_effect=required_effect,
+            available_options=available_options,
         )
         response_text = backend_grounded.text
         semantic_classifier_status = (
             result.get("semantic_classifier_status")
             if isinstance(result, dict)
             else getattr(result, "semantic_classifier_status", None)
-        )
+        ) or boundary_assessment.semantic_classifier_status
         assessment_origin = (
             result.get("assessment_origin")
             if isinstance(result, dict)
             else getattr(result, "assessment_origin", None)
-        )
+        ) or boundary_assessment.assessment_origin
         logged_assessment_origin = safe_assessment_origin_log_value(
             assessment_origin
         )
