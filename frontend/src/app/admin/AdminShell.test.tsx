@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminShell, formatEnvironmentLabel } from "@/app/admin/AdminShell";
 
@@ -14,6 +14,7 @@ vi.mock("@/lib/adminApi", () => ({
 
 beforeEach(() => {
   pathname = "/admin/tickets";
+  window.localStorage.clear();
 });
 
 describe("AdminShell ticket navigation", () => {
@@ -83,5 +84,37 @@ describe("AdminShell ticket navigation", () => {
     ["main", "https://abc123.execute-api.us-east-1.amazonaws.com", "main"],
   ])("formats environment labels for branch %s and API %s", (branchId, apiBaseUrl, expected) => {
     expect(formatEnvironmentLabel(branchId, apiBaseUrl)).toBe(expected);
+  });
+
+  it("persists desktop sidebar collapse and expand actions", () => {
+    const { container } = render(<AdminShell title="Test">Content</AdminShell>);
+
+    const collapseButton = screen.getByRole("button", { name: "Collapse sidebar" });
+    fireEvent.click(collapseButton);
+
+    expect(container.firstElementChild).toHaveClass("is-sidebar-collapsed");
+    expect(window.localStorage.getItem("admin-sidebar-collapsed")).toBe("true");
+
+    const expandButton = screen.getByRole("button", { name: "Expand sidebar" });
+    fireEvent.click(expandButton);
+
+    expect(container.firstElementChild).not.toHaveClass("is-sidebar-collapsed");
+    expect(window.localStorage.getItem("admin-sidebar-collapsed")).toBe("false");
+  });
+
+  it("restores a stored collapsed preference after client initialization", async () => {
+    window.localStorage.setItem("admin-sidebar-collapsed", "true");
+    const { container } = render(<AdminShell title="Test">Content</AdminShell>);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeInTheDocument();
+    });
+    expect(container.firstElementChild).toHaveClass("is-sidebar-collapsed", "is-sidebar-ready");
+
+    const desktopNavigation = screen.getAllByRole("navigation", { name: "Admin sections" })[0];
+    expect(within(desktopNavigation).getByRole("link", { name: "Overview" }))
+      .toHaveAttribute("data-tooltip", "Overview");
+    expect(screen.getAllByRole("button", { name: "Logout" })[0])
+      .toHaveAttribute("data-tooltip", "Logout");
   });
 });

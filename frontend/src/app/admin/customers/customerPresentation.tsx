@@ -18,7 +18,7 @@ export function addressLabel(value?: string | null) {
   return value?.trim() || "Saved address";
 }
 
-export function CustomerIcon({ name }: { name: "search" | "refresh" | "clear" | "phone" | "location" }) {
+export function CustomerIcon({ name }: { name: "search" | "refresh" | "clear" | "phone" | "location" | "customer" | "orders" | "completed" | "spend" }) {
   const common = {
     width: 16,
     height: 16,
@@ -66,6 +66,35 @@ export function CustomerIcon({ name }: { name: "search" | "refresh" | "clear" | 
         <svg {...common}>
           <path d="M12 21s7-4.4 7-11a7 7 0 0 0-14 0c0 6.6 7 11 7 11z" />
           <circle cx="12" cy="10" r="2.5" />
+        </svg>
+      );
+    case "customer":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="8" r="3.5" />
+          <path d="M5.5 20a6.5 6.5 0 0 1 13 0" />
+        </svg>
+      );
+    case "orders":
+      return (
+        <svg {...common}>
+          <path d="M6 8h12l-1 12H7z" />
+          <path d="M9 8a3 3 0 0 1 6 0" />
+        </svg>
+      );
+    case "completed":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="m7.5 12 3 3 6-7" />
+        </svg>
+      );
+    case "spend":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M15 8.5c-.7-.7-1.7-1-3-1-1.7 0-3 .9-3 2s1.3 2 3 2 3 .9 3 2-1.3 2-3 2c-1.3 0-2.4-.4-3-1" />
+          <path d="M12 5.5v13" />
         </svg>
       );
   }

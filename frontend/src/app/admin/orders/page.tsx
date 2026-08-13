@@ -1,30 +1,20 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AdminShell, money } from "@/app/admin/AdminShell";
-import { adminGet } from "@/lib/adminApi";
+import { AdminShell } from "@/app/admin/AdminShell";
 import {
-  fulfillmentLabel,
-  formatDateTime,
+  LiveOrder,
+  LiveOrderKpiStrip,
+  LiveOrderSnapshot,
+  LiveOrdersTable,
+} from "@/app/admin/orders/LiveOrdersWorkspace";
+import {
   formatRefreshTime,
-  formatRelativeTime,
   MiniIcon,
   ORDER_STATUSES,
-  shortOrderId,
-  StatusBadge,
   statusLabel,
 } from "@/app/admin/orders/orderPresentation";
-
-type Order = {
-  order_id: string;
-  status: string;
-  customer_name?: string | null;
-  fulfillment_method?: string | null;
-  total?: number;
-  currency?: string;
-  updated_at?: string;
-};
+import { adminGet } from "@/lib/adminApi";
 
 type RefreshSource = "initial" | "manual" | "auto";
 type RefreshFailure = {
@@ -35,48 +25,17 @@ type RefreshFailure = {
 const terminalSuccessStatuses = new Set(["completed", "delivered"]);
 const dangerStatuses = new Set(["failed", "rejected", "cancelled"]);
 const awaitingActionStatuses = new Set(["submitted_to_restaurant", "accepted", "preparing", "ready_for_pickup", "out_for_delivery"]);
-const unavailableValue = "—";
 
 function formatFailureTime(value: Date) {
   return value.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function isRecentlyUpdated(value?: string | null) {
-  if (!value) {
-    return false;
-  }
-  const updated = new Date(value);
-  if (Number.isNaN(updated.getTime())) {
-    return false;
-  }
-  return Date.now() - updated.getTime() < 5 * 60 * 1000;
-}
-
-function SummaryCard({
-  label,
-  value,
-  description,
-  loading,
-}: {
-  label: string;
-  value: number | string;
-  description: string;
-  loading: boolean;
-}) {
-  return (
-    <article className="admin-orders-summary-card">
-      <span>{label}</span>
-      {loading ? <strong className="admin-skeleton admin-skeleton-value" /> : <strong>{value}</strong>}
-      <p>{description}</p>
-    </article>
-  );
-}
-
 export default function AdminOrdersPage() {
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [orders, setOrders] = useState<LiveOrder[]>([]);
   const [statusFilter, setStatusFilter] = useState("");
   const [fulfillmentFilter, setFulfillmentFilter] = useState("");
   const [search, setSearch] = useState("");
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [hasSuccessfulResponse, setHasSuccessfulResponse] = useState(false);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [manualRefreshing, setManualRefreshing] = useState(false);
@@ -86,7 +45,7 @@ export default function AdminOrdersPage() {
   const requestInFlight = useRef(false);
   const shouldReloadAfterCurrent = useRef(false);
   const mounted = useRef(false);
-  const ordersRef = useRef<Order[]>([]);
+  const ordersRef = useRef<LiveOrder[]>([]);
   const hasSuccessfulResponseRef = useRef(false);
   const statusFilterRef = useRef(statusFilter);
   const manualFailureLogged = useRef(false);
@@ -109,7 +68,7 @@ export default function AdminOrdersPage() {
 
     try {
       const suffix = requestedStatus ? `?status=${encodeURIComponent(requestedStatus)}` : "";
-      const result = await adminGet<{ orders: Order[] }>(`/api/admin/orders${suffix}`);
+      const result = await adminGet<{ orders: LiveOrder[] }>(`/api/admin/orders${suffix}`);
       if (!mounted.current) {
         return;
       }
@@ -202,11 +161,14 @@ export default function AdminOrdersPage() {
     failed: orders.filter((order) => dangerStatuses.has(order.status)).length,
   }), [orders]);
 
+  const selectedOrder = useMemo(
+    () => filteredOrders.find((order) => order.order_id === selectedOrderId) ?? filteredOrders[0] ?? null,
+    [filteredOrders, selectedOrderId],
+  );
   const hasInitialFailure = !hasSuccessfulResponse && lastFailedRefresh !== null;
   const hasStaleWarning = hasSuccessfulResponse && lastFailedRefresh !== null && lastFailedRefresh.hadPreviousData;
   const showSkeleton = isInitialLoading && !hasSuccessfulResponse && !lastFailedRefresh;
   const summaryUnavailable = !hasSuccessfulResponse && lastFailedRefresh !== null;
-  const summaryUnavailableText = "Unavailable until orders reconnect.";
   const hasActiveFilters = Boolean(search.trim() || statusFilter || fulfillmentFilter);
   const showFilteredEmpty = !showSkeleton && hasSuccessfulResponse && orders.length > 0 && filteredOrders.length === 0;
   const showNoOrdersEmpty = !showSkeleton && hasSuccessfulResponse && orders.length === 0;
@@ -234,63 +196,36 @@ export default function AdminOrdersPage() {
   );
 
   return (
-    <AdminShell
-      actions={actions}
-      subtitle="Track and manage restaurant orders in real time"
-      title="Live Orders"
-    >
-      <div className="admin-orders-page">
+    <AdminShell actions={actions} subtitle="Track and manage restaurant orders in real time" title="Live Orders">
+      <div className="admin-orders-page live-orders-page">
         {hasInitialFailure && (
           <section className="admin-error-panel" role="alert">
-            <div>
-              <strong>Orders unavailable</strong>
-              <p>Live orders could not be loaded. Retry when the service is reachable.</p>
-            </div>
-            <button className="secondary" disabled={manualRefreshing || backgroundRefreshing} onClick={() => void loadOrders("manual")} type="button">
-              Retry
-            </button>
+            <div><strong>Orders unavailable</strong><p>Live orders could not be loaded. Retry when the service is reachable.</p></div>
+            <button className="secondary" disabled={manualRefreshing || backgroundRefreshing} onClick={() => void loadOrders("manual")} type="button">Retry</button>
           </section>
         )}
         {hasStaleWarning && (
           <section className="admin-warning-panel" role="status">
-            <div>
-              <strong>Latest refresh failed</strong>
-              <p>Latest refresh failed. Showing previously loaded orders.</p>
-            </div>
-            <button className="secondary" disabled={manualRefreshing || backgroundRefreshing} onClick={() => void loadOrders("manual")} type="button">
-              Retry
-            </button>
+            <div><strong>Latest refresh failed</strong><p>Latest refresh failed. Showing previously loaded orders.</p></div>
+            <button className="secondary" disabled={manualRefreshing || backgroundRefreshing} onClick={() => void loadOrders("manual")} type="button">Retry</button>
           </section>
         )}
 
-        <section className="admin-orders-summary" aria-label="Summary of currently loaded orders">
-          <SummaryCard description={summaryUnavailable ? summaryUnavailableText : "Orders in the currently loaded response."} label="Total loaded" loading={showSkeleton} value={summaryUnavailable ? unavailableValue : summary.total} />
-          <SummaryCard description={summaryUnavailable ? summaryUnavailableText : "Loaded orders waiting for staff movement."} label="Awaiting action" loading={showSkeleton} value={summaryUnavailable ? unavailableValue : summary.awaiting} />
-          <SummaryCard description={summaryUnavailable ? summaryUnavailableText : "Loaded orders currently being prepared."} label="In preparation" loading={showSkeleton} value={summaryUnavailable ? unavailableValue : summary.preparing} />
-          <SummaryCard description={summaryUnavailable ? summaryUnavailableText : "Loaded orders completed or delivered."} label="Completed or delivered" loading={showSkeleton} value={summaryUnavailable ? unavailableValue : summary.completed} />
-          <SummaryCard description={summaryUnavailable ? summaryUnavailableText : "Loaded orders failed, rejected, or cancelled."} label="Failed or rejected" loading={showSkeleton} value={summaryUnavailable ? unavailableValue : summary.failed} />
-        </section>
+        <LiveOrderKpiStrip loading={showSkeleton} summary={summary} unavailable={summaryUnavailable} />
 
         <section className="admin-orders-toolbar" aria-label="Order filters">
           <label className="admin-search-control">
-            <span>Search orders</span>
+            <span>Search Orders</span>
             <span>
               <MiniIcon name="search" />
-              <input
-                disabled={showSkeleton}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Order ID or customer"
-                value={search}
-              />
+              <input disabled={showSkeleton} onChange={(event) => setSearch(event.target.value)} placeholder="Search by Order ID or customer" value={search} />
             </span>
           </label>
           <label>
             <span>Status</span>
             <select disabled={showSkeleton} onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
               <option value="">All statuses</option>
-              {ORDER_STATUSES.map((entry) => (
-                <option key={entry} value={entry}>{statusLabel(entry)}</option>
-              ))}
+              {ORDER_STATUSES.map((entry) => <option key={entry} value={entry}>{statusLabel(entry)}</option>)}
             </select>
           </label>
           <label>
@@ -302,107 +237,37 @@ export default function AdminOrdersPage() {
             </select>
           </label>
           <div className="admin-toolbar-status">
-            <span><MiniIcon name="clock" /> Auto-refresh every 10s</span>
+            <span><MiniIcon name="refresh" /> Auto-refresh every 10s <i aria-hidden="true" /></span>
             {backgroundRefreshing && <strong>Checking for updates...</strong>}
           </div>
-          {hasActiveFilters && (
-            <button className="secondary" onClick={clearFilters} type="button">
-              Clear filters
-            </button>
-          )}
+          {hasActiveFilters && <button className="secondary" onClick={clearFilters} type="button">Clear filters</button>}
         </section>
 
-        <section className="admin-panel admin-orders-panel">
-          <div className="admin-section-heading">
-            <div>
+        <div className="live-orders-workspace">
+          <section className="admin-panel admin-orders-panel live-orders-set">
+            <div className="live-orders-section-heading">
               <h2>Loaded order set</h2>
               <p>Summary cards and filters reflect the current response, not all-time analytics.</p>
             </div>
-          </div>
-          {hasInitialFailure ? (
-            <div className="admin-empty-state admin-orders-unavailable">
-              <strong>Order data is unavailable.</strong>
-              <p>Retry when the service is reachable.</p>
-              <button className="secondary" disabled={manualRefreshing || backgroundRefreshing} onClick={() => void loadOrders("manual")} type="button">
-                Retry
-              </button>
-            </div>
-          ) : (
-            <div className="admin-order-table-wrap">
-              <table className="admin-table admin-orders-table">
-                <thead>
-                  <tr>
-                    <th>Order</th>
-                    <th>Customer</th>
-                    <th>Fulfillment</th>
-                    <th>Status</th>
-                    <th>Total</th>
-                    <th>Updated</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {showSkeleton &&
-                    [0, 1, 2, 3, 4].map((row) => (
-                      <tr className="admin-loading-row" key={row}>
-                        <td><span className="admin-skeleton admin-skeleton-line" /></td>
-                        <td><span className="admin-skeleton admin-skeleton-line" /></td>
-                        <td><span className="admin-skeleton admin-skeleton-pill" /></td>
-                        <td><span className="admin-skeleton admin-skeleton-pill" /></td>
-                        <td><span className="admin-skeleton admin-skeleton-line" /></td>
-                        <td><span className="admin-skeleton admin-skeleton-line" /></td>
-                        <td><span className="admin-skeleton admin-skeleton-line" /></td>
-                      </tr>
-                    ))}
-                  {!showSkeleton &&
-                    filteredOrders.map((order) => {
-                      const updatedLabel = formatRelativeTime(order.updated_at);
-                      const fullUpdated = formatDateTime(order.updated_at);
-                      return (
-                        <tr className={isRecentlyUpdated(order.updated_at) ? "is-recent" : ""} key={order.order_id}>
-                          <td data-label="Order">
-                            <Link className="admin-order-id-link" href={`/admin/orders/${order.order_id}`} title={order.order_id}>
-                              {shortOrderId(order.order_id)}
-                            </Link>
-                          </td>
-                          <td data-label="Customer">{order.customer_name || "Unknown customer"}</td>
-                          <td data-label="Fulfillment">
-                            <span className="admin-fulfillment-chip">
-                              <MiniIcon name={order.fulfillment_method === "delivery" ? "truck" : "bag"} />
-                              {fulfillmentLabel(order.fulfillment_method)}
-                            </span>
-                          </td>
-                          <td data-label="Status"><StatusBadge status={order.status} /></td>
-                          <td data-label="Total">{money(order.total, order.currency)}</td>
-                          <td data-label="Updated">
-                            <span title={fullUpdated}>{updatedLabel}</span>
-                          </td>
-                          <td data-label="Action">
-                            <Link className="admin-text-link" href={`/admin/orders/${order.order_id}`}>
-                              View
-                            </Link>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {showNoOrdersEmpty && (
-            <div className="admin-empty-state">
-              <strong>No orders are currently available.</strong>
-              <p>New restaurant orders will appear here after they are submitted.</p>
-            </div>
-          )}
-          {showFilteredEmpty && (
-            <div className="admin-empty-state">
-              <strong>No orders match the selected filters.</strong>
-              <p>Adjust the search, status, or fulfillment filters to broaden the loaded order set.</p>
-              <button className="secondary" onClick={clearFilters} type="button">Clear filters</button>
-            </div>
-          )}
-        </section>
+            {hasInitialFailure ? (
+              <div className="admin-empty-state admin-orders-unavailable">
+                <strong>Order data is unavailable.</strong><p>Retry when the service is reachable.</p>
+                <button className="secondary" disabled={manualRefreshing || backgroundRefreshing} onClick={() => void loadOrders("manual")} type="button">Retry</button>
+              </div>
+            ) : (
+              <LiveOrdersTable loading={showSkeleton} onSelect={setSelectedOrderId} orders={filteredOrders} selectedOrderId={selectedOrder?.order_id} />
+            )}
+            {showNoOrdersEmpty && <div className="admin-empty-state"><strong>No orders are currently available.</strong><p>New restaurant orders will appear here after they are submitted.</p></div>}
+            {showFilteredEmpty && (
+              <div className="admin-empty-state">
+                <strong>No orders match the selected filters.</strong>
+                <p>Adjust the search, status, or fulfillment filters to broaden the loaded order set.</p>
+                <button className="secondary" onClick={clearFilters} type="button">Clear filters</button>
+              </div>
+            )}
+          </section>
+          <LiveOrderSnapshot order={selectedOrder} />
+        </div>
       </div>
     </AdminShell>
   );

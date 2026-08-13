@@ -7,9 +7,12 @@ import {
   useState,
 } from "react";
 import {
+  priorityClassName,
   priorityLabel,
+  statusClassName,
   statusLabel,
 } from "@/app/admin/tickets/ticketPresentation";
+import { TicketIcon } from "@/app/admin/tickets/TicketIcon";
 import type {
   AdminTicketDetail,
   AdminTicketNoteCreateRequest,
@@ -254,7 +257,7 @@ export function TicketActions({
     >
       <div className="admin-ticket-actions-heading">
         <div>
-          <h2>Administrator actions</h2>
+          <h2><TicketIcon name="actions" /><span>Administrator Actions</span></h2>
           <p>Changes use the current ticket version and are recorded by the server.</p>
         </div>
       </div>
@@ -276,9 +279,9 @@ export function TicketActions({
           className="admin-ticket-action-form"
           onSubmit={(event) => void submitStatus(event)}
         >
-          <h3>Status</h3>
+          <h3><span className="support-ticket-action-index">A)</span> Status Management</h3>
           <p className="admin-ticket-action-current">
-            Current: <strong>{statusLabel(ticket.status)}</strong>
+            Current: <span className={`admin-ticket-badge ${statusClassName(ticket.status)}`}>{statusLabel(ticket.status)}</span>
           </p>
           <label htmlFor="admin-ticket-status-target">Target status</label>
           <select
@@ -319,6 +322,7 @@ export function TicketActions({
               setStatusError("");
             }}
             ref={statusReasonRef}
+            placeholder="Enter reason for status change..."
             value={statusReason}
           />
           <LocalError id="admin-ticket-status-error" message={statusError} />
@@ -351,9 +355,9 @@ export function TicketActions({
           className="admin-ticket-action-form"
           onSubmit={(event) => void submitPriority(event)}
         >
-          <h3>Priority</h3>
+          <h3><span className="support-ticket-action-index">B)</span> Priority Management</h3>
           <p className="admin-ticket-action-current">
-            Current: <strong>{priorityLabel(ticket.priority)}</strong>
+            Current: <span className={`admin-ticket-badge ${priorityClassName(ticket.priority)}`}>{priorityLabel(ticket.priority)}</span>
           </p>
           <label htmlFor="admin-ticket-priority-target">New priority</label>
           <select
@@ -378,6 +382,7 @@ export function TicketActions({
             disabled={mutationDisabled}
             id="admin-ticket-priority-reason"
             onChange={(event) => setPriorityReason(event.target.value)}
+            placeholder="Enter reason for priority change..."
             value={priorityReason}
           />
           <LocalError id="admin-ticket-priority-error" message={priorityError} />
@@ -396,7 +401,7 @@ export function TicketActions({
           className="admin-ticket-action-form"
           onSubmit={(event) => void submitNote(event)}
         >
-          <h3>Internal note</h3>
+          <h3><span className="support-ticket-action-index">C)</span> Internal Note</h3>
           <label htmlFor="admin-ticket-note">Internal note</label>
           <textarea
             aria-describedby={noteError
@@ -410,6 +415,7 @@ export function TicketActions({
               setNoteError("");
             }}
             ref={noteRef}
+            placeholder="Add an internal note (visible only to administrators)..."
             value={noteText}
           />
           <span
@@ -439,7 +445,7 @@ export function TicketActions({
               className="admin-ticket-action-form"
               onSubmit={(event) => void submitReopen(event)}
             >
-              <h3>Reopen</h3>
+              <h3>Reopen Ticket</h3>
               <label htmlFor="admin-ticket-reopen-target">Reopen as</label>
               <select
                 aria-describedby={reopenError ? "admin-ticket-reopen-error" : undefined}
@@ -469,6 +475,7 @@ export function TicketActions({
                   setReopenError("");
                 }}
                 ref={reopenReasonRef}
+                placeholder="Explain why this ticket should be reopened..."
                 value={reopenReason}
               />
               <LocalError id="admin-ticket-reopen-error" message={reopenError} />

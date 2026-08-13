@@ -1,12 +1,13 @@
 "use client";
 
-import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AdminShell } from "@/app/admin/AdminShell";
 import { MiniIcon } from "@/app/admin/orders/orderPresentation";
 import {
   TicketListSkeleton,
   TicketListTable,
+  SupportTicketKpiStrip,
 } from "@/app/admin/tickets/TicketListTable";
 import { AdminApiError } from "@/lib/adminApi";
 import { listAdminTickets } from "@/lib/adminTicketsApi";
@@ -24,6 +25,7 @@ type TicketFilters = {
 };
 
 type LoadKind = "initial" | "filter" | "pagination" | "refresh";
+const TICKET_PAGE_SIZE = 25;
 
 type RetryRequest = {
   filters: TicketFilters;
@@ -172,6 +174,7 @@ export function TicketsPageClient() {
   const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([null]);
   const [pageIndex, setPageIndex] = useState(0);
   const [tickets, setTickets] = useState<AdminTicketListItem[]>([]);
+  const [search, setSearch] = useState("");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasData, setHasData] = useState(false);
   const [loadingKind, setLoadingKind] = useState<LoadKind | null>("initial");
@@ -209,7 +212,7 @@ export function TicketsPageClient() {
     try {
       const result = await listAdminTickets({
         ...requestedFilters,
-        limit: 25,
+        limit: TICKET_PAGE_SIZE,
         ...(cursor ? { cursor } : {}),
       }, controller.signal);
       if (sequence !== requestSequence.current) {
@@ -251,6 +254,18 @@ export function TicketsPageClient() {
 
   const isLoading = loadingKind !== null;
   const hasActiveFilters = Boolean(filters.status || filters.ticket_type || filters.priority);
+  const visibleTickets = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return tickets;
+    return tickets.filter((ticket) => [
+      ticket.ticket_id,
+      ticket.customer_name,
+      ticket.customer_phone,
+      ticket.ticket_type,
+      ticket.category,
+      ticket.order_id,
+    ].some((value) => value?.toLowerCase().includes(query)));
+  }, [search, tickets]);
 
   function applyFilters(nextFilters: TicketFilters) {
     setFilters(nextFilters);
@@ -331,20 +346,23 @@ export function TicketsPageClient() {
   }
 
   const actions = (
-    <button
-      className="admin-refresh-button"
-      disabled={isLoading}
-      onClick={refresh}
-      type="button"
-    >
-      <MiniIcon name="refresh" />
-      {loadingKind === "refresh" ? "Refreshing..." : "Refresh"}
-    </button>
+    <div className="admin-dashboard-actions">
+      <button
+        className="admin-refresh-button"
+        disabled={isLoading}
+        onClick={refresh}
+        type="button"
+      >
+        <MiniIcon name="refresh" />
+        {loadingKind === "refresh" ? "Refreshing..." : "Refresh"}
+      </button>
+    </div>
   );
 
   const showSkeleton = !hasData
     && (loadingKind === "initial" || loadingKind === "filter");
   const showEmpty = hasData && tickets.length === 0 && !pageError;
+  const showSearchEmpty = hasData && tickets.length > 0 && visibleTickets.length === 0 && !pageError;
 
   return (
     <AdminShell
@@ -353,7 +371,20 @@ export function TicketsPageClient() {
       title="Support Tickets"
     >
       <div className="admin-ticket-page">
+        <SupportTicketKpiStrip loading={showSkeleton} tickets={visibleTickets} />
         <section className="admin-ticket-toolbar" aria-label="Ticket filters">
+          <label className="support-ticket-search">
+            Search tickets
+            <span>
+              <MiniIcon name="search" />
+              <input
+                disabled={showSkeleton}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search by Ticket ID, customer, type, or order"
+                value={search}
+              />
+            </span>
+          </label>
           <label>
             Status
             <select value={filters.status ?? ""} onChange={(event) => changeFilter("status", event)}>
@@ -387,7 +418,9 @@ export function TicketsPageClient() {
               Clear filters
             </button>
           )}
+          <p className="support-ticket-filter-help">Click a ticket to view full details</p>
         </section>
+        <p className="support-ticket-scope-note">Search and summary metrics apply to the currently loaded cursor page.</p>
 
         <div className="admin-visually-hidden" aria-live="polite">
           {loadingKind === "pagination"
@@ -426,9 +459,17 @@ export function TicketsPageClient() {
           </section>
         )}
 
+        {showSearchEmpty && (
+          <section className="admin-empty-state">
+            <strong>No tickets on this loaded page match the search</strong>
+            <p>Try another term, clear the search, or move to another cursor page.</p>
+            <button className="secondary" onClick={() => setSearch("")} type="button">Clear search</button>
+          </section>
+        )}
+
         {hasData && tickets.length > 0 && (
           <section className="admin-ticket-results" aria-label="Ticket results">
-            <TicketListTable tickets={tickets} />
+            <TicketListTable rowOffset={pageIndex * TICKET_PAGE_SIZE} tickets={visibleTickets} />
             {pageError && (
               <TicketErrorPanel
                 disabled={isLoading}
@@ -438,6 +479,9 @@ export function TicketsPageClient() {
               />
             )}
             <div className="admin-ticket-pagination">
+              <span className="support-ticket-loaded-count">
+                Showing {visibleTickets.length} ticket{visibleTickets.length === 1 ? "" : "s"} on this page
+              </span>
               <button
                 className="secondary"
                 disabled={isLoading || pageIndex === 0}

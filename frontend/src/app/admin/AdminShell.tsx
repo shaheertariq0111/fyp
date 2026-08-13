@@ -12,7 +12,9 @@ type AdminShellProps = {
   children: ReactNode;
 };
 
-type IconName = "overview" | "orders" | "tickets" | "conversations" | "menu" | "customers" | "monitoring" | "logout" | "menuToggle";
+type IconName = "overview" | "orders" | "tickets" | "conversations" | "menu" | "customers" | "monitoring" | "logout" | "menuToggle" | "chevronLeft" | "chevronRight";
+
+const SIDEBAR_STORAGE_KEY = "admin-sidebar-collapsed";
 
 const navigationItems: Array<{ href: string; label: string; icon: IconName }> = [
   { href: "/admin", label: "Overview", icon: "overview" },
@@ -116,6 +118,18 @@ function AdminIcon({ name }: { name: IconName }) {
           <path d="M4 17h16" />
         </svg>
       );
+    case "chevronLeft":
+      return (
+        <svg {...common}>
+          <path d="m15 18-6-6 6-6" />
+        </svg>
+      );
+    case "chevronRight":
+      return (
+        <svg {...common}>
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+      );
   }
 }
 
@@ -170,6 +184,8 @@ export function formatEnvironmentLabel(
 export function AdminShell({ title, subtitle, actions, children }: AdminShellProps) {
   const pathname = usePathname();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [sidebarPreferenceReady, setSidebarPreferenceReady] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [logoutError, setLogoutError] = useState("");
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -177,6 +193,16 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
   const branchId = process.env.NEXT_PUBLIC_BRANCH_ID;
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
   const environmentLabel = formatEnvironmentLabel(branchId, apiBaseUrl);
+
+  useEffect(() => {
+    try {
+      setIsSidebarCollapsed(window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true");
+    } catch {
+      setIsSidebarCollapsed(false);
+    } finally {
+      setSidebarPreferenceReady(true);
+    }
+  }, []);
 
   useEffect(() => {
     if (!isDrawerOpen) {
@@ -199,6 +225,18 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
     menuButtonRef.current?.focus();
   }
 
+  function toggleSidebar() {
+    setIsSidebarCollapsed((collapsed) => {
+      const next = !collapsed;
+      try {
+        window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next));
+      } catch {
+        // The preference is non-essential; retain the in-memory state if storage is unavailable.
+      }
+      return next;
+    });
+  }
+
   async function logout() {
     if (isSigningOut) {
       return;
@@ -218,18 +256,19 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
     }
   }
 
-  const sidebar = (
-    <aside className="admin-sidebar" aria-label="Admin navigation">
+  const renderSidebar = (collapsed: boolean) => (
+    <aside className={`admin-sidebar${collapsed ? " is-collapsed" : ""}`} aria-label="Admin navigation">
       <div className="admin-sidebar-brand">
         <span className="admin-brand-mark" aria-hidden="true">
           <span />
         </span>
-        <span>
+        <span className="admin-sidebar-brand-copy">
           <strong>Pizza Operations</strong>
           <small>Restaurant Control Center</small>
         </span>
       </div>
-      <div className="admin-branch-indicator">
+      <div className="admin-branch-indicator" aria-label={`Environment: ${environmentLabel}`} title={collapsed ? environmentLabel : undefined}>
+        <span className="admin-branch-compact" aria-hidden="true">ENV</span>
         <span>Environment</span>
         <strong>{environmentLabel}</strong>
       </div>
@@ -243,6 +282,7 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
               href={item.href}
               key={item.href}
               onClick={() => setIsDrawerOpen(false)}
+              data-tooltip={collapsed ? item.label : undefined}
             >
               <AdminIcon name={item.icon} />
               <span>{item.label}</span>
@@ -251,7 +291,7 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
         })}
       </nav>
       {logoutError && <p className="admin-sidebar-error" role="alert">{logoutError}</p>}
-      <button className="admin-logout-button" disabled={isSigningOut} onClick={() => void logout()} type="button">
+      <button className="admin-logout-button" data-tooltip={collapsed ? "Logout" : undefined} disabled={isSigningOut} onClick={() => void logout()} type="button">
         <AdminIcon name="logout" />
         <span>{isSigningOut ? "Signing out..." : "Logout"}</span>
       </button>
@@ -259,9 +299,20 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
   );
 
   return (
-    <div className="admin-layout">
+    <div className={`admin-layout${isSidebarCollapsed ? " is-sidebar-collapsed" : ""}${sidebarPreferenceReady ? " is-sidebar-ready" : ""}`}>
       <a className="admin-skip-link" href="#admin-main-content">Skip to main content</a>
-      <div className="admin-desktop-sidebar">{sidebar}</div>
+      <div className="admin-desktop-sidebar">
+        {renderSidebar(isSidebarCollapsed)}
+        <button
+          aria-expanded={!isSidebarCollapsed}
+          aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className="admin-sidebar-collapse-button"
+          onClick={toggleSidebar}
+          type="button"
+        >
+          <AdminIcon name={isSidebarCollapsed ? "chevronRight" : "chevronLeft"} />
+        </button>
+      </div>
       {isDrawerOpen && (
         <button
           aria-label="Close admin navigation"
@@ -276,7 +327,7 @@ export function AdminShell({ title, subtitle, actions, children }: AdminShellPro
         id="admin-mobile-navigation"
         ref={mobileDrawerRef}
       >
-        {sidebar}
+        {renderSidebar(false)}
       </div>
       <div className="admin-main-shell">
         <header className="admin-topbar">

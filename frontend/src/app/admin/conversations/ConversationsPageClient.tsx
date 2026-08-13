@@ -1,7 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AdminShell, humanizeStatus } from "@/app/admin/AdminShell";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { AdminShell } from "@/app/admin/AdminShell";
+import { MiniIcon } from "@/app/admin/orders/orderPresentation";
+import {
+  channelLabel,
+  ConversationIcon,
+  ConversationStatusBadge,
+  CopyConversationButton,
+  formatConversationTimestamp,
+} from "@/app/admin/conversations/ConversationPresentation";
 import { AdminApiError } from "@/lib/adminApi";
 import {
   AdminConversationMessage,
@@ -30,33 +38,6 @@ function normalizeError(error: unknown) {
     "ADMIN_NETWORK_ERROR",
     "The administrator service could not be reached. Please try again.",
   );
-}
-
-function formatTimestamp(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value || "Unknown";
-  }
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function statusClass(status?: string | null) {
-  const normalized = (status ?? "").toLowerCase();
-  if (["accepted", "sent", "delivered", "read"].includes(normalized)) {
-    return "is-success";
-  }
-  if (["failed", "rejected", "undelivered"].includes(normalized)) {
-    return "is-danger";
-  }
-  if (["skipped", "pending"].includes(normalized)) {
-    return "is-warning";
-  }
-  return "is-neutral";
 }
 
 function ConversationError({
@@ -92,89 +73,39 @@ function ConversationList({
   onSelect: (conversation: AdminConversationSummary) => void;
   loading: boolean;
 }) {
-  const [copiedConversationId, setCopiedConversationId] = useState<string | null>(null);
-
-  async function copyConversationId(conversationId: string) {
-    try {
-      await navigator.clipboard.writeText(conversationId);
-      setCopiedConversationId(conversationId);
-      window.setTimeout(() => {
-        setCopiedConversationId((current) => current === conversationId ? null : current);
-      }, 1600);
-    } catch {
-      setCopiedConversationId(null);
-    }
-  }
-
   return (
     <section className="admin-panel admin-conversation-list-panel" aria-label="WhatsApp conversations">
-      <div className="admin-section-heading">
-        <div>
-          <h2>WhatsApp Conversations</h2>
-          <p>{loading ? "Refreshing" : `${conversations.length} recent conversations`}</p>
-        </div>
+      <div className="conversation-panel-heading">
+        <h2>Recent Conversations</h2>
+        {loading && <span>Refreshing</span>}
       </div>
-      <div className="admin-conversation-table-wrap">
-        <table className="admin-conversation-table">
-          <thead>
-            <tr>
-              <th>Conversation</th>
-              <th>Latest</th>
-              <th>Messages</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {conversations.map((conversation) => {
-              const selected = conversation.conversation_id === selectedConversationId;
-              return (
-                <tr className={selected ? "is-selected" : ""} key={conversation.conversation_id}>
-                  <td data-label="Conversation">
-                    <div className="admin-conversation-identity">
-                      <button
-                        aria-current={selected ? "true" : undefined}
-                        className="admin-conversation-select"
-                        onClick={() => onSelect(conversation)}
-                        title={conversation.conversation_id}
-                        type="button"
-                      >
-                        <strong>{conversation.masked_customer_phone ?? "WhatsApp customer"}</strong>
-                        <small>{conversation.conversation_id}</small>
-                      </button>
-                      <button
-                        aria-label="Copy conversation ID"
-                        className="admin-conversation-copy"
-                        onClick={() => void copyConversationId(conversation.conversation_id)}
-                        title="Copy conversation ID"
-                        type="button"
-                      >
-                        {copiedConversationId === conversation.conversation_id ? "Copied" : "Copy"}
-                      </button>
-                    </div>
-                  </td>
-                  <td className="admin-conversation-latest-cell" data-label="Latest">
-                    <span>{formatTimestamp(conversation.latest_timestamp_utc)}</span>
-                    <p>{conversation.latest_message_preview || "No message text"}</p>
-                  </td>
-                  <td className="admin-conversation-count-cell" data-label="Messages">
-                    <span>{conversation.message_count}</span>
-                    <small>{conversation.customer_message_count} customer / {conversation.agent_message_count} agent</small>
-                  </td>
-                  <td data-label="Status">
-                    {conversation.latest_delivery_status ? (
-                      <span className={`admin-status-badge ${statusClass(conversation.latest_delivery_status)}`}>
-                        <span aria-hidden="true" />
-                        {humanizeStatus(conversation.latest_delivery_status)}
-                      </span>
-                    ) : (
-                      <span className="admin-muted-text">None</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="conversation-card-list">
+        {conversations.map((conversation) => {
+          const selected = conversation.conversation_id === selectedConversationId;
+          return (
+            <article className={`conversation-card${selected ? " is-selected" : ""}`} key={conversation.conversation_id}>
+              <button
+                aria-current={selected ? "true" : undefined}
+                aria-label={`Inspect conversation ${conversation.masked_customer_phone ?? conversation.conversation_id}`}
+                className="conversation-card-select"
+                onClick={() => onSelect(conversation)}
+                type="button"
+              >
+                <span className="conversation-card-topline">
+                  <strong>{conversation.masked_customer_phone ?? "WhatsApp customer"}</strong>
+                  <time dateTime={conversation.latest_timestamp_utc}>{formatConversationTimestamp(conversation.latest_timestamp_utc)}</time>
+                </span>
+                <span className="conversation-card-id" title={conversation.conversation_id}>{conversation.conversation_id}</span>
+                <span className="conversation-card-preview">{conversation.latest_message_preview || "No message text"}</span>
+                <span className="conversation-card-footer">
+                  <span>{conversation.message_count} messages · {conversation.customer_message_count} customer / {conversation.agent_message_count} agent</span>
+                  <ConversationStatusBadge status={conversation.latest_delivery_status} />
+                </span>
+              </button>
+              <CopyConversationButton conversationId={conversation.conversation_id} />
+            </article>
+          );
+        })}
       </div>
     </section>
   );
@@ -193,52 +124,99 @@ function Transcript({
   error: AdminApiError | null;
   onRetry: () => void;
 }) {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const activeConversationIdRef = useRef<string | null>(null);
+  const pendingSelectionScrollRef = useRef<string | null>(null);
+  const wasNearBottomRef = useRef(true);
+  const selectedConversationId = selected?.conversation_id ?? null;
+
+  useLayoutEffect(() => {
+    if (selectedConversationId !== activeConversationIdRef.current) {
+      activeConversationIdRef.current = selectedConversationId;
+      pendingSelectionScrollRef.current = selectedConversationId;
+      wasNearBottomRef.current = true;
+    }
+  }, [selectedConversationId]);
+
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (
+      !container
+      || !transcript
+      || transcript.conversation_id !== selectedConversationId
+    ) {
+      return;
+    }
+
+    const isNewSelection = pendingSelectionScrollRef.current === selectedConversationId;
+    if (isNewSelection || wasNearBottomRef.current) {
+      container.scrollTop = container.scrollHeight;
+      wasNearBottomRef.current = true;
+    }
+    if (isNewSelection) {
+      pendingSelectionScrollRef.current = null;
+    }
+  }, [selectedConversationId, transcript]);
+
+  function trackTranscriptScroll() {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    wasNearBottomRef.current = distanceFromBottom <= 64;
+  }
+
   return (
     <section className="admin-panel admin-conversation-transcript-panel" aria-label="Conversation transcript">
-      <div className="admin-section-heading">
-        <div>
-          <h2>Transcript</h2>
-          <p className="admin-conversation-heading-id" title={selected?.conversation_id}>
-            {selected ? selected.conversation_id : "No conversation selected"}
-          </p>
-        </div>
-        {selected?.latest_delivery_status && (
-          <span className={`admin-status-badge ${statusClass(selected.latest_delivery_status)}`}>
-            <span aria-hidden="true" />
-            {humanizeStatus(selected.latest_delivery_status)}
-          </span>
-        )}
+      <div className="conversation-transcript-heading">
+        <h2 className="admin-conversation-heading-id" title={selected?.conversation_id}>
+          {selected ? selected.conversation_id : "Conversation transcript"}
+        </h2>
+        {selected && <ConversationStatusBadge status={selected.latest_delivery_status} />}
       </div>
 
-      {!selected && (
-        <section className="admin-empty-state">
-          <strong>Select a conversation</strong>
-          <p>Choose a WhatsApp conversation from the list to inspect the customer-agent transcript.</p>
-        </section>
-      )}
-
-      {selected && state === "loading" && (
-        <div className="admin-conversation-loading" role="status">Loading transcript...</div>
-      )}
-
-      {selected && error && (
-        <ConversationError disabled={state === "loading"} error={error} onRetry={onRetry} />
-      )}
-
-      {selected && transcript && transcript.messages.length === 0 && !error && state !== "loading" && (
-        <section className="admin-empty-state">
-          <strong>No messages stored</strong>
-          <p>This conversation does not have readable history records yet.</p>
-        </section>
-      )}
-
-      {selected && transcript && transcript.messages.length > 0 && !error && (
-        <div className="admin-conversation-transcript">
-          {transcript.messages.map((message, index) => (
-            <MessageBubble key={`${message.timestamp_utc}-${index}`} message={message} />
-          ))}
+      {selected && (
+        <div className="conversation-selected-summary" aria-label="Selected conversation summary">
+          <div><ConversationIcon name="messages" /><span>Total Messages<strong>{selected.message_count}</strong></span></div>
+          <div><ConversationIcon name="customer" /><span>Customer<strong>{selected.customer_message_count}</strong></span></div>
+          <div><ConversationIcon name="agent" /><span>Agent<strong>{selected.agent_message_count}</strong></span></div>
+          <div><ConversationIcon name="clock" /><span>Latest Activity<strong>{formatConversationTimestamp(selected.latest_timestamp_utc)}</strong></span></div>
         </div>
       )}
+
+      <div
+        className="conversation-transcript-body"
+        onScroll={trackTranscriptScroll}
+        ref={scrollContainerRef}
+      >
+        {!selected && (
+          <section className="admin-empty-state">
+            <strong>Select a conversation</strong>
+            <p>Choose a WhatsApp conversation from the list to inspect the customer-agent transcript.</p>
+          </section>
+        )}
+
+        {selected && state === "loading" && (
+          <div className="admin-conversation-loading" role="status">Loading transcript...</div>
+        )}
+
+        {selected && error && (
+          <ConversationError disabled={state === "loading"} error={error} onRetry={onRetry} />
+        )}
+
+        {selected && transcript && transcript.messages.length === 0 && !error && state !== "loading" && (
+          <section className="admin-empty-state">
+            <strong>No messages have been stored for this conversation.</strong>
+          </section>
+        )}
+
+        {selected && transcript && transcript.messages.length > 0 && !error && (
+          <div className="admin-conversation-transcript">
+            {transcript.messages.map((message, index) => (
+              <MessageBubble key={`${message.timestamp_utc}-${index}`} message={message} />
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }
@@ -248,17 +226,65 @@ function MessageBubble({ message }: { message: AdminConversationMessage }) {
   return (
     <article className={`admin-message-row${outbound ? " is-agent" : " is-customer"}`}>
       <div className="admin-message-bubble">
+        <header>
+          <strong>{outbound ? "AI Agent" : "Customer"}</strong>
+          <time dateTime={message.timestamp_utc}>{formatConversationTimestamp(message.timestamp_utc)}</time>
+        </header>
         <p>{message.message_text || "No message text"}</p>
-        <footer>
-          <span>{formatTimestamp(message.timestamp_utc)}</span>
-          {outbound && (message.delivery_status || message.outbound_status) && (
-            <span>
-              {humanizeStatus(message.delivery_status || message.outbound_status || "")}
-            </span>
-          )}
-        </footer>
+        {outbound && (message.delivery_status || message.outbound_status) && (
+          <footer><ConversationStatusBadge status={message.delivery_status || message.outbound_status} /></footer>
+        )}
       </div>
     </article>
+  );
+}
+
+function ConversationKpiStrip({ conversations, loading }: { conversations: AdminConversationSummary[]; loading: boolean }) {
+  const metrics = [
+    { label: "Recent Conversations", value: conversations.length, icon: "conversation" as const },
+    { label: "Total Messages", value: conversations.reduce((sum, item) => sum + item.message_count, 0), icon: "messages" as const },
+    { label: "Customer Messages", value: conversations.reduce((sum, item) => sum + item.customer_message_count, 0), icon: "customer" as const },
+    { label: "Agent Messages", value: conversations.reduce((sum, item) => sum + item.agent_message_count, 0), icon: "agent" as const },
+  ];
+
+  return (
+    <section className="admin-panel conversation-kpi-strip" aria-label="Loaded conversation metrics">
+      {metrics.map((metric) => (
+        <article className="conversation-kpi" key={metric.label}>
+          <span className="conversation-kpi-icon"><ConversationIcon name={metric.icon} size={22} /></span>
+          <span>{metric.label}{loading && conversations.length === 0 ? <strong className="admin-skeleton admin-skeleton-value" /> : <strong>{metric.value}</strong>}</span>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+function ConversationContext({ selected }: { selected: AdminConversationSummary }) {
+  return (
+    <aside className="admin-panel conversation-context-panel" aria-label="Conversation context">
+      <div className="conversation-panel-heading"><h2>Conversation Context</h2></div>
+      <dl className="conversation-context-fields">
+        <div><dt>Masked ID</dt><dd><strong>{selected.masked_customer_phone ?? "Not available"}</strong></dd></div>
+        <div>
+          <dt>Full ID</dt>
+          <dd className="conversation-context-id">
+            <span title={selected.conversation_id}>{selected.conversation_id}</span>
+            <CopyConversationButton conversationId={selected.conversation_id} />
+          </dd>
+        </div>
+        <div><dt>Status</dt><dd><ConversationStatusBadge status={selected.latest_delivery_status} /></dd></div>
+        <div><dt>Latest Activity</dt><dd><time dateTime={selected.latest_timestamp_utc}>{formatConversationTimestamp(selected.latest_timestamp_utc)}</time></dd></div>
+        <div className="conversation-context-preview"><dt>Latest Preview</dt><dd>{selected.latest_message_preview || "No message text"}</dd></div>
+        <div>
+          <dt>Source / Channel</dt>
+          <dd className={`conversation-channel${selected.channel.toLowerCase() === "whatsapp" ? " is-whatsapp" : ""}`}>
+            <ConversationIcon name={selected.channel.toLowerCase() === "whatsapp" ? "whatsapp" : "conversation"} />
+            {channelLabel(selected.channel)}
+          </dd>
+        </div>
+      </dl>
+      <p className="conversation-readonly-note"><ConversationIcon name="info" />This is read-only stored conversation history for monitoring and inspection.</p>
+    </aside>
   );
 }
 
@@ -345,14 +371,17 @@ export function ConversationsPageClient() {
 
   const isListLoading = listState !== "idle";
   const actions = (
-    <button
-      className="admin-refresh-button"
-      disabled={isListLoading}
-      onClick={() => void loadConversations("refreshing")}
-      type="button"
-    >
-      {listState === "refreshing" ? "Refreshing..." : "Refresh"}
-    </button>
+    <div className="admin-dashboard-actions">
+      <button
+        className="admin-refresh-button"
+        disabled={isListLoading}
+        onClick={() => void loadConversations("refreshing")}
+        type="button"
+      >
+        <MiniIcon name="refresh" />
+        {listState === "refreshing" ? "Refreshing..." : "Refresh"}
+      </button>
+    </div>
   );
 
   return (
@@ -362,6 +391,8 @@ export function ConversationsPageClient() {
       title="Conversations"
     >
       <div className="admin-conversations-page">
+        <ConversationKpiStrip conversations={conversations} loading={isListLoading} />
+        <p className="conversation-refresh-note">Stored conversation history updates on refresh.</p>
         {listError && (
           <ConversationError
             disabled={isListLoading}
@@ -400,6 +431,7 @@ export function ConversationsPageClient() {
               state={transcriptState}
               transcript={transcript}
             />
+            {selected && <ConversationContext selected={selected} />}
           </div>
         )}
       </div>

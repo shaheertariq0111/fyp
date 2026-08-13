@@ -16,7 +16,11 @@ export const ORDER_STATUSES = [
 ] as const;
 
 const statusLabels: Record<string, string> = {
-  submitted_to_restaurant: "Submitted",
+  submitted_to_restaurant: "Submitted To Restaurant",
+  awaiting_fulfillment_method: "Awaiting Fulfillment Method",
+  awaiting_delivery_address: "Awaiting Delivery Address",
+  awaiting_customer_name: "Awaiting Customer Name",
+  pending_confirmation: "Pending Confirmation",
   accepted: "Accepted",
   preparing: "Preparing",
   ready_for_pickup: "Ready for pickup",
@@ -46,6 +50,10 @@ const fulfillmentLabels: Record<string, string> = {
 
 const statusTone: Record<string, string> = {
   submitted_to_restaurant: "blue",
+  awaiting_fulfillment_method: "warning",
+  awaiting_delivery_address: "warning",
+  awaiting_customer_name: "warning",
+  pending_confirmation: "warning",
   accepted: "navy",
   preparing: "warning",
   ready_for_pickup: "success",
@@ -54,7 +62,10 @@ const statusTone: Record<string, string> = {
   completed: "success",
   rejected: "danger",
   failed: "danger",
+  error: "danger",
   cancelled: "danger",
+  success: "success",
+  succeeded: "success",
 };
 
 export function readableText(value: string) {
