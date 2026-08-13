@@ -1,35 +1,16 @@
 "use client";
 
 import { FormEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AdminShell, money } from "@/app/admin/AdminShell";
+import { AdminShell } from "@/app/admin/AdminShell";
 import { adminGet, adminPatch, adminPost, adminPut } from "@/lib/adminApi";
 import {
-  archiveLabel,
   availabilityLabel,
   MenuIcon,
   readableMenuText,
   validateAdvancedMenuJson,
 } from "@/app/admin/menu/menuPresentation";
-
-type MenuItem = {
-  product_id: string;
-  name: string;
-  category: string;
-  currency: string;
-  description?: string;
-  available: boolean;
-  archived?: boolean;
-  price?: number;
-  starting_price?: number;
-  base_prices?: Record<string, number>;
-  requires_customization?: boolean;
-  customization_group_ids?: string[];
-  upsell_group_ids?: string[];
-  tags?: string[];
-  search_terms?: string[];
-  image_url?: string | null;
-  metadata?: Record<string, unknown>;
-};
+import { MenuCatalogueWorkspace } from "@/app/admin/menu/MenuCatalogueWorkspace";
+import type { MenuItem } from "@/app/admin/menu/menuTypes";
 
 type MenuItemPayload = {
   product_id: string;
@@ -220,12 +201,11 @@ function buildPayload(form: ItemForm, original: MenuItem | null): MenuItemPayloa
   };
 }
 
-function SummaryCard({ label, value, description, loading }: { label: string; value: number | string; description: string; loading: boolean }) {
+function SummaryCard({ label, value, loading, tone, icon }: { label: string; value: number | string; loading: boolean; tone: string; icon: "items" | "available" | "unavailable" | "archive" }) {
   return (
-    <article className="admin-menu-summary-card">
-      <span>{label}</span>
-      {loading ? <strong className="admin-skeleton admin-skeleton-value" /> : <strong>{value}</strong>}
-      <p>{description}</p>
+    <article className={`admin-menu-summary-card is-${tone}`}>
+      <span className="menu-summary-icon"><MenuIcon name={icon} /></span>
+      <span>{label}{loading ? <strong className="admin-skeleton admin-skeleton-value" /> : <strong>{value}</strong>}</span>
     </article>
   );
 }
@@ -242,6 +222,7 @@ export default function AdminMenuPage() {
   const [categoryFilter, setCategoryFilter] = useState("");
   const [availabilityFilter, setAvailabilityFilter] = useState("");
   const [archiveFilter, setArchiveFilter] = useState("active");
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [formMode, setFormMode] = useState<FormMode>("closed");
   const [form, setForm] = useState<ItemForm>(emptyItemForm);
@@ -356,6 +337,9 @@ export default function AdminMenuPage() {
     unavailable: items.filter((item) => !item.available && !item.archived).length,
     archived: items.filter((item) => item.archived).length,
   }), [items]);
+  const effectiveSelectedProductId = filteredItems.some((item) => item.product_id === selectedProductId)
+    ? selectedProductId
+    : filteredItems[0]?.product_id ?? null;
 
   const hasInitialFailure = !hasSuccessfulResponse && lastFailedRefresh !== null;
   const hasStaleWarning = hasSuccessfulResponse && lastFailedRefresh !== null && lastFailedRefresh.hadPreviousData;
@@ -613,7 +597,7 @@ export default function AdminMenuPage() {
         <MenuIcon name="refresh" />
         {manualRefreshing ? "Refreshing..." : "Refresh"}
       </button>
-      <button className="primary admin-inline-action" onClick={openAddForm} type="button">
+      <button className="primary admin-inline-action admin-menu-add-button" onClick={openAddForm} type="button">
         <MenuIcon name="plus" />
         Add menu item
       </button>
@@ -653,10 +637,10 @@ export default function AdminMenuPage() {
         )}
 
         <section className="admin-menu-summary" aria-label="Summary of currently loaded menu">
-          <SummaryCard description={summaryUnavailable ? "Unavailable until menu reconnects." : "Items in the currently loaded menu."} label="Total items" loading={showSkeleton} value={summaryUnavailable ? unavailableValue : summary.total} />
-          <SummaryCard description={summaryUnavailable ? "Unavailable until menu reconnects." : "Active items available to customers."} label="Available" loading={showSkeleton} value={summaryUnavailable ? unavailableValue : summary.available} />
-          <SummaryCard description={summaryUnavailable ? "Unavailable until menu reconnects." : "Active items currently disabled."} label="Unavailable" loading={showSkeleton} value={summaryUnavailable ? unavailableValue : summary.unavailable} />
-          <SummaryCard description={summaryUnavailable ? "Unavailable until menu reconnects." : "Items archived out of active operations."} label="Archived" loading={showSkeleton} value={summaryUnavailable ? unavailableValue : summary.archived} />
+          <SummaryCard icon="items" label="Total items" loading={showSkeleton} tone="blue" value={summaryUnavailable ? unavailableValue : summary.total} />
+          <SummaryCard icon="available" label="Available" loading={showSkeleton} tone="success" value={summaryUnavailable ? unavailableValue : summary.available} />
+          <SummaryCard icon="unavailable" label="Unavailable" loading={showSkeleton} tone="warning" value={summaryUnavailable ? unavailableValue : summary.unavailable} />
+          <SummaryCard icon="archive" label="Archived" loading={showSkeleton} tone="neutral" value={summaryUnavailable ? unavailableValue : summary.archived} />
         </section>
 
         <section className="admin-menu-toolbar" aria-label="Menu filters">
@@ -691,6 +675,7 @@ export default function AdminMenuPage() {
             </select>
           </label>
           <div className="admin-toolbar-status">
+            <MenuIcon name="refresh" />
             <span>Background refresh every 60s</span>
             {backgroundRefreshing && <strong>Checking menu...</strong>}
           </div>
@@ -789,94 +774,32 @@ export default function AdminMenuPage() {
           </section>
         )}
 
-        <section className="admin-panel admin-menu-catalogue">
-          <div className="admin-section-heading">
-            <div>
-              <h2>Menu item catalogue</h2>
-              <p>Operational view of the currently loaded menu item response.</p>
-            </div>
-          </div>
-          {hasInitialFailure ? (
-            <div className="admin-empty-state">
-              <strong>Menu data is unavailable.</strong>
-              <p>Retry when the service is reachable.</p>
-              <button className="secondary" disabled={manualRefreshing || backgroundRefreshing} onClick={() => void loadItems("manual")} type="button">Retry</button>
-            </div>
-          ) : (
-            <div className="admin-menu-table-wrap">
-              <table className="admin-table admin-menu-table">
-                <thead>
-                  <tr>
-                    <th>Item</th>
-                    <th>Product ID</th>
-                    <th>Category</th>
-                    <th>Starting price</th>
-                    <th>Availability</th>
-                    <th>Archive state</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {showSkeleton && [0, 1, 2, 3].map((row) => (
-                    <tr key={row}>
-                      <td><span className="admin-skeleton admin-skeleton-line" /></td>
-                      <td><span className="admin-skeleton admin-skeleton-line" /></td>
-                      <td><span className="admin-skeleton admin-skeleton-pill" /></td>
-                      <td><span className="admin-skeleton admin-skeleton-line" /></td>
-                      <td><span className="admin-skeleton admin-skeleton-pill" /></td>
-                      <td><span className="admin-skeleton admin-skeleton-pill" /></td>
-                      <td><span className="admin-skeleton admin-skeleton-line" /></td>
-                    </tr>
-                  ))}
-                  {!showSkeleton && filteredItems.map((item) => (
-                    <tr className={item.archived ? "is-archived" : ""} key={item.product_id}>
-                      <td data-label="Item">
-                        <div className="admin-menu-item-cell">
-                          <strong>{item.name}</strong>
-                          {item.description && <p>{item.description}</p>}
-                          {(item.tags ?? []).length > 0 && (
-                            <div className="admin-menu-tag-row">
-                              {(item.tags ?? []).map((tag) => <span key={`${item.product_id}-${tag}`}>{tag}</span>)}
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                      <td data-label="Product ID"><code>{item.product_id}</code></td>
-                      <td data-label="Category">{readableMenuText(item.category)}</td>
-                      <td data-label="Starting price">{money(itemPrice(item), item.currency)}</td>
-                      <td data-label="Availability"><span className={`admin-menu-badge ${item.available ? "is-available" : "is-unavailable"}`}>{availabilityLabel(item.available)}</span></td>
-                      <td data-label="Archive state"><span className={`admin-menu-badge ${item.archived ? "is-archived" : "is-active"}`}>{archiveLabel(item.archived)}</span></td>
-                      <td data-label="Actions">
-                        <div className="admin-row-actions">
-                          <button className="secondary" disabled={rowActionId === item.product_id} onClick={() => openEditForm(item)} type="button"><MenuIcon name="edit" /> Edit</button>
-                          <button className="secondary" disabled={rowActionId === item.product_id || Boolean(item.archived)} onClick={() => void toggleAvailability(item)} type="button">
-                            {rowActionId === item.product_id ? "Updating..." : item.available ? "Disable" : "Enable"}
-                          </button>
-                          {!item.archived && (
-                            <button className="secondary danger" disabled={rowActionId === item.product_id} onClick={() => setArchiveCandidate(item)} type="button"><MenuIcon name="archive" /> Archive</button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {showEmptyMenu && (
-            <div className="admin-empty-state">
-              <strong>No menu items are currently available.</strong>
-              <p>Add a menu item to begin managing products.</p>
-            </div>
-          )}
-          {showFilteredEmpty && (
-            <div className="admin-empty-state">
-              <strong>No menu items match the selected filters.</strong>
-              <p>Clear filters or search for a different product name or ID.</p>
-              <button className="secondary" onClick={clearFilters} type="button">Clear filters</button>
-            </div>
-          )}
-        </section>
+        {!hasInitialFailure && !showEmptyMenu && !showFilteredEmpty && (
+          <MenuCatalogueWorkspace
+            items={filteredItems}
+            onArchive={setArchiveCandidate}
+            onEdit={openEditForm}
+            onSelect={(item) => setSelectedProductId(item.product_id)}
+            onToggleAvailability={(item) => void toggleAvailability(item)}
+            rowActionId={rowActionId}
+            selectedProductId={effectiveSelectedProductId}
+            showSkeleton={showSkeleton}
+          />
+        )}
+
+        {showEmptyMenu && (
+          <section className="admin-panel admin-empty-state">
+            <strong>No menu items are currently available.</strong>
+            <p>Add a menu item to begin managing products.</p>
+          </section>
+        )}
+        {showFilteredEmpty && (
+          <section className="admin-panel admin-empty-state">
+            <strong>No menu items match the current search or filters.</strong>
+            <p>Clear filters or search for a different product name or ID.</p>
+            <button className="secondary" onClick={clearFilters} type="button">Clear filters</button>
+          </section>
+        )}
 
         {archiveCandidate && (
           <section className="admin-danger-confirmation" aria-labelledby="archive-confirm-heading">

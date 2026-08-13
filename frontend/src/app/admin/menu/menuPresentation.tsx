@@ -81,7 +81,7 @@ export function validateAdvancedMenuJson(
   return parsed;
 }
 
-export function MenuIcon({ name }: { name: "refresh" | "plus" | "search" | "edit" | "archive" | "tag" | "settings" }) {
+export function MenuIcon({ name }: { name: "refresh" | "plus" | "search" | "edit" | "archive" | "tag" | "settings" | "items" | "available" | "unavailable" | "disable" }) {
   const common = {
     width: 16,
     height: 16,
@@ -146,6 +146,35 @@ export function MenuIcon({ name }: { name: "refresh" | "plus" | "search" | "edit
         <svg {...common}>
           <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" />
           <path d="M19.4 15a1.8 1.8 0 0 0 .36 2l.04.04a2.1 2.1 0 1 1-3 3l-.04-.04a1.8 1.8 0 0 0-2-.36 1.8 1.8 0 0 0-1.1 1.66V21a2.1 2.1 0 1 1-4.2 0v-.06a1.8 1.8 0 0 0-1.1-1.66 1.8 1.8 0 0 0-2 .36l-.04.04a2.1 2.1 0 1 1-3-3l.04-.04a1.8 1.8 0 0 0 .36-2 1.8 1.8 0 0 0-1.66-1.1H2a2.1 2.1 0 1 1 0-4.2h.06a1.8 1.8 0 0 0 1.66-1.1 1.8 1.8 0 0 0-.36-2l-.04-.04a2.1 2.1 0 1 1 3-3l.04.04a1.8 1.8 0 0 0 2 .36 1.8 1.8 0 0 0 1.1-1.66V2a2.1 2.1 0 1 1 4.2 0v.06a1.8 1.8 0 0 0 1.1 1.66 1.8 1.8 0 0 0 2-.36l.04-.04a2.1 2.1 0 1 1 3 3l-.04.04a1.8 1.8 0 0 0-.36 2 1.8 1.8 0 0 0 1.66 1.1H22a2.1 2.1 0 1 1 0 4.2h-.06A1.8 1.8 0 0 0 19.4 15z" />
+        </svg>
+      );
+    case "items":
+      return (
+        <svg {...common}>
+          <path d="M5 7h14v13H5z" />
+          <path d="M8 7V4h8v3" />
+          <path d="M9 11h6" />
+        </svg>
+      );
+    case "available":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="m7.5 12 3 3 6-7" />
+        </svg>
+      );
+    case "unavailable":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M8 12h8" />
+        </svg>
+      );
+    case "disable":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="m8.5 8.5 7 7" />
         </svg>
       );
   }
