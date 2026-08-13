@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { money } from "@/app/admin/AdminShell";
+import { statusToneClass } from "@/app/admin/orders/orderPresentation";
+import { TicketIcon, type TicketIconName } from "@/app/admin/tickets/TicketIcon";
 import {
   formatTicketDateTime,
   priorityClassName,
@@ -12,6 +14,10 @@ import {
 import type { AdminTicketDetail } from "@/lib/adminTicketTypes";
 
 const FALLBACK = "Not provided";
+
+function SectionHeading({ children, icon }: { children: React.ReactNode; icon: TicketIconName }) {
+  return <h2><TicketIcon name={icon} /><span>{children}</span></h2>;
+}
 
 function DetailFields({
   children,
@@ -49,28 +55,14 @@ function TicketHeader({ ticket }: { ticket: AdminTicketDetail }) {
       aria-label="Ticket summary"
       className="admin-ticket-detail-panel admin-ticket-detail-header"
     >
-      <Link className="admin-ticket-detail-back" href="/admin/tickets">
-        Back to Support Tickets
-      </Link>
-      <div className="admin-ticket-detail-heading">
-        <div>
-          <span className="admin-ticket-detail-eyebrow">Ticket ID</span>
-          <code className="admin-ticket-detail-id">{ticket.ticket_id}</code>
-        </div>
-        <div className="admin-ticket-detail-badges">
-          <span className={`admin-ticket-badge ${statusClassName(ticket.status)}`}>
-            {statusLabel(ticket.status)}
-          </span>
-          <span className={`admin-ticket-badge ${priorityClassName(ticket.priority)}`}>
-            {priorityLabel(ticket.priority)}
-          </span>
-        </div>
-      </div>
       <DetailFields>
-        <DetailField label="Type">{ticketTypeLabel(ticket.ticket_type)}</DetailField>
+        <DetailField label="Ticket ID"><code className="admin-ticket-detail-id">{ticket.ticket_id}</code></DetailField>
+        <DetailField label="Ticket Type">{ticketTypeLabel(ticket.ticket_type)}</DetailField>
         <DetailField label="Category">{visibleValue(ticket.category)}</DetailField>
         <DetailField label="Created">{formatTicketDateTime(ticket.created_at)}</DetailField>
         <DetailField label="Updated">{formatTicketDateTime(ticket.updated_at)}</DetailField>
+        <DetailField label="Current Status"><span className={`admin-ticket-badge ${statusClassName(ticket.status)}`}>{statusLabel(ticket.status)}</span></DetailField>
+        <DetailField label="Current Priority"><span className={`admin-ticket-badge ${priorityClassName(ticket.priority)}`}>{priorityLabel(ticket.priority)}</span></DetailField>
       </DetailFields>
     </section>
   );
@@ -83,7 +75,7 @@ function CustomerSection({ ticket }: { ticket: AdminTicketDetail }) {
       aria-label="Customer"
       className="admin-ticket-detail-panel"
     >
-      <h2>Customer</h2>
+      <SectionHeading icon="customer">Customer</SectionHeading>
       <DetailFields>
         <DetailField label="Customer ID">
           <span className="admin-ticket-detail-long-value">
@@ -116,7 +108,7 @@ function DescriptionSection({ ticket }: { ticket: AdminTicketDetail }) {
       aria-label="Description"
       className="admin-ticket-detail-panel admin-ticket-detail-wide"
     >
-      <h2>Description</h2>
+      <SectionHeading icon="description">Description</SectionHeading>
       <p className="admin-ticket-preserved-text">
         {visibleValue(ticket.description, FALLBACK)}
       </p>
@@ -129,15 +121,18 @@ function OrderSections({ ticket }: { ticket: AdminTicketDetail }) {
   return (
     <>
       <section aria-label="Order context" className="admin-ticket-detail-panel">
-        <h2>Order context</h2>
+        <SectionHeading icon="orderContext">Order Context</SectionHeading>
         <DetailFields>
           <DetailField label="Linked order ID">
-            <span className="admin-ticket-detail-long-value">
-              {visibleValue(ticket.order_id, "No linked order")}
-            </span>
+            {ticket.order_id ? <Link className="admin-ticket-detail-long-value" href={`/admin/orders/${encodeURIComponent(ticket.order_id)}`} title={ticket.order_id}>{ticket.order_id}</Link> : "No linked order"}
           </DetailField>
           <DetailField label="Order status snapshot">
-            {visibleValue(ticket.order_status_snapshot, "Not available")}
+            {ticket.order_status_snapshot ? (
+              <span className={`admin-status-badge ${statusToneClass(ticket.order_status_snapshot)}`}>
+                <span aria-hidden="true" />
+                {ticket.order_status_snapshot}
+              </span>
+            ) : "Not available"}
           </DetailField>
         </DetailFields>
       </section>
@@ -145,17 +140,20 @@ function OrderSections({ ticket }: { ticket: AdminTicketDetail }) {
         aria-label="Linked order details"
         className="admin-ticket-detail-panel"
       >
-        <h2>Linked order details</h2>
+        <SectionHeading icon="linkedOrder">Linked Order Details</SectionHeading>
         {linkedOrder ? (
           <DetailFields>
             <DetailField label="Order ID">
-              <span className="admin-ticket-detail-long-value">
-                {linkedOrder.order_id}
+              <Link className="admin-ticket-detail-long-value" href={`/admin/orders/${encodeURIComponent(linkedOrder.order_id)}`} title={linkedOrder.order_id}>{linkedOrder.order_id}</Link>
+            </DetailField>
+            <DetailField label="Status">
+              <span className={`admin-status-badge ${statusToneClass(linkedOrder.status)}`}>
+                <span aria-hidden="true" />
+                {linkedOrder.status}
               </span>
             </DetailField>
-            <DetailField label="Status">{linkedOrder.status}</DetailField>
             <DetailField label="Fulfillment method">
-              {visibleValue(linkedOrder.fulfillment_method, FALLBACK)}
+              {linkedOrder.fulfillment_method ?? FALLBACK}
             </DetailField>
             <DetailField label="Total and currency">
               {money(linkedOrder.total, linkedOrder.currency)} {linkedOrder.currency}
@@ -183,7 +181,7 @@ function StatusHistorySection({ ticket }: { ticket: AdminTicketDetail }) {
       aria-label="Status history"
       className="admin-ticket-detail-panel admin-ticket-detail-wide"
     >
-      <h2>Status history</h2>
+      <SectionHeading icon="statusHistory">Status History</SectionHeading>
       {ticket.status_history.length ? (
         <ol
           aria-label="Status history entries"
@@ -221,7 +219,7 @@ function PriorityHistorySection({ ticket }: { ticket: AdminTicketDetail }) {
       aria-label="Priority history"
       className="admin-ticket-detail-panel admin-ticket-detail-wide"
     >
-      <h2>Priority history</h2>
+      <SectionHeading icon="priorityHistory">Priority History</SectionHeading>
       {ticket.priority_history.length ? (
         <ol
           aria-label="Priority history entries"
@@ -260,7 +258,7 @@ function NotesSection({ ticket }: { ticket: AdminTicketDetail }) {
       aria-label="Internal notes"
       className="admin-ticket-detail-panel admin-ticket-detail-wide"
     >
-      <h2>Internal notes</h2>
+      <SectionHeading icon="notes">Internal Notes History</SectionHeading>
       {ticket.admin_notes.length ? (
         <ul
           aria-label="Internal note entries"
@@ -296,7 +294,7 @@ function MetadataSection({ ticket }: { ticket: AdminTicketDetail }) {
       aria-label="Metadata"
       className="admin-ticket-detail-panel admin-ticket-detail-wide"
     >
-      <h2>Metadata</h2>
+      <SectionHeading icon="metadata">Metadata</SectionHeading>
       <DetailFields>
         <DetailField label="Source">{visibleValue(ticket.source, FALLBACK)}</DetailField>
         <DetailField label="Version">{ticket.version}</DetailField>
@@ -314,15 +312,23 @@ export function TicketDetailSections({
 }) {
   return (
     <div className="admin-ticket-detail-layout">
+      <Link className="admin-ticket-detail-back" href="/admin/tickets">
+        <span aria-hidden="true">← </span>
+        Back to Support Tickets
+      </Link>
       <TicketHeader ticket={ticket} />
-      {actions}
-      <CustomerSection ticket={ticket} />
-      <DescriptionSection ticket={ticket} />
-      <OrderSections ticket={ticket} />
-      <StatusHistorySection ticket={ticket} />
-      <PriorityHistorySection ticket={ticket} />
-      <NotesSection ticket={ticket} />
-      <MetadataSection ticket={ticket} />
+      <div className="support-ticket-detail-context">
+        <DescriptionSection ticket={ticket} />
+        <CustomerSection ticket={ticket} />
+        <OrderSections ticket={ticket} />
+        <StatusHistorySection ticket={ticket} />
+        <PriorityHistorySection ticket={ticket} />
+        <NotesSection ticket={ticket} />
+      </div>
+      <div className="support-ticket-detail-controls">
+        {actions}
+        <MetadataSection ticket={ticket} />
+      </div>
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "@/app/admin/AdminShell";
+import { MiniIcon } from "@/app/admin/orders/orderPresentation";
 import {
   TicketActions,
   type TicketMutation,
@@ -501,20 +502,23 @@ export function TicketDetailPageClient({ ticketId }: { ticketId: string }) {
   const isLoading = visibleLoadingKind !== null;
   const mutationBusy = activeMutation !== null || recoveringConflict;
   const actions = (
-    <button
-      className="admin-primary-button"
-      disabled={isLoading || mutationBusy}
-      onClick={refresh}
-      type="button"
-    >
-      {visibleLoadingKind === "refresh" ? "Refreshing ticket..." : "Refresh"}
-    </button>
+    <div className="admin-dashboard-actions">
+      <button
+        className="admin-refresh-button"
+        disabled={isLoading || mutationBusy}
+        onClick={refresh}
+        type="button"
+      >
+        <MiniIcon name="refresh" />
+        {visibleLoadingKind === "refresh" ? "Refreshing ticket..." : "Refresh"}
+      </button>
+    </div>
   );
 
   return (
     <AdminShell
       actions={actions}
-      subtitle="Read-only support ticket record"
+      subtitle="Review and manage this support ticket record"
       title="Support Ticket"
     >
       <div className="admin-ticket-detail-page">
