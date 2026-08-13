@@ -276,11 +276,20 @@ button {
 }
 
 .admin-layout {
+  --admin-sidebar-width: 240px;
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-columns: var(--admin-sidebar-width) minmax(0, 1fr);
   background: var(--admin-canvas);
   color: var(--admin-text);
+}
+
+.admin-layout.is-sidebar-collapsed {
+  --admin-sidebar-width: 72px;
+}
+
+.admin-layout.is-sidebar-ready {
+  transition: grid-template-columns 190ms ease;
 }
 
 .admin-layout :is(a, button, input, select, textarea):focus-visible,
@@ -290,20 +299,26 @@ button {
 }
 
 .admin-desktop-sidebar {
+  position: relative;
+  z-index: 6;
   min-height: 100vh;
 }
 
 .admin-sidebar {
   position: sticky;
   top: 0;
+  width: 100%;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 20px 14px;
-  overflow-y: auto;
+  gap: 16px;
+  padding: 18px 12px 16px;
+  overflow: visible;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
   background: var(--admin-navy);
   color: #ffffff;
+  box-shadow: 5px 0 18px rgba(5, 29, 52, 0.1);
+  transition: padding 190ms ease;
 }
 
 .admin-sidebar-brand {
@@ -311,7 +326,12 @@ button {
   grid-template-columns: 44px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
-  padding: 6px 8px 14px;
+  padding: 4px 8px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.admin-sidebar-brand-copy {
+  min-width: 0;
 }
 
 .admin-sidebar-brand strong {
@@ -375,36 +395,49 @@ button {
   font-size: 13px;
 }
 
+.admin-branch-compact {
+  display: none;
+}
+
 .admin-sidebar-nav {
   display: grid;
-  gap: 6px;
+  gap: 5px;
 }
 
 .admin-nav-item,
 .admin-logout-button {
   position: relative;
-  min-height: 42px;
+  min-height: 43px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   padding: 10px 12px;
   border-radius: 8px;
   color: rgba(255, 255, 255, 0.86);
   text-align: left;
   text-decoration: none;
   background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.admin-nav-item svg,
+.admin-logout-button svg {
+  flex: 0 0 auto;
 }
 
 .admin-nav-item:hover,
 .admin-logout-button:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
   color: #ffffff;
 }
 
 .admin-nav-item.is-active {
-  background: rgba(0, 100, 145, 0.72);
+  background: #165f9f;
   color: #ffffff;
-  font-weight: 800;
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 5px 12px rgba(3, 25, 45, 0.16);
 }
 
 .admin-nav-item.is-active::before {
@@ -421,6 +454,129 @@ button {
 .admin-logout-button {
   margin-top: auto;
   width: 100%;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0 0 8px 8px;
+}
+
+.admin-sidebar-collapse-button {
+  position: fixed;
+  top: 32vh;
+  left: calc(var(--admin-sidebar-width) - 14px);
+  z-index: 7;
+  width: 28px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 9px;
+  background: #124a79;
+  color: #ffffff;
+  box-shadow: 0 5px 14px rgba(5, 29, 52, 0.24);
+  transition: left 190ms ease, background-color 160ms ease, transform 160ms ease;
+}
+
+.admin-sidebar-collapse-button:hover {
+  background: #17639f;
+  transform: translateX(1px);
+}
+
+.admin-sidebar-collapse-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.admin-sidebar.is-collapsed {
+  padding-inline: 10px;
+}
+
+.admin-sidebar.is-collapsed .admin-sidebar-brand {
+  display: flex;
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.admin-sidebar.is-collapsed .admin-brand-mark {
+  width: 38px;
+  height: 38px;
+}
+
+.admin-sidebar.is-collapsed .admin-sidebar-brand-copy,
+.admin-sidebar.is-collapsed .admin-nav-item > span,
+.admin-sidebar.is-collapsed .admin-logout-button > span,
+.admin-sidebar.is-collapsed .admin-branch-indicator > span:not(.admin-branch-compact),
+.admin-sidebar.is-collapsed .admin-branch-indicator > strong {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.admin-sidebar.is-collapsed .admin-branch-indicator {
+  min-height: 36px;
+  display: grid;
+  place-items: center;
+  margin-inline: 2px;
+  padding: 6px 4px;
+}
+
+.admin-sidebar.is-collapsed .admin-branch-compact {
+  position: static;
+  width: auto;
+  height: auto;
+  display: inline;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.admin-sidebar.is-collapsed .admin-nav-item,
+.admin-sidebar.is-collapsed .admin-logout-button {
+  justify-content: center;
+  gap: 0;
+  padding-inline: 8px;
+}
+
+.admin-sidebar.is-collapsed .admin-nav-item.is-active::before {
+  top: 8px;
+  bottom: 8px;
+}
+
+.admin-sidebar.is-collapsed [data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  z-index: 12;
+  min-width: max-content;
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: #102f4d;
+  color: #ffffff;
+  box-shadow: 0 7px 18px rgba(5, 29, 52, 0.22);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(3px, -50%);
+  visibility: hidden;
+  transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+}
+
+.admin-sidebar.is-collapsed [data-tooltip]:is(:hover, :focus-visible)::after {
+  opacity: 1;
+  transform: translate(0, -50%);
+  visibility: visible;
 }
 
 .admin-main-shell {
@@ -519,6 +675,18 @@ button {
 .admin-content {
   min-width: 0;
   padding: 24px 26px 34px;
+}
+
+.admin-content > * {
+  min-width: 0;
+}
+
+@media (min-width: 821px) {
+  .admin-layout.is-sidebar-collapsed .admin-content > * {
+    width: 100%;
+    max-width: none;
+    margin-inline: 0;
+  }
 }
 
 .admin-login {
@@ -2353,6 +2521,11 @@ button.admin-customer-result-card {
     transition: transform 180ms ease;
   }
 
+  .admin-mobile-drawer .admin-sidebar {
+    height: 100%;
+    overflow-y: auto;
+  }
+
   .admin-mobile-drawer.is-open {
     transform: translateX(0);
   }
@@ -2536,6 +2709,12 @@ button.admin-customer-result-card {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .admin-layout.is-sidebar-ready,
+  .admin-sidebar,
+  .admin-sidebar-collapse-button,
+  .admin-nav-item,
+  .admin-logout-button,
+  .admin-sidebar.is-collapsed [data-tooltip]::after,
   .admin-mobile-drawer,
   .admin-skeleton {
     transition: none;
