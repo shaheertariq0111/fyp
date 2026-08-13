@@ -8,6 +8,7 @@ from src.services.customer_service import CustomerService
 class MemoryCustomerRepository:
     def __init__(self):
         self.data = {}
+        self.list_page_calls = []
 
     def create(self, customer):
         self.data[customer["customer_id"]] = dict(customer)
@@ -22,6 +23,32 @@ class MemoryCustomerRepository:
              if customer.get("phone_hash") == phone_hash),
             None,
         )
+
+    def list_page(self, *, limit, exclusive_start_key=None):
+        self.list_page_calls.append({
+            "limit": limit,
+            "exclusive_start_key": exclusive_start_key,
+        })
+        customers = list(self.data.values())
+        start = 0
+        if exclusive_start_key is not None:
+            customer_id = exclusive_start_key["PK"].removeprefix("CUSTOMER#")
+            start = next(
+                index + 1
+                for index, customer in enumerate(customers)
+                if customer["customer_id"] == customer_id
+            )
+        page = customers[start:start + limit]
+        has_more = start + limit < len(customers)
+        last = page[-1] if page and has_more else None
+        return {
+            "items": [dict(customer) for customer in page],
+            "last_evaluated_key": (
+                {"PK": last["PK"], "SK": last["SK"]}
+                if last is not None
+                else None
+            ),
+        }
 
     def save(self, customer):
         self.data[customer["customer_id"]] = dict(customer)
@@ -188,6 +215,70 @@ def test_customer_profile_saves_multiple_delivery_addresses_and_default():
     assert addresses[1]["is_default"] is True
     assert addresses[1]["verified"] is False
     assert addresses[1]["address_id"].startswith("ADDR-")
+
+
+def test_admin_exact_phone_search_uses_gsi_without_scan():
+    customers, _ = services()
+    customers.update_profile(
+        "cust-1",
+        display_name="Ava Khan",
+        phone_number="+92 300 1234567",
+    )
+
+    result = customers.admin_search("+92 300 1234567", limit=25)
+
+    assert [customer["customer_id"] for customer in result["customers"]] == [
+        "cust-1"
+    ]
+    assert result["next_cursor_state"] is None
+    assert customers.repository.list_page_calls == []
+
+
+def test_admin_name_and_address_searches_each_read_one_bounded_page():
+    customers, _ = services()
+    customers.update_profile("cust-name", display_name="Ava Khan")
+    customers.save_address(
+        "cust-address",
+        address_text="42 Garden Avenue, Lahore",
+    )
+
+    by_name = customers.admin_search("ava", limit=25)
+    by_address = customers.admin_search("garden avenue", limit=25)
+
+    assert [customer["customer_id"] for customer in by_name["customers"]] == [
+        "cust-name"
+    ]
+    assert [customer["customer_id"] for customer in by_address["customers"]] == [
+        "cust-address"
+    ]
+    assert customers.repository.list_page_calls == [
+        {"limit": 25, "exclusive_start_key": None},
+        {"limit": 25, "exclusive_start_key": None},
+    ]
+
+
+def test_admin_customer_projection_excludes_dynamodb_and_address_metadata():
+    customer = {
+        "PK": "CUSTOMER#cust-1",
+        "SK": "PROFILE",
+        "GSI1PK": "PHONE#private-hash",
+        "GSI1SK": "CUSTOMER",
+        "customer_id": "cust-1",
+        "display_name": "Ava Khan",
+        "name_confirmed": True,
+        "phone_hash": "private-hash",
+        "addresses": [{
+            "address_id": "ADDR-1",
+            "address_text": "42 Garden Avenue",
+            "is_default": True,
+            "internal_note": "private",
+        }],
+    }
+
+    public = CustomerService._public(customer)
+
+    assert {"PK", "SK", "GSI1PK", "GSI1SK", "phone_hash"}.isdisjoint(public)
+    assert "internal_note" not in public["addresses"][0]
 
 
 def test_valid_session_is_reused_and_last_seen_updates():

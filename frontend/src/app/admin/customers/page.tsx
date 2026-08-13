@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "@/app/admin/AdminShell";
 import { CustomerIcon } from "@/app/admin/customers/customerPresentation";
 import { CustomerProfileWorkspace, CustomerResultsPanel } from "@/app/admin/customers/CustomerWorkspace";
@@ -8,54 +8,125 @@ import type {
   Customer,
   CustomerProfile,
   CustomerProfileState,
+  CustomerPaginationState,
   CustomerSearchState,
 } from "@/app/admin/customers/customerTypes";
-import { adminGet } from "@/lib/adminApi";
+import { getAdminCustomer, listAdminCustomers } from "@/lib/adminCustomersApi";
+
+const CUSTOMER_PAGE_SIZE = 25;
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function appendUniqueCustomers(current: Customer[], additional: Customer[]) {
+  const seen = new Set(current.map((customer) => customer.customer_id));
+  return [
+    ...current,
+    ...additional.filter((customer) => {
+      if (seen.has(customer.customer_id)) return false;
+      seen.add(customer.customer_id);
+      return true;
+    }),
+  ];
+}
 
 export default function AdminCustomersPage() {
   const [query, setQuery] = useState("");
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [searchState, setSearchState] = useState<CustomerSearchState>("idle");
+  const [searchState, setSearchState] = useState<CustomerSearchState>("searching");
   const [inputError, setInputError] = useState("");
   const [searchError, setSearchError] = useState("");
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [paginationState, setPaginationState] = useState<CustomerPaginationState>("idle");
+  const [paginationError, setPaginationError] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [profile, setProfile] = useState<CustomerProfile | null>(null);
   const [profileState, setProfileState] = useState<CustomerProfileState>("idle");
   const [profileMessage, setProfileMessage] = useState("");
-  const searchInFlight = useRef(false);
+  const listRequestController = useRef<AbortController | null>(null);
+  const listRequestSequence = useRef(0);
+  const activeQuery = useRef("");
   const profileInFlight = useRef<string | null>(null);
   const searchWarningLogged = useRef(false);
   const profileWarningLogged = useRef(false);
 
-  async function search(event?: FormEvent<HTMLFormElement>) {
+  const loadCustomers = useCallback(async (
+    requestedQuery: string,
+    cursor: string | null,
+    append: boolean,
+  ) => {
+    const sequence = ++listRequestSequence.current;
+    listRequestController.current?.abort();
+    const controller = new AbortController();
+    listRequestController.current = controller;
+    if (append) {
+      setPaginationState("loading");
+      setPaginationError("");
+    } else {
+      activeQuery.current = requestedQuery;
+      setCustomers([]);
+      setNextCursor(null);
+      setSearchState("searching");
+      setSearchError("");
+      setPaginationState("idle");
+      setPaginationError("");
+    }
+    try {
+      const result = await listAdminCustomers({
+        ...(requestedQuery ? { query: requestedQuery } : {}),
+        limit: CUSTOMER_PAGE_SIZE,
+        ...(cursor ? { cursor } : {}),
+      }, controller.signal);
+      if (sequence !== listRequestSequence.current) return;
+      setCustomers((current) => (
+        append ? appendUniqueCustomers(current, result.customers) : result.customers
+      ));
+      setNextCursor(result.next_cursor);
+      setSearchState("success");
+      setSearchError("");
+      setPaginationState("idle");
+      setPaginationError("");
+      searchWarningLogged.current = false;
+    } catch (exc) {
+      if (sequence !== listRequestSequence.current || isAbortError(exc)) return;
+      if (!(exc instanceof Error)) throw exc;
+      if (append) {
+        setPaginationState("error");
+        setPaginationError("More customers could not be loaded. Please retry.");
+      } else {
+        setSearchState("error");
+        setSearchError("Customer search could not be completed. Retry when the service is reachable.");
+      }
+      if (!searchWarningLogged.current) {
+        console.warn("Admin customer list request failed", exc);
+        searchWarningLogged.current = true;
+      }
+    } finally {
+      if (sequence === listRequestSequence.current) {
+        listRequestController.current = null;
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCustomers("", null, false);
+    return () => {
+      listRequestSequence.current += 1;
+      listRequestController.current?.abort();
+      listRequestController.current = null;
+    };
+  }, [loadCustomers]);
+
+  function search(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const trimmed = query.trim();
     if (!trimmed) {
       setInputError("Enter a customer name, phone number, or address.");
       return;
     }
-    if (searchInFlight.current) return;
-    searchInFlight.current = true;
-    setSearchState("searching");
     setInputError("");
-    setSearchError("");
-    try {
-      const result = await adminGet<{ customers: Customer[] }>(`/api/admin/customers?query=${encodeURIComponent(trimmed)}`);
-      setCustomers(result.customers);
-      setSearchState("success");
-      setSearchError("");
-      searchWarningLogged.current = false;
-    } catch (exc) {
-      if (!(exc instanceof Error)) throw exc;
-      setSearchState("error");
-      setSearchError("Customer search could not be completed. Retry when the service is reachable.");
-      if (!searchWarningLogged.current) {
-        console.warn("Admin customer search failed", exc);
-        searchWarningLogged.current = true;
-      }
-    } finally {
-      searchInFlight.current = false;
-    }
+    void loadCustomers(trimmed, null, false);
   }
 
   async function openCustomer(customerId: string) {
@@ -65,7 +136,7 @@ export default function AdminCustomersPage() {
     setProfileState("loading");
     setProfileMessage("");
     try {
-      const result = await adminGet<CustomerProfile>(`/api/admin/customers/${customerId}`);
+      const result = await getAdminCustomer(customerId);
       setProfile(result);
       setProfileState("success");
       profileWarningLogged.current = false;
@@ -84,10 +155,13 @@ export default function AdminCustomersPage() {
 
   function clearSearch() {
     setQuery("");
-    setCustomers([]);
-    setSearchState("idle");
     setInputError("");
-    setSearchError("");
+    void loadCustomers("", null, false);
+  }
+
+  function loadMore() {
+    if (!nextCursor || paginationState === "loading") return;
+    void loadCustomers(activeQuery.current, nextCursor, true);
   }
 
   function clearSelection() {
@@ -136,7 +210,7 @@ export default function AdminCustomersPage() {
                 />
               </span>
             </label>
-            <button className="primary customer-search-submit" disabled={searchState === "searching"} type="submit">
+            <button className="primary customer-search-submit" type="submit">
               <CustomerIcon name="search" />
               {searchState === "searching" ? "Searching..." : "Search"}
             </button>
@@ -151,9 +225,15 @@ export default function AdminCustomersPage() {
         <div className="admin-customer-workspace">
           <CustomerResultsPanel
             customers={customers}
+            hasActiveQuery={Boolean(activeQuery.current)}
+            nextCursor={nextCursor}
             onClear={clearSearch}
-            onRetry={() => void search()}
+            onLoadMore={loadMore}
+            onRetry={() => void loadCustomers(activeQuery.current, null, false)}
+            onRetryPagination={loadMore}
             onSelect={(customerId) => void openCustomer(customerId)}
+            paginationError={paginationError}
+            paginationState={paginationState}
             profileState={profileState}
             searchError={searchError}
             searchState={searchState}
