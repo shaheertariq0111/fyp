@@ -36,6 +36,7 @@ from src.api.schemas import (
     ActionRequest,
     AdminAvailabilityRequest,
     AdminCategoryRequest,
+    AdminCustomerListResponse,
     AdminLoginRequest,
     AdminMenuItemRequest,
     AdminOptionGroupRequest,
@@ -88,6 +89,13 @@ ADMIN_TICKET_CURSOR_DOMAIN = b"admin-ticket-http-cursor-v1."
 ADMIN_TICKET_CURSOR_TTL_SECONDS = 3600
 ADMIN_TICKET_CURSOR_FUTURE_SKEW_SECONDS = 60
 MAX_ADMIN_TICKET_CURSOR_LENGTH = 16 * 1024
+ADMIN_CUSTOMER_CURSOR_KIND = "admin_customer_http_cursor"
+ADMIN_CUSTOMER_CURSOR_STATE_KIND = "admin_customer_list"
+ADMIN_CUSTOMER_CURSOR_DOMAIN = b"admin-customer-http-cursor-v1."
+ADMIN_CUSTOMER_QUERY_DOMAIN = b"admin-customer-query-v1."
+ADMIN_CUSTOMER_CURSOR_TTL_SECONDS = 3600
+ADMIN_CUSTOMER_CURSOR_FUTURE_SKEW_SECONDS = 60
+MAX_ADMIN_CUSTOMER_CURSOR_LENGTH = 4 * 1024
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_frontend_cors_origins(
@@ -316,6 +324,148 @@ def _decode_admin_ticket_cursor(cursor: str) -> dict[str, Any]:
         return payload["state"]
     except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
         raise _invalid_admin_ticket_cursor() from None
+
+
+def _invalid_admin_customer_cursor() -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "error_code": "INVALID_CURSOR",
+            "user_message": "The customer cursor is invalid.",
+        },
+    )
+
+
+def _admin_customer_query_fingerprint(normalized_query: str) -> str:
+    return hmac.new(
+        _admin_secret().encode("utf-8"),
+        ADMIN_CUSTOMER_QUERY_DOMAIN + normalized_query.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _validated_admin_customer_start_key(value: Any) -> dict[str, str]:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"PK", "SK"}
+        or not all(
+            isinstance(item, str) and 0 < len(item) <= 512
+            for item in value.values()
+        )
+    ):
+        raise ValueError("invalid customer start key")
+    return dict(value)
+
+
+def _encode_admin_customer_cursor(
+    exclusive_start_key: dict[str, Any],
+    normalized_query: str,
+) -> str:
+    issued_at = int(time.time())
+    state = {
+        "v": 1,
+        "kind": ADMIN_CUSTOMER_CURSOR_STATE_KIND,
+        "query_fingerprint": _admin_customer_query_fingerprint(normalized_query),
+        "exclusive_start_key": _validated_admin_customer_start_key(
+            exclusive_start_key
+        ),
+    }
+    payload = {
+        "v": 1,
+        "kind": ADMIN_CUSTOMER_CURSOR_KIND,
+        "iat": issued_at,
+        "exp": issued_at + ADMIN_CUSTOMER_CURSOR_TTL_SECONDS,
+        "state": state,
+    }
+    encoded_payload = _base64url_without_padding(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    signature = hmac.new(
+        _admin_secret().encode("utf-8"),
+        ADMIN_CUSTOMER_CURSOR_DOMAIN + encoded_payload.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    cursor = f"{encoded_payload}.{_base64url_without_padding(signature)}"
+    if len(cursor) > MAX_ADMIN_CUSTOMER_CURSOR_LENGTH:
+        raise ValueError("customer cursor is too large")
+    return cursor
+
+
+def _decode_admin_customer_cursor(
+    cursor: str,
+    normalized_query: str,
+) -> dict[str, str]:
+    try:
+        if (
+            not isinstance(cursor, str)
+            or not cursor
+            or len(cursor) > MAX_ADMIN_CUSTOMER_CURSOR_LENGTH
+        ):
+            raise ValueError
+        parts = cursor.split(".")
+        if len(parts) != 2:
+            raise ValueError
+        encoded_payload, encoded_signature = parts
+        signature = _strict_base64url_decode(encoded_signature)
+        if len(signature) != hashlib.sha256().digest_size:
+            raise ValueError
+        expected = hmac.new(
+            _admin_secret().encode("utf-8"),
+            ADMIN_CUSTOMER_CURSOR_DOMAIN + encoded_payload.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        payload = json.loads(
+            _strict_base64url_decode(encoded_payload).decode("utf-8"),
+            object_pairs_hook=_json_object_without_duplicate_keys,
+        )
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"v", "kind", "iat", "exp", "state"}
+            or payload["v"] != 1
+            or isinstance(payload["v"], bool)
+            or payload["kind"] != ADMIN_CUSTOMER_CURSOR_KIND
+            or isinstance(payload["iat"], bool)
+            or not isinstance(payload["iat"], int)
+            or isinstance(payload["exp"], bool)
+            or not isinstance(payload["exp"], int)
+            or not isinstance(payload["state"], dict)
+        ):
+            raise ValueError
+        issued_at = payload["iat"]
+        expires_at = payload["exp"]
+        now = int(time.time())
+        if (
+            expires_at <= issued_at
+            or expires_at - issued_at > ADMIN_CUSTOMER_CURSOR_TTL_SECONDS
+            or expires_at <= now
+            or issued_at > now + ADMIN_CUSTOMER_CURSOR_FUTURE_SKEW_SECONDS
+        ):
+            raise ValueError
+        state = payload["state"]
+        if (
+            set(state) != {
+                "v",
+                "kind",
+                "query_fingerprint",
+                "exclusive_start_key",
+            }
+            or state["v"] != 1
+            or isinstance(state["v"], bool)
+            or state["kind"] != ADMIN_CUSTOMER_CURSOR_STATE_KIND
+            or not isinstance(state["query_fingerprint"], str)
+            or not hmac.compare_digest(
+                state["query_fingerprint"],
+                _admin_customer_query_fingerprint(normalized_query),
+            )
+        ):
+            raise ValueError
+        return _validated_admin_customer_start_key(
+            state["exclusive_start_key"]
+        )
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        raise _invalid_admin_customer_cursor() from None
 
 
 def _admin_cookie_options(settings) -> dict[str, Any]:
@@ -1226,13 +1376,63 @@ def admin_update_upsell_group(
         raise _admin_http_error(exc) from exc
 
 
-@app.get("/api/admin/customers")
+@app.get(
+    "/api/admin/customers",
+    response_model=AdminCustomerListResponse,
+)
 def admin_customers(
-    query: str | None = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    query: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=25, ge=1, le=100),
+    cursor: str | None = Query(
+        default=None,
+        max_length=MAX_ADMIN_CUSTOMER_CURSOR_LENGTH,
+    ),
     _admin: dict[str, Any] = Depends(require_admin),
-) -> dict[str, Any]:
-    return get_services().customers.admin_search(query, limit)
+) -> AdminCustomerListResponse:
+    normalized_query = CustomerService.normalize_admin_query(query)
+    exclusive_start_key = (
+        _decode_admin_customer_cursor(cursor, normalized_query)
+        if cursor is not None
+        else None
+    )
+    try:
+        result = get_services().customers.admin_search(
+            query,
+            limit,
+            exclusive_start_key=exclusive_start_key,
+        )
+        response = AdminCustomerListResponse(
+            customers=result["customers"],
+            next_cursor=None,
+        )
+        next_state = result["next_cursor_state"]
+        next_cursor = (
+            _encode_admin_customer_cursor(next_state, normalized_query)
+            if next_state is not None
+            else None
+        )
+        return AdminCustomerListResponse(
+            customers=response.customers,
+            next_cursor=next_cursor,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Admin customer listing failed",
+            extra={
+                "event": "admin_customer_listing_failed",
+                "error_code": "CUSTOMER_LIST_UNAVAILABLE",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": "CUSTOMER_LIST_UNAVAILABLE",
+                "user_message": "Customer listing is temporarily unavailable.",
+            },
+        ) from exc
 
 
 @app.get("/api/admin/customers/{customer_id}")

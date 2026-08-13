@@ -288,26 +288,47 @@ class CustomerService:
             ),
         )
 
-    def admin_search(self, query: str | None = None, limit: int = 50) -> dict:
-        normalized = " ".join((query or "").strip().split()).casefold()
-        customers = [self._public(customer) for customer in self.repository.list_all()]
+    @staticmethod
+    def normalize_admin_query(query: str | None) -> str:
+        return " ".join((query or "").strip().split()).casefold()
+
+    def admin_search(
+        self,
+        query: str | None = None,
+        limit: int = 25,
+        *,
+        exclusive_start_key: dict | None = None,
+    ) -> dict:
+        normalized = self.normalize_admin_query(query)
         if normalized:
             phone = self.normalize_phone(normalized)
             if phone:
                 match = self.repository.get_by_phone_hash(self.phone_hash(phone))
-                customers = [self._public(match)] if match else []
-            else:
-                customers = [
-                    customer for customer in customers
-                    if normalized in str(customer.get("display_name") or "").casefold()
-                    or normalized in str(customer.get("phone_e164") or "").casefold()
-                    or any(
-                        normalized in str(address.get("address_text") or "").casefold()
-                        for address in customer.get("addresses", [])
-                    )
-                ]
+                return {
+                    "customers": [self._public(match)] if match else [],
+                    "next_cursor_state": None,
+                }
+
+        page = self.repository.list_page(
+            limit=limit,
+            exclusive_start_key=exclusive_start_key,
+        )
+        customers = [self._public(customer) for customer in page["items"]]
+        if normalized:
+            customers = [
+                customer for customer in customers
+                if normalized in str(customer.get("display_name") or "").casefold()
+                or normalized in str(customer.get("phone_e164") or "").casefold()
+                or any(
+                    normalized in str(address.get("address_text") or "").casefold()
+                    for address in customer.get("addresses", [])
+                )
+            ]
         customers.sort(key=lambda customer: str(customer.get("display_name") or customer.get("customer_id")))
-        return {"customers": customers[:limit], "next_cursor": None}
+        return {
+            "customers": customers,
+            "next_cursor_state": page["last_evaluated_key"],
+        }
 
     def admin_get(self, customer_id: str, order_service=None) -> dict:
         customer = self.repository.get(customer_id)
@@ -337,5 +358,25 @@ class CustomerService:
             "whatsapp_profile_name": customer.get("whatsapp_profile_name"),
             "phone_e164": customer.get("phone_e164"),
             "phone_verified": customer.get("phone_verified"),
-            "addresses": deepcopy(customer.get("addresses") or []),
+            "addresses": [
+                CustomerService._public_address(address)
+                for address in customer.get("addresses") or []
+                if isinstance(address, dict)
+            ],
+        }
+
+    @staticmethod
+    def _public_address(address: dict) -> dict:
+        return {
+            key: deepcopy(address.get(key))
+            for key in (
+                "address_id",
+                "label",
+                "address_text",
+                "created_at",
+                "last_used_at",
+                "is_default",
+                "verified",
+            )
+            if address.get(key) is not None
         }

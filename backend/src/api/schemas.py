@@ -159,6 +159,37 @@ class AdminUpsellGroupRequest(BaseModel):
     max_suggestions: int = Field(default=3, gt=0)
 
 
+class StrictAdminCustomerSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class AdminCustomerAddress(StrictAdminCustomerSchema):
+    address_id: str | None = None
+    label: str | None = None
+    address_text: str | None = None
+    created_at: str | None = None
+    last_used_at: str | None = None
+    is_default: bool | None = None
+    verified: bool | None = None
+
+
+class AdminCustomerListItem(StrictAdminCustomerSchema):
+    customer_id: str
+    display_name: str | None = None
+    name_confirmed: bool
+    name_source: str | None = None
+    name_confirmed_at: str | None = None
+    whatsapp_profile_name: str | None = None
+    phone_e164: str | None = None
+    phone_verified: bool | None = None
+    addresses: list[AdminCustomerAddress] = Field(default_factory=list)
+
+
+class AdminCustomerListResponse(StrictAdminCustomerSchema):
+    customers: list[AdminCustomerListItem]
+    next_cursor: str | None = None
+
+
 class StrictAdminTicketSchema(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

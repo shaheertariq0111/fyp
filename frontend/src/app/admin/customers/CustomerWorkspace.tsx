@@ -7,6 +7,7 @@ import type {
   Customer,
   CustomerProfile,
   CustomerProfileState,
+  CustomerPaginationState,
   CustomerSearchState,
 } from "@/app/admin/customers/customerTypes";
 import { StatusBadge, shortOrderId } from "@/app/admin/orders/orderPresentation";
@@ -16,30 +17,42 @@ function initials(name?: string | null) {
   return parts.slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
-function ResultsEmptyState({ searched }: { searched: boolean }) {
+function ResultsEmptyState({ searched, hasMore = false }: { searched: boolean; hasMore?: boolean }) {
   return (
     <div className="customer-results-empty">
       <span className="customer-results-empty-icon"><CustomerIcon name="search" /></span>
-      <strong>{searched ? "No customers found" : "Search for a customer"}</strong>
-      <p>{searched ? "Try another name, phone number, or address." : "Enter a name, phone number, or address to view matching customers."}</p>
+      <strong>{hasMore ? "No matches in this page" : "No customers found"}</strong>
+      <p>{hasMore ? "Load more to continue searching the remaining customers." : searched ? "Try another name, phone number, or address." : "Persisted customers will appear here when they become available."}</p>
     </div>
   );
 }
 
 export function CustomerResultsPanel({
   customers,
+  hasActiveQuery,
+  nextCursor,
   onClear,
+  onLoadMore,
   onRetry,
+  onRetryPagination,
   onSelect,
+  paginationError,
+  paginationState,
   profileState,
   searchError,
   searchState,
   selectedCustomerId,
 }: {
   customers: Customer[];
+  hasActiveQuery: boolean;
+  nextCursor: string | null;
   onClear: () => void;
+  onLoadMore: () => void;
   onRetry: () => void;
+  onRetryPagination: () => void;
   onSelect: (customerId: string) => void;
+  paginationError: string;
+  paginationState: CustomerPaginationState;
   profileState: CustomerProfileState;
   searchError: string;
   searchState: CustomerSearchState;
@@ -49,7 +62,7 @@ export function CustomerResultsPanel({
     <section className="admin-panel admin-customer-results-panel" aria-labelledby="customer-results-heading">
       <div className="customer-panel-heading"><h2 id="customer-results-heading">Results</h2></div>
       <div className="customer-results-scroll">
-        {searchState === "idle" && <ResultsEmptyState searched={false} />}
+        {searchState === "idle" && <ResultsEmptyState searched={hasActiveQuery} />}
         {searchState === "searching" && (
           <div className="customer-result-list" aria-label="Loading customer results">
             {[0, 1, 2].map((row) => <div className="customer-result-card customer-result-skeleton" key={row}><span className="admin-skeleton admin-skeleton-line" /><span className="admin-skeleton admin-skeleton-line" /><span className="admin-skeleton admin-skeleton-pill" /></div>)}
@@ -62,7 +75,7 @@ export function CustomerResultsPanel({
           </div>
         )}
         {searchState === "success" && customers.length === 0 && (
-          <><ResultsEmptyState searched /><button className="secondary customer-empty-clear" onClick={onClear} type="button">Clear search</button></>
+          <><ResultsEmptyState hasMore={Boolean(nextCursor)} searched={hasActiveQuery} />{hasActiveQuery && <button className="secondary customer-empty-clear" onClick={onClear} type="button">Clear search</button>}</>
         )}
         {(searchState === "success" || searchState === "error") && customers.length > 0 && (
           <div className="customer-result-list" aria-label="Customer search results" aria-live="polite">
@@ -92,7 +105,22 @@ export function CustomerResultsPanel({
           </div>
         )}
       </div>
-      {customers.length > 0 && <p className="customer-results-footer">Showing returned search results</p>}
+      {paginationState === "error" && (
+        <div className="customer-pagination-error" role="alert">
+          <span>{paginationError}</span>
+          <button className="secondary" onClick={onRetryPagination} type="button">Retry Load More</button>
+        </div>
+      )}
+      {(customers.length > 0 || nextCursor) && (
+        <div className="customer-results-footer">
+          <span>{customers.length > 0 ? (hasActiveQuery ? "Showing returned search results" : "Showing persisted customers") : "More customer records are available"}</span>
+          {nextCursor && paginationState !== "error" && (
+            <button className="secondary" disabled={paginationState === "loading"} onClick={onLoadMore} type="button">
+              {paginationState === "loading" ? "Loading more..." : "Load More"}
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -121,7 +149,10 @@ function CustomerAddresses({ customer }: { customer: Customer }) {
       {addresses.length === 0 ? <p className="customer-profile-empty">No saved addresses are available.</p> : (
         <div className="customer-address-grid">
           {addresses.map((address, index) => (
-            <article className="customer-address-card" key={`${address.label ?? "address"}-${address.address_text ?? index}`}>
+            <article
+              className="customer-address-card"
+              key={address.address_id || `${address.label ?? "address"}-${address.address_text ?? "unknown"}-${index}`}
+            >
               <div><strong>{addressLabel(address.label)}</strong>{address.is_default && <span>Default</span>}</div>
               <p>{address.address_text || "Address text was not returned."}</p>
             </article>

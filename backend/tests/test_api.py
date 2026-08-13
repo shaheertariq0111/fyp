@@ -3961,7 +3961,16 @@ def test_admin_menu_customer_and_monitoring_routes(monkeypatch):
         admin_archive_item=lambda item_id: {"item": {"product_id": item_id, "available": False, "archived": True}},
     )
     services.customers = SimpleNamespace(
-        admin_search=lambda query, limit: {"customers": [{"customer_id": "cust-1"}]},
+        admin_search=lambda query, limit, exclusive_start_key=None: {
+            "customers": [{
+                "customer_id": "cust-1",
+                "display_name": "Ava",
+                "name_confirmed": True,
+                "phone_verified": False,
+                "addresses": [],
+            }],
+            "next_cursor_state": None,
+        },
         admin_get=lambda customer_id, order_service: {"customer": {"customer_id": customer_id}, "orders": []},
     )
     services.audit = SimpleNamespace(admin_list_errors=lambda limit: {"events": [{"event_type": "tool_error"}]})
@@ -3983,6 +3992,142 @@ def test_admin_menu_customer_and_monitoring_routes(monkeypatch):
     assert archived.json()["item"]["archived"] is True
     assert customers.json()["customers"][0]["customer_id"] == "cust-1"
     assert errors.json()["events"][0]["event_type"] == "tool_error"
+
+
+class AdminCustomerListService:
+    def __init__(self):
+        self.calls = []
+
+    def admin_search(
+        self,
+        query,
+        limit,
+        *,
+        exclusive_start_key=None,
+    ):
+        self.calls.append({
+            "query": query,
+            "limit": limit,
+            "exclusive_start_key": exclusive_start_key,
+        })
+        customer_id = "cust-2" if exclusive_start_key else "cust-1"
+        return {
+            "customers": [{
+                "customer_id": customer_id,
+                "display_name": "Ava Khan",
+                "name_confirmed": True,
+                "name_source": "customer_provided",
+                "name_confirmed_at": "2026-08-14T00:00:00+00:00",
+                "whatsapp_profile_name": None,
+                "phone_e164": "+923001234567",
+                "phone_verified": True,
+                "addresses": [{
+                    "address_id": "ADDR-1",
+                    "label": "Home",
+                    "address_text": "42 Garden Avenue",
+                    "is_default": True,
+                    "verified": False,
+                }],
+            }],
+            "next_cursor_state": (
+                None
+                if exclusive_start_key
+                else {"PK": "CUSTOMER#cust-1", "SK": "PROFILE"}
+            ),
+        }
+
+
+def authenticated_customer_list_client(monkeypatch):
+    test_client = client()
+    login_admin(test_client, monkeypatch)
+    service = AdminCustomerListService()
+    monkeypatch.setattr(
+        main,
+        "get_services",
+        lambda: SimpleNamespace(customers=service),
+    )
+    return test_client, service
+
+
+def test_admin_customer_list_defaults_to_bounded_page_and_continues_cursor(
+    monkeypatch,
+):
+    test_client, service = authenticated_customer_list_client(monkeypatch)
+
+    first = test_client.get("/api/admin/customers")
+    cursor = first.json()["next_cursor"]
+    second = test_client.get("/api/admin/customers", params={"cursor": cursor})
+
+    assert first.status_code == 200
+    assert first.json()["customers"][0]["customer_id"] == "cust-1"
+    assert isinstance(cursor, str)
+    assert "CUSTOMER#cust-1" not in cursor
+    assert "PK" not in first.text
+    assert "phone_hash" not in first.text
+    assert second.status_code == 200
+    assert second.json()["customers"][0]["customer_id"] == "cust-2"
+    assert second.json()["next_cursor"] is None
+    assert service.calls == [
+        {"query": None, "limit": 25, "exclusive_start_key": None},
+        {
+            "query": None,
+            "limit": 25,
+            "exclusive_start_key": {
+                "PK": "CUSTOMER#cust-1",
+                "SK": "PROFILE",
+            },
+        },
+    ]
+
+
+def test_admin_customer_list_enforces_maximum_limit(monkeypatch):
+    test_client, service = authenticated_customer_list_client(monkeypatch)
+
+    response = test_client.get("/api/admin/customers?limit=101")
+
+    assert response.status_code == 422
+    assert service.calls == []
+
+
+@pytest.mark.parametrize("cursor", ["invalid", "a.b.c"])
+def test_admin_customer_list_rejects_malformed_cursor(monkeypatch, cursor):
+    test_client, service = authenticated_customer_list_client(monkeypatch)
+
+    response = test_client.get(
+        "/api/admin/customers",
+        params={"cursor": cursor},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error_code"] == "INVALID_CURSOR"
+    assert service.calls == []
+
+
+def test_admin_customer_list_rejects_tampered_and_cross_query_cursor(monkeypatch):
+    test_client, service = authenticated_customer_list_client(monkeypatch)
+    first = test_client.get("/api/admin/customers?query=ava")
+    cursor = first.json()["next_cursor"]
+    payload, signature = cursor.split(".")
+    tampered = f"{payload[:-1]}A.{signature}"
+
+    tampered_response = test_client.get(
+        "/api/admin/customers",
+        params={"query": "ava", "cursor": tampered},
+    )
+    cross_query_response = test_client.get(
+        "/api/admin/customers",
+        params={"query": "bob", "cursor": cursor},
+    )
+
+    assert tampered_response.status_code == 400
+    assert cross_query_response.status_code == 400
+    assert service.calls == [{"query": "ava", "limit": 25, "exclusive_start_key": None}]
+
+
+def test_admin_customer_list_requires_authentication():
+    response = client().get("/api/admin/customers")
+
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize(

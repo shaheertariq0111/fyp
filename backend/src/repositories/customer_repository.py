@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from boto3.dynamodb.conditions import Key
 
 from .base import from_dynamodb, to_dynamodb
@@ -29,15 +31,28 @@ class CustomerRepository:
         items = response.get("Items", [])
         return from_dynamodb(items[0]) if items else None
 
-    def list_all(self) -> list[dict]:
-        kwargs = {}
-        items: list[dict] = []
-        while True:
-            response = self.table.scan(**kwargs)
-            items.extend(response.get("Items", []))
-            if "LastEvaluatedKey" not in response:
-                return from_dynamodb(items)
-            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    def list_page(
+        self,
+        *,
+        limit: int,
+        exclusive_start_key: dict | None = None,
+    ) -> dict:
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise ValueError("customer page limit must be between 1 and 100")
+        kwargs = {"Limit": limit}
+        if exclusive_start_key is not None:
+            kwargs["ExclusiveStartKey"] = deepcopy(exclusive_start_key)
+        response = self.table.scan(**kwargs)
+        return {
+            "items": deepcopy(from_dynamodb(response.get("Items", []))),
+            "last_evaluated_key": deepcopy(
+                from_dynamodb(response.get("LastEvaluatedKey"))
+            ),
+        }
 
     def save(self, customer: dict) -> None:
         self.table.put_item(Item=to_dynamodb(customer))
