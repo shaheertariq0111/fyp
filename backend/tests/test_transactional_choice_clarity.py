@@ -59,6 +59,7 @@ def test_cart_ready_exposes_checkout_as_a_machine_next_action():
     assert agent["cart_status"] == "cart_ready"
     assert agent["next_action"] == "create_pending_order"
     assert "create_pending_order_from_cart" in agent["valid_next_actions"]
+    assert "discard_active_cart" in agent["valid_next_actions"]
 
 
 def test_cart_ready_continuation_is_not_a_dead_end():
@@ -78,6 +79,7 @@ def test_cart_ready_continuation_is_not_a_dead_end():
     # where the conversation can go next.
     assert continuation.is_outstanding is False
     assert "create_pending_order_from_cart" in continuation.valid_next_actions
+    assert "discard_active_cart" in continuation.valid_next_actions
     assert "create_pending_order_from_cart" in block
 
 

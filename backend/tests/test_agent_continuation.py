@@ -150,6 +150,7 @@ def test_customizing_cart_exposes_required_customization_effect():
     assert continuation.required_input == "customization_choice"
     assert continuation.is_outstanding is True
     assert "save_customization_choice" in continuation.valid_next_actions
+    assert "discard_active_cart" in continuation.valid_next_actions
 
 
 def test_customizing_cart_offers_authoritative_backend_option_ids():
@@ -308,6 +309,33 @@ def test_cancelling_a_pending_order_counts_as_progress():
     assert cancelled.success is True
     # A cancellation must not be told it still needs confirming.
     assert "Should I confirm this order?" not in grounded.text
+
+
+def test_discarding_an_active_cart_counts_as_progress():
+    services = build_services()
+    start_customizing_cart(services)
+    continuation = resolve_transactional_continuation(
+        services,
+        user_id="user",
+        agent_session_id="session",
+    )
+    discarded = services.carts.discard_active_cart("user", "session")
+
+    grounded = ground_agent_response(
+        text="No problem, I discarded the cart.",
+        tool_calls=[
+            {
+                "tool_name": "discard_active_cart",
+                "is_write": True,
+                "success": True,
+                "result": discarded.model_dump(exclude_none=True),
+            }
+        ],
+        continuation=continuation,
+    )
+
+    assert discarded.success is True
+    assert "Which size" not in grounded.text
 
 
 def test_no_tool_turn_cannot_narrate_submission_at_pending_confirmation():

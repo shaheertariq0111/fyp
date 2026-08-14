@@ -1189,21 +1189,33 @@ class CartService:
     @staticmethod
     def _cart_valid_next_actions(cart, next_action):
         if next_action == "set_customization_mode":
-            return ["set_customization_mode"]
+            return ["set_customization_mode", "discard_active_cart"]
         if next_action == "ask_customization_choice":
-            return ["save_customization_choice"]
+            return ["save_customization_choice", "discard_active_cart"]
         if next_action == "offer_upsell":
-            return ["handle_cart_upsell:get_options", "handle_cart_upsell:skip"]
+            return [
+                "handle_cart_upsell:get_options",
+                "handle_cart_upsell:skip",
+                "discard_active_cart",
+            ]
         if next_action == "choose_upsell":
-            return ["handle_cart_upsell:add_item", "handle_cart_upsell:skip"]
+            return [
+                "handle_cart_upsell:add_item",
+                "handle_cart_upsell:skip",
+                "discard_active_cart",
+            ]
         if next_action == "create_pending_order":
-            return ["create_pending_order_from_cart"]
+            return ["create_pending_order_from_cart", "discard_active_cart"]
         if next_action == "present_cart_status":
             status = cart.get("status")
             if status == "customizing_item":
-                return ["save_customization_choice"]
+                return ["save_customization_choice", "discard_active_cart"]
             if status in {"item_ready", "awaiting_upsell_decision"}:
-                return ["handle_cart_upsell:get_options", "handle_cart_upsell:skip"]
+                return [
+                    "handle_cart_upsell:get_options",
+                    "handle_cart_upsell:skip",
+                    "discard_active_cart",
+                ]
             if status == "cart_ready":
-                return ["create_pending_order_from_cart"]
+                return ["create_pending_order_from_cart", "discard_active_cart"]
         return []

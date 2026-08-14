@@ -27,6 +27,7 @@ GroundingSource = Literal[
     "exact_artifact",
     "failed_read",
     "failed_write",
+    "rephraseable_write",
     "successful_write",
     "write_without_grounding",
     "submission_safety_fallback",
@@ -136,6 +137,8 @@ def ground_authoritative_tool_response(
         exact_text = _clean_text(evidence.get("exact_customer_text"))
         if exact_text:
             return GroundedAgentResponse(exact_text, "exact_artifact")
+        if evidence.get("allows_semantic_rephrasing") is True and user_message:
+            return GroundedAgentResponse(user_message, "rephraseable_write")
         if evidence.get("allows_natural_phrasing") is True and user_message:
             # The backend marked this outcome as fact-free. Its statement is
             # still guaranteed to reach the customer; the agent may only add the
@@ -187,6 +190,8 @@ def ground_agent_response(
     """Apply deterministic tool-evidence safeguards without semantic judgment."""
 
     authoritative = ground_authoritative_tool_response(tool_calls=tool_calls)
+    if authoritative is not None and authoritative.source == "rephraseable_write":
+        authoritative = _use_semantic_rephrasing(authoritative, text)
     if authoritative is not None and authoritative.source == "anchored_write":
         authoritative = _anchor_natural_phrasing(authoritative, text)
     selected = authoritative or GroundedAgentResponse(text, "conversation")
@@ -236,6 +241,19 @@ def _anchor_natural_phrasing(
         return GroundedAgentResponse(model_text, "successful_write")
     return GroundedAgentResponse(
         f"{anchor.text} {model_text}",
+        "successful_write",
+    )
+
+
+def _use_semantic_rephrasing(
+    fallback: GroundedAgentResponse,
+    text: str,
+) -> GroundedAgentResponse:
+    """Let the model phrase simple required-next-step prompts naturally."""
+
+    model_text = _clean_text(text)
+    return GroundedAgentResponse(
+        model_text or fallback.text,
         "successful_write",
     )
 

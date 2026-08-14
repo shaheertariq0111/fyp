@@ -64,6 +64,9 @@ class GroundingEvidence(BaseModel):
     # naturally by the agent so it can add the next step. Any response that
     # carries facts leaves this False and is still substituted verbatim.
     allows_natural_phrasing: bool = False
+    # Opt-in for simple backend-required next-step prompts where the required
+    # state is authoritative, but the customer-facing wording can vary.
+    allows_semantic_rephrasing: bool = False
 
 
 class ToolResponse(BaseModel):
