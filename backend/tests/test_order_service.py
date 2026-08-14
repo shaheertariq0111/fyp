@@ -43,6 +43,8 @@ def test_delivery_flow_and_duplicate_idempotency():
     pending = service.create_pending_from_cart(cart)
     order_id = pending.data["order_id"]
     assert pending.data["status"] == "awaiting_fulfillment_method"
+    assert pending.user_message == "Would you like delivery or takeaway for this order?"
+    assert pending.grounding.allows_semantic_rephrasing is True
     assert pending.agent["required_input"] == "fulfillment_method"
     assert "Do not ask for contact number" in pending.agent["instruction"]
     assert pending.agent["valid_next_actions"] == [
@@ -51,10 +53,13 @@ def test_delivery_flow_and_duplicate_idempotency():
         "update_order_flow:cancel",
     ]
     delivery = service.update_order_flow("user", order_id, "set_delivery")
+    assert delivery.user_message == "Please send the delivery address for this order."
+    assert delivery.grounding.allows_semantic_rephrasing is True
     assert delivery.agent["required_input"] == "delivery_address"
     assert "Ask only for the delivery address" in delivery.agent["instruction"]
     addressed = service.update_order_flow("user", order_id, "save_address", "Configured address")
     assert addressed.data["status"] == "pending_confirmation"
+    assert addressed.grounding.allows_semantic_rephrasing is False
     assert addressed.data["delivery_address"] == "Configured address"
     assert addressed.agent["order_summary"]["delivery_address"] == "Configured address"
     assert addressed.agent["required_input"] == "confirm_or_cancel"

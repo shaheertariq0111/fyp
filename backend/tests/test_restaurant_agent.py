@@ -16,6 +16,11 @@ def test_system_prompt_requires_tool_grounding():
         RESTAURANT_AGENT_SYSTEM_PROMPT
     )
     assert "Never invent menu items" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    normalized_full_prompt = " ".join(RESTAURANT_AGENT_SYSTEM_PROMPT.split())
+    assert "For casual greetings or small talk" in normalized_full_prompt
+    assert "Do not report an order status unless the customer asks" in (
+        normalized_full_prompt
+    )
     assert "prefer a tool call over guessing" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "If a tool returns an agent object" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "call it in the same turn" in RESTAURANT_AGENT_SYSTEM_PROMPT
@@ -42,6 +47,7 @@ def test_system_prompt_requires_tool_grounding():
     assert "awaiting_fulfillment_method" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "CHAT CUSTOMIZATION FLOW" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "UPSELL FLOW" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "discard_active_cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "ask_customization_choice" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "Do not answer cart contents from memory" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "get_active_cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
@@ -99,6 +105,8 @@ def test_system_prompt_requires_tool_grounding():
         "Do not replace it with a generic question about add-ons."
         in normalized_prompt
     )
+    assert "Do not stop after telling the customer the cart is ready" in normalized_prompt
+    assert "checkout has already begun" in normalized_prompt
     assert (
         "Before creating a chat cart mutation, use current cart evidence when needed"
         in normalized_prompt
@@ -151,6 +159,7 @@ def test_system_prompt_requires_tool_grounding():
     assert "customer refuses the address step" in normalized_prompt
     assert "do not keep asking for an address" in normalized_prompt
     assert "switch to takeaway or cancel the order" in normalized_prompt
+    assert "Use discard_active_cart for an active cart/customization" in normalized_prompt
     assert "never ask the customer to type a contact number during checkout" in (
         normalized_prompt
     )
@@ -162,6 +171,11 @@ def test_system_prompt_requires_tool_grounding():
     assert "ask the customer to choose the item" in normalized_prompt
     assert "The selection identifies only the product" in normalized_prompt
     assert "Do not ask for or infer size, crust" in normalized_prompt
+    assert (
+        "search_menu returns exactly one available matching item, treat that item as "
+        "selected in the same turn"
+        in normalized_prompt
+    )
     assert "every subsequent customization question" in normalized_prompt
     assert "MENU GROUNDING" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert (

@@ -32,6 +32,7 @@ class SessionStub:
 class CartStub:
     def __init__(self):
         self.checkout_calls = []
+        self.discard_calls = []
 
     def get_active_cart(self, user_id, session_id):
         return ToolResponse.ok(
@@ -44,6 +45,14 @@ class CartStub:
         return ToolResponse.ok(
             data={"order": {"order_id": "ORD-CHECKOUT"}},
             user_message="checkout",
+        )
+
+    def discard_active_cart(self, user_id, session_id):
+        self.discard_calls.append((user_id, session_id))
+        return ToolResponse.ok(
+            data={"discarded": True},
+            user_message="discarded",
+            grounding={"transactional_effects": ["cart_cancelled"]},
         )
 
 
@@ -85,7 +94,7 @@ class OrderMutationStub:
 
 
 def test_mvp_tools_include_active_cart_lookup():
-    assert len(tools.MVP_TOOLS) == 30
+    assert len(tools.MVP_TOOLS) == 31
     assert tools.get_active_cart in tools.MVP_TOOLS
     assert tools.get_customer_profile in tools.MVP_TOOLS
     assert tools.update_customer_profile in tools.MVP_TOOLS
@@ -96,6 +105,7 @@ def test_mvp_tools_include_active_cart_lookup():
     assert tools.save_order_address in tools.MVP_TOOLS
     assert tools.confirm_order in tools.MVP_TOOLS
     assert tools.cancel_order in tools.MVP_TOOLS
+    assert tools.discard_active_cart in tools.MVP_TOOLS
     assert tools.create_human_assistance_ticket in tools.MVP_TOOLS
     assert tools.handle_order_complaint in tools.MVP_TOOLS
     assert tools.get_support_ticket_status in tools.MVP_TOOLS
@@ -109,6 +119,7 @@ def test_mvp_tools_include_active_cart_lookup():
     assert "save_order_address" in tools.WRITE_TOOLS
     assert "confirm_order" in tools.WRITE_TOOLS
     assert "cancel_order" in tools.WRITE_TOOLS
+    assert "discard_active_cart" in tools.WRITE_TOOLS
     assert "create_human_assistance_ticket" in tools.WRITE_TOOLS
     assert "handle_order_complaint" in tools.WRITE_TOOLS
     assert "request_human_support" in tools.WRITE_TOOLS
@@ -1112,6 +1123,18 @@ def test_get_active_cart_uses_trusted_user_and_session(monkeypatch):
         "user_id": "trusted-user",
         "session_id": "trusted-session",
     }
+
+
+def test_discard_active_cart_uses_trusted_user_and_session(monkeypatch):
+    carts = CartStub()
+    container = SimpleNamespace(carts=carts)
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    with request_context(AgentRequestContext("trusted-user", "trusted-session")):
+        result = tools.discard_active_cart()
+
+    assert result["data"]["discarded"] is True
+    assert carts.discard_calls == [("trusted-user", "trusted-session")]
 
 
 def test_customer_tools_use_trusted_customer_context(monkeypatch):

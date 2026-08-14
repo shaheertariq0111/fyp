@@ -456,7 +456,16 @@ def continuation(
     )
 
 
-def effect_call(effect, *, tool_name="update_order_flow", success=True):
+def effect_call(
+    effect,
+    *,
+    tool_name="update_order_flow",
+    success=True,
+    grounding=None,
+):
+    evidence = {"transactional_effects": [effect]}
+    if grounding:
+        evidence.update(grounding)
     return {
         "tool_name": tool_name,
         "is_write": True,
@@ -464,7 +473,7 @@ def effect_call(effect, *, tool_name="update_order_flow", success=True):
         "result": {
             "success": success,
             "user_message": "Backend confirmed the change.",
-            "grounding": {"transactional_effects": [effect]},
+            "grounding": evidence,
         },
     }
 
@@ -517,6 +526,47 @@ def test_successful_required_effect_restores_normal_grounding():
     assert result.text == "Backend confirmed the change."
     assert result.source == "successful_write"
     assert result.rejection_reason is None
+
+
+def test_rephraseable_write_uses_model_wording_for_simple_next_step_prompt():
+    result = ground_agent_response(
+        text="Delivery or takeaway?",
+        tool_calls=[
+            effect_call(
+                "checkout_started",
+                grounding={"allows_semantic_rephrasing": True},
+            )
+        ],
+        continuation=None,
+    )
+
+    assert result.text == "Delivery or takeaway?"
+    assert result.source == "successful_write"
+
+
+def test_rephraseable_write_falls_back_to_backend_prompt_without_model_text():
+    result = ground_agent_response(
+        text="  ",
+        tool_calls=[
+            {
+                "tool_name": "begin_checkout",
+                "is_write": True,
+                "success": True,
+                "result": {
+                    "success": True,
+                    "user_message": "Would you like delivery or takeaway for this order?",
+                    "grounding": {
+                        "transactional_effects": ["checkout_started"],
+                        "allows_semantic_rephrasing": True,
+                    },
+                },
+            }
+        ],
+        continuation=None,
+    )
+
+    assert result.text == "Would you like delivery or takeaway for this order?"
+    assert result.source == "successful_write"
 
 
 def test_unrelated_successful_effect_does_not_satisfy_continuation():

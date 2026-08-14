@@ -27,6 +27,7 @@ WRITE_TOOLS = {
     "set_customization_mode",
     "save_customization_choice",
     "handle_cart_upsell",
+    "discard_active_cart",
     "create_pending_order_from_cart",
     "update_order_flow",
     "save_customer_name",
@@ -337,6 +338,20 @@ def handle_cart_upsell(cart_id: str, action: str, item_id: str | None = None,
     return _result("handle_cart_upsell", lambda: get_services().carts.handle_upsell(
         context.user_id, cart_id, action, item_id, quantity
     ), is_write=True)
+
+
+@tool
+def discard_active_cart() -> dict:
+    """Discard the trusted user's active chat cart for this session."""
+    context = get_request_context()
+    return _result(
+        "discard_active_cart",
+        lambda: get_services().carts.discard_active_cart(
+            context.user_id,
+            context.agent_session_id,
+        ),
+        is_write=True,
+    )
 
 
 @tool
@@ -824,6 +839,7 @@ MVP_TOOLS = [
     set_customization_mode,
     save_customization_choice,
     handle_cart_upsell,
+    discard_active_cart,
     create_pending_order_from_cart,
     begin_checkout,
     choose_delivery,

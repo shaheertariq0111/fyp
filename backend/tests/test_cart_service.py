@@ -147,7 +147,10 @@ def test_configurable_upsell_is_customized_before_pending_order():
     assert upsell_choice.next_action == "ask_customization_choice"
     assert upsell_choice.data["field_name"] == "dynamic-choice"
     assert upsell_choice.agent["active_choice"]["field_name"] == "dynamic-choice"
-    assert upsell_choice.agent["valid_next_actions"] == ["save_customization_choice"]
+    assert upsell_choice.agent["valid_next_actions"] == [
+        "save_customization_choice",
+        "discard_active_cart",
+    ]
 
     upsell_ready = service.save_choice(
         "user",
@@ -207,7 +210,10 @@ def test_cart_tool_response_includes_agent_next_step_packet():
     assert response.agent["cart_id"] == response.data["cart_id"]
     assert response.agent["required_input"] == "customization_choice"
     assert response.agent["active_choice"]["cart_item_id"] == response.data["cart_item_id"]
-    assert response.agent["valid_next_actions"] == ["save_customization_choice"]
+    assert response.agent["valid_next_actions"] == [
+        "save_customization_choice",
+        "discard_active_cart",
+    ]
 
 def test_start_item_customization_does_not_create_second_active_cart():
     service, carts, _ = build_services()

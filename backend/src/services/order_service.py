@@ -145,7 +145,9 @@ class OrderService:
         status = order["status"]
         next_action = self._next_action(status)
         if status == "awaiting_fulfillment_method":
-            user_message = "The order is ready for fulfillment details."
+            user_message = self.pending_input_prompt(order) or (
+                "Would you like delivery or takeaway for this order?"
+            )
         elif status == "pending_confirmation":
             user_message = self._confirmation_summary(order)
         elif status == "awaiting_customer_name":
@@ -306,6 +308,13 @@ class OrderService:
             user_message = self._customer_name_prompt(order)
         elif next_status == "submitted_to_restaurant":
             user_message = self._submission_confirmation(order)
+        elif next_status in {
+            "awaiting_fulfillment_method",
+            "awaiting_delivery_address",
+        }:
+            user_message = self.pending_input_prompt(order) or (
+                "Please provide the next order detail."
+            )
         else:
             user_message = "The order was updated successfully."
         return ToolResponse.ok(data=self._public(order), user_message=user_message,
@@ -1096,6 +1105,10 @@ class OrderService:
             transactional_effects=effects or [],
             immutable_facts=cls._order_immutable_facts(order),
             exact_customer_text=exact_customer_text,
+            allows_semantic_rephrasing=status in {
+                "awaiting_fulfillment_method",
+                "awaiting_delivery_address",
+            },
         )
 
     @classmethod
