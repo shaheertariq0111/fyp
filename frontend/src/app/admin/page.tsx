@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AdminShell } from "@/app/admin/AdminShell";
+import { AnalyticsDashboard } from "@/app/admin/AnalyticsCharts";
 import { MiniIcon } from "@/app/admin/orders/orderPresentation";
 import {
   Analytics,
@@ -18,6 +19,7 @@ import {
 import { adminGet } from "@/lib/adminApi";
 
 type RefreshSource = "initial" | "manual" | "auto";
+type AnalyticsWindowDays = 7 | 30;
 type RefreshFailure = { attemptedAt: Date; hadPreviousData: boolean };
 
 function formatRefreshTime(value: Date) {
@@ -41,16 +43,28 @@ export default function AdminDashboardPage() {
   const [selectedOrder, setSelectedOrder] = useState<OrderDetail | null>(null);
   const [isOrderLoading, setIsOrderLoading] = useState(false);
   const [orderLoadFailed, setOrderLoadFailed] = useState(false);
-  const requestInFlight = useRef(false);
+  const [windowDays, setWindowDays] = useState<AnalyticsWindowDays>(7);
+  const analyticsController = useRef<AbortController | null>(null);
+  const analyticsRequestSequence = useRef(0);
   const analyticsRef = useRef<Analytics | null>(null);
+  const windowDaysRef = useRef<AnalyticsWindowDays>(7);
   const manualFailureLogged = useRef(false);
 
-  const loadAnalytics = useCallback(async (source: RefreshSource) => {
-    if (requestInFlight.current) return;
-    requestInFlight.current = true;
+  const loadAnalytics = useCallback(async (
+    source: RefreshSource,
+    requestedWindow: AnalyticsWindowDays,
+  ) => {
+    analyticsController.current?.abort();
+    const controller = new AbortController();
+    analyticsController.current = controller;
+    const requestSequence = ++analyticsRequestSequence.current;
     setIsRefreshing(true);
     try {
-      const result = await adminGet<Analytics>("/api/admin/analytics");
+      const result = await adminGet<Analytics>(
+        `/api/admin/analytics?window_days=${requestedWindow}`,
+        { signal: controller.signal },
+      );
+      if (requestSequence !== analyticsRequestSequence.current) return;
       analyticsRef.current = result;
       setAnalytics(result);
       setLastSuccessfulRefresh(new Date());
@@ -60,16 +74,19 @@ export default function AdminDashboardPage() {
         return result.recent_orders[0]?.order_id ?? null;
       });
     } catch (exc) {
+      if (controller.signal.aborted || (exc instanceof DOMException && exc.name === "AbortError")) return;
       if (!(exc instanceof Error)) throw exc;
+      if (requestSequence !== analyticsRequestSequence.current) return;
       setRefreshFailure({ attemptedAt: new Date(), hadPreviousData: analyticsRef.current !== null });
       if (source === "manual" && !manualFailureLogged.current) {
         console.warn("Admin analytics refresh failed", exc);
         manualFailureLogged.current = true;
       }
     } finally {
-      setIsInitialLoading(false);
-      setIsRefreshing(false);
-      requestInFlight.current = false;
+      if (requestSequence === analyticsRequestSequence.current) {
+        setIsInitialLoading(false);
+        setIsRefreshing(false);
+      }
     }
   }, []);
 
@@ -91,9 +108,19 @@ export default function AdminDashboardPage() {
   }, []);
 
   useEffect(() => {
-    void loadAnalytics("initial");
-    const timer = window.setInterval(() => void loadAnalytics("auto"), 30000);
-    return () => window.clearInterval(timer);
+    windowDaysRef.current = windowDays;
+    void loadAnalytics("initial", windowDays);
+  }, [loadAnalytics, windowDays]);
+
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => void loadAnalytics("auto", windowDaysRef.current),
+      30000,
+    );
+    return () => {
+      window.clearInterval(timer);
+      analyticsController.current?.abort();
+    };
   }, [loadAnalytics]);
 
   useEffect(() => {
@@ -118,7 +145,7 @@ export default function AdminDashboardPage() {
   const refreshActions = (
     <div className="admin-dashboard-actions">
       <span aria-live="polite">{formatRefreshStatus(lastSuccessfulRefresh, refreshFailure)}</span>
-      <button className="admin-refresh-button" disabled={isRefreshing} onClick={() => void loadAnalytics("manual")} type="button">
+      <button className="admin-refresh-button" disabled={isRefreshing} onClick={() => void loadAnalytics("manual", windowDays)} type="button">
         <MiniIcon name="refresh" />
         {isRefreshing ? "Refreshing..." : "Refresh"}
       </button>
@@ -129,6 +156,10 @@ export default function AdminDashboardPage() {
   const hasInitialFailure = !hasAnalytics && refreshFailure !== null;
   const hasStaleDataWarning = hasAnalytics && refreshFailure !== null && refreshFailure.hadPreviousData;
   const showSkeleton = isInitialLoading && !hasAnalytics && !refreshFailure;
+  const selectedWindowAnalytics = analytics?.chart_window.day_count === windowDays ? analytics : null;
+  const selectedWindowLoading = showSkeleton || (
+    analytics !== null && analytics.chart_window.day_count !== windowDays
+  );
 
   return (
     <AdminShell actions={refreshActions} subtitle="Live restaurant performance and order activity" title="Operations Overview">
@@ -136,18 +167,18 @@ export default function AdminDashboardPage() {
         {hasInitialFailure && (
           <section className="admin-error-panel" role="alert">
             <div><strong>Analytics unavailable</strong><p>Dashboard analytics could not be loaded. Retry when the service is reachable.</p></div>
-            <button className="secondary" disabled={isRefreshing} onClick={() => void loadAnalytics("manual")} type="button">Retry</button>
+            <button className="secondary" disabled={isRefreshing} onClick={() => void loadAnalytics("manual", windowDays)} type="button">Retry</button>
           </section>
         )}
         {hasStaleDataWarning && (
           <section className="admin-warning-panel" role="status">
             <div><strong>Latest refresh failed</strong><p>Showing the previous analytics values until the next successful update.</p></div>
-            <button className="secondary" disabled={isRefreshing} onClick={() => void loadAnalytics("manual")} type="button">Retry</button>
+            <button className="secondary" disabled={isRefreshing} onClick={() => void loadAnalytics("manual", windowDays)} type="button">Retry</button>
           </section>
         )}
 
         <div className="ops-top-grid">
-          <RevenueOverview analytics={analytics} loading={showSkeleton} />
+          <RevenueOverview analytics={selectedWindowAnalytics} loading={selectedWindowLoading} />
           <OperationsKpiStrip analytics={analytics} loading={showSkeleton} />
         </div>
 
@@ -156,6 +187,13 @@ export default function AdminDashboardPage() {
           <OtherStatuses statuses={otherStatuses} loading={showSkeleton} />
           <OperationalHealth analytics={analytics} loading={showSkeleton} />
         </div>
+
+        <AnalyticsDashboard
+          analytics={selectedWindowAnalytics}
+          loading={selectedWindowLoading}
+          onWindowChange={setWindowDays}
+          windowDays={windowDays}
+        />
 
         <div className="ops-workspace">
           <RecentOrders

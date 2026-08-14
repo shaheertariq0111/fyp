@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
@@ -157,6 +157,55 @@ class AdminUpsellGroupRequest(BaseModel):
     items: list[str] = Field(default_factory=list)
     trigger_categories: list[str] = Field(default_factory=list)
     max_suggestions: int = Field(default=3, gt=0)
+
+
+class StrictAdminAnalyticsSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class AdminAnalyticsChartWindow(StrictAdminAnalyticsSchema):
+    start_at: str
+    end_at: str
+    timezone: Literal["UTC"]
+    day_count: Literal[7, 30]
+
+
+class AdminAnalyticsTrendPoint(StrictAdminAnalyticsSchema):
+    date: str
+    order_count: int
+    revenue_by_currency: dict[str, int | float]
+
+
+class AdminAnalyticsHourPoint(StrictAdminAnalyticsSchema):
+    hour: int = Field(ge=0, le=23)
+    order_count: int = Field(ge=0)
+
+
+class AdminAnalyticsTopItem(StrictAdminAnalyticsSchema):
+    item_id: str | None = None
+    name: str
+    quantity: int | float = Field(gt=0)
+
+
+class AdminAnalyticsFulfillment(StrictAdminAnalyticsSchema):
+    delivery: int = Field(ge=0)
+    takeaway: int = Field(ge=0)
+    unspecified: int = Field(ge=0)
+
+
+class AdminAnalyticsResponse(StrictAdminAnalyticsSchema):
+    today_orders: int
+    active_orders: int
+    revenue: int | float
+    failed_orders: int
+    by_status: dict[str, int]
+    recent_orders: list[dict[str, Any]]
+    chart_window: AdminAnalyticsChartWindow
+    orders_revenue_trend: list[AdminAnalyticsTrendPoint]
+    orders_by_hour: list[AdminAnalyticsHourPoint]
+    status_distribution: dict[str, int]
+    top_selling_items: list[AdminAnalyticsTopItem]
+    by_fulfillment: AdminAnalyticsFulfillment
 
 
 class StrictAdminCustomerSchema(BaseModel):
