@@ -1347,3 +1347,180 @@ def test_save_customization_choice_preserves_non_upsell_response(
         result["agent"]["active_choice"]["field_name"]
         == "pizza-crust"
     )
+
+
+def test_repeated_identical_read_is_bounded_without_fabricating_progress(monkeypatch):
+    """Regression: production looped get_active_cart 36 times until timeout."""
+    container = SimpleNamespace(carts=CartStub())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+    context = AgentRequestContext("trusted-user", "trusted-session")
+
+    results = []
+    with request_context(context):
+        for _ in range(6):
+            results.append(tools.get_active_cart())
+
+    successes = [item for item in results if item.get("success")]
+    guarded = [
+        item
+        for item in results
+        if item.get("error_code") == tools.REPEATED_READ_ERROR_CODE
+    ]
+
+    assert len(successes) == tools.REPEATED_READ_LIMIT
+    assert guarded, "identical repeated reads must eventually be stopped"
+    # The guard reports lack of progress; it never invents a successful effect.
+    for item in guarded:
+        assert item["success"] is False
+        assert item.get("data", {}) == {}
+        assert not item.get("grounding", {}).get("transactional_effects")
+
+
+def test_repeated_read_guard_resets_when_authoritative_state_changes(monkeypatch):
+    class ChangingCart:
+        def __init__(self):
+            self.calls = 0
+
+        def get_active_cart(self, user_id, session_id):
+            self.calls += 1
+            return ToolResponse.ok(
+                data={"cart": {"step": self.calls}},
+                user_message="cart",
+            )
+
+    container = SimpleNamespace(carts=ChangingCart())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        results = [tools.get_active_cart() for _ in range(6)]
+
+    assert all(item["success"] for item in results)
+
+
+def test_repeated_write_calls_are_not_blocked_by_the_read_guard(monkeypatch):
+    container = SimpleNamespace(carts=CartStub())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        results = [tools.begin_checkout("cart-1") for _ in range(6)]
+
+    assert all(item["success"] for item in results)
+
+
+def test_repeated_read_identity_is_scoped_by_arguments(monkeypatch):
+    """Different arguments must not share a repetition counter."""
+
+    class SameResultTickets:
+        def get_ticket_status(self, user_id, ticket_id):
+            # Deliberately identical payloads for different arguments.
+            return ToolResponse.ok(data={}, user_message="same")
+
+    container = SimpleNamespace(tickets=SameResultTickets())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        results = [
+            tools.get_support_ticket_status(f"ticket-{index}")
+            for index in range(6)
+        ]
+
+    assert all(item["success"] for item in results)
+
+
+def test_distinct_read_tools_do_not_share_a_counter(monkeypatch):
+    class SameResultServices:
+        def get_ticket_status(self, user_id, ticket_id):
+            return ToolResponse.ok(data={}, user_message="same")
+
+    container = SimpleNamespace(tickets=SameResultServices())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        results = [
+            tools.get_support_ticket_status("ticket-1"),
+            tools.get_support_ticket("ticket-1"),
+        ] * 3
+
+    assert all(item["success"] for item in results)
+
+
+def test_guard_keeps_blocking_and_never_returns_to_success(monkeypatch):
+    """After the guard fires it must not let the loop resume until timeout."""
+    container = SimpleNamespace(carts=CartStub())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        results = [tools.get_active_cart() for _ in range(30)]
+
+    tail = results[tools.REPEATED_READ_LIMIT:]
+    assert tail, "expected calls beyond the limit"
+    assert all(
+        item["success"] is False
+        and item["error_code"] == tools.REPEATED_READ_ERROR_CODE
+        for item in tail
+    )
+
+
+def test_guard_state_is_per_invocation_not_global(monkeypatch):
+    container = SimpleNamespace(carts=CartStub())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        first = [tools.get_active_cart() for _ in range(6)]
+    with request_context(AgentRequestContext("user-1", "session-1")):
+        second = [tools.get_active_cart() for _ in range(3)]
+
+    assert any(item["success"] is False for item in first)
+    assert all(item["success"] for item in second)
+
+
+class OfferingMenuStub:
+    customer_result_limit = 5
+
+    def search_menu(self, **kwargs):
+        from src.models.tool_responses import GroundingEvidence, GroundingOption
+
+        return ToolResponse.ok(
+            data={"items": []},
+            user_message="found",
+            grounding=GroundingEvidence(
+                authoritative_domains=["menu"],
+                offered_options=[GroundingOption(id="product-a", label="A")],
+            ),
+        )
+
+
+def test_offer_persistence_failure_keeps_the_search_successful(monkeypatch, caplog):
+    class FailingSessions:
+        def save_menu_offer_context(self, *args, **kwargs):
+            raise RuntimeError("session store unavailable")
+
+    container = SimpleNamespace(
+        menu=OfferingMenuStub(),
+        agent_sessions=FailingSessions(),
+    )
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    with caplog.at_level(logging.ERROR), request_context(
+        AgentRequestContext("user-1", "session-1")
+    ):
+        result = tools.search_menu(query="pizza")
+
+    assert result["success"] is True
+    assert result.get("error_code") is None
+    # The failure must stay visible rather than being silently swallowed.
+    assert any(
+        record.__dict__.get("event") == "menu_offer_context_persistence_failed"
+        for record in caplog.records
+    )
+
+
+def test_missing_request_context_does_not_fail_a_successful_search(monkeypatch):
+    """Offer bookkeeping is not part of the customer-visible search contract."""
+    container = SimpleNamespace(menu=OfferingMenuStub())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+
+    result = tools.search_menu(query="pizza")
+
+    assert result["success"] is True
+    assert result.get("error_code") is None

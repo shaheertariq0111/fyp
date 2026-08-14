@@ -126,6 +126,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                     grounded = ground_agent_response(
                         text=raw_text,
                         tool_calls=tool_calls,
+                        continuation=getattr(result, "continuation", None),
                     )
                     logger.info(
                         "WhatsApp response selected",

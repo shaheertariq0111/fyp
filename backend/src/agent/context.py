@@ -16,6 +16,9 @@ class AgentRequestContext:
     request_id: str | None = None
     current_message: str | None = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Counts identical successful read results within one invocation so a
+    # non-progressing read loop can be bounded.
+    read_result_counts: dict[str, int] = field(default_factory=dict)
 
 
 _current_context: ContextVar[AgentRequestContext | None] = ContextVar("agent_request_context", default=None)

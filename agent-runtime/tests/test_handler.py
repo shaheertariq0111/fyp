@@ -738,3 +738,42 @@ def test_http_runtime_contract(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["text"] == "handled hello"
+
+
+def test_whatsapp_no_tool_turn_cannot_claim_unsatisfied_continuation(monkeypatch):
+    """The runtime must forward continuation into deterministic grounding."""
+    from src.agent.continuation import TransactionalContinuation
+
+    continuation = TransactionalContinuation(
+        scope="order",
+        resource_id="ORD-1",
+        state="awaiting_fulfillment_method",
+        required_effect="fulfillment_saved",
+        required_input="fulfillment_method",
+        valid_next_actions=("update_order_flow:set_takeaway",),
+        offered_options=(),
+        pending_prompt="Would you like delivery or takeaway?",
+    )
+    raw = "Fulfillment Method: Takeaway. Your order is ready for pickup."
+
+    def invoke(message, **kwargs):
+        return SimpleNamespace(
+            message={"content": [{"text": raw}]},
+            tool_calls=[],
+            continuation=continuation,
+        )
+
+    monkeypatch.setattr(
+        handler,
+        "build_restaurant_agent",
+        lambda *, session_manager: SimpleNamespace(),
+    )
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", invoke)
+    monkeypatch.setattr(handler, "agent_result_text", lambda result: raw)
+
+    response = handler.invoke(runtime_payload(channel="whatsapp"))
+
+    assert "ready for pickup" not in response["text"]
+    assert response["text"] == "Would you like delivery or takeaway?"
+    history = next(iter(FakeMemorySessionManager.history_by_session.values()))
+    assert history[-1]["content"][0]["text"] == "Would you like delivery or takeaway?"

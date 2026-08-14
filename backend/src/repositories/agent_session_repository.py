@@ -15,6 +15,13 @@ VERIFIED_ORDER_FIELDS = (
     "verified_order_status",
     "verified_order_at",
 )
+# The most recent set of options the backend actually offered this session, so a
+# later ordinal or shorthand reply can be bound to a real backend ID instead of
+# to whatever the model remembers having said.
+MENU_OFFER_FIELDS = (
+    "menu_offer_options",
+    "menu_offer_at",
+)
 class SupportStateConflictError(RuntimeError):
     pass
 
@@ -80,6 +87,82 @@ class AgentSessionRepository:
             for field in VERIFIED_ORDER_FIELDS
             if field in session
         }
+
+    def get_menu_offer_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> dict:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        return {
+            field: session[field]
+            for field in MENU_OFFER_FIELDS
+            if field in session
+        }
+
+    def update_menu_offer_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        options: list[dict],
+        offered_at: str,
+    ) -> None:
+        """Replace the session's offered options with the newest offer."""
+        session = self._get_owned_session(customer_id, agent_session_id)
+        names = {
+            "#pk": "PK",
+            "#customer_id": "customer_id",
+            "#agent_session_id": "agent_session_id",
+            "#options": "menu_offer_options",
+            "#offered_at": "menu_offer_at",
+        }
+        values = {
+            ":customer_id": customer_id,
+            ":agent_session_id": agent_session_id,
+            ":options": options,
+            ":offered_at": offered_at,
+        }
+        self._update_support_attributes(
+            session,
+            update_expression=(
+                "SET #options = :options, #offered_at = :offered_at"
+            ),
+            condition_expression=(
+                "attribute_exists(#pk) "
+                "AND #customer_id = :customer_id "
+                "AND #agent_session_id = :agent_session_id"
+            ),
+            names=names,
+            values=values,
+        )
+
+    def clear_menu_offer_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> None:
+        session = self._get_owned_session(customer_id, agent_session_id)
+        self._update_support_attributes(
+            session,
+            update_expression="REMOVE #options, #offered_at",
+            condition_expression=(
+                "attribute_exists(#pk) "
+                "AND #customer_id = :customer_id "
+                "AND #agent_session_id = :agent_session_id"
+            ),
+            names={
+                "#pk": "PK",
+                "#customer_id": "customer_id",
+                "#agent_session_id": "agent_session_id",
+                "#options": "menu_offer_options",
+                "#offered_at": "menu_offer_at",
+            },
+            values={
+                ":customer_id": customer_id,
+                ":agent_session_id": agent_session_id,
+            },
+        )
 
     def update_verified_order_context(
         self,

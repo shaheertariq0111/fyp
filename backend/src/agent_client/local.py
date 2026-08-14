@@ -80,6 +80,7 @@ class LocalStrandsAgentRuntimeClient:
                 grounded = ground_agent_response(
                     text=response_text,
                     tool_calls=tool_calls,
+                    continuation=getattr(raw_result, "continuation", None),
                 )
                 logger.info(
                     "Local WhatsApp response selected",

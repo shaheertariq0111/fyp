@@ -14,6 +14,10 @@ from src.repositories.agent_session_repository import SupportStateConflictError
 SUPPORT_STATE_TTL = timedelta(minutes=30)
 SUPPORT_STATE_MAX_CLOCK_SKEW = timedelta(seconds=5)
 VERIFIED_ORDER_TTL = SUPPORT_STATE_TTL
+# An offer the customer never acted on should not still be selectable much
+# later in a long-running WhatsApp session.
+MENU_OFFER_TTL = timedelta(minutes=15)
+MENU_OFFER_MAX_OPTIONS = 50
 logger = logging.getLogger(__name__)
 
 
@@ -186,6 +190,87 @@ class AgentSessionService:
             agent_session_id,
             expected_verified_at=expected_verified_at,
         )
+
+    def save_menu_offer_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+        *,
+        options: list[dict],
+    ) -> dict:
+        """Record the options the backend just offered, replacing any earlier set.
+
+        Each new offer overwrites the previous one, so an older numbered list can
+        never be selected from once a newer list has been shown.
+        """
+        cleaned = self._clean_offer_options(options)
+        if not cleaned:
+            self.repository.clear_menu_offer_context(customer_id, agent_session_id)
+            return {}
+        offered_at = self._now().isoformat()
+        self.repository.update_menu_offer_context(
+            customer_id,
+            agent_session_id,
+            options=cleaned,
+            offered_at=offered_at,
+        )
+        return {"menu_offer_options": cleaned, "menu_offer_at": offered_at}
+
+    def get_active_menu_offer_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> dict:
+        context = self.repository.get_menu_offer_context(
+            customer_id,
+            agent_session_id,
+        )
+        if not context:
+            return {}
+        options = self._clean_offer_options(context.get("menu_offer_options"))
+        offered_at = context.get("menu_offer_at")
+        if not options or not self._offer_is_fresh(offered_at):
+            self.repository.clear_menu_offer_context(customer_id, agent_session_id)
+            return {}
+        return {"menu_offer_options": options, "menu_offer_at": offered_at}
+
+    def clear_menu_offer_context(
+        self,
+        customer_id: str,
+        agent_session_id: str,
+    ) -> None:
+        self.repository.clear_menu_offer_context(customer_id, agent_session_id)
+
+    def _offer_is_fresh(self, offered_at: object) -> bool:
+        try:
+            normalized = normalize_ticket_timestamp(offered_at)
+        except (PydanticCustomError, TypeError, ValueError):
+            return False
+        if normalized != offered_at:
+            return False
+        timestamp = datetime.fromisoformat(normalized)
+        now = self._now()
+        if timestamp > now + SUPPORT_STATE_MAX_CLOCK_SKEW:
+            return False
+        return now - timestamp < MENU_OFFER_TTL
+
+    @staticmethod
+    def _clean_offer_options(options: object) -> list[dict]:
+        if not isinstance(options, list):
+            return []
+        cleaned = []
+        for option in options[:MENU_OFFER_MAX_OPTIONS]:
+            if not isinstance(option, dict):
+                continue
+            option_id = option.get("id")
+            label = option.get("label")
+            if not isinstance(option_id, str) or not option_id.strip():
+                continue
+            cleaned.append({
+                "id": option_id,
+                "label": label if isinstance(label, str) and label else option_id,
+            })
+        return cleaned
 
     def save_support_state(
         self,
