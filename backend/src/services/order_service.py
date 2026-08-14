@@ -1240,6 +1240,54 @@ class OrderService:
             required_input=cls._required_input(status),
         )
 
+    # Backend action -> the tool that performs exactly that action. Actions with
+    # no dedicated tool fall back to the generic update_order_flow handle. This
+    # maps backend names to backend names; it never touches customer language.
+    SPECIALIZED_ORDER_TOOLS = {
+        "set_delivery": "choose_delivery",
+        "set_takeaway": "choose_takeaway",
+        "save_address": "save_order_address",
+        "confirm": "confirm_order",
+        "cancel": "cancel_order",
+        "save_customer_name": "save_customer_name",
+        "confirm_customer_name": "confirm_customer_name",
+        "reject_customer_name": "reject_customer_name",
+    }
+
+    @classmethod
+    def semantic_tool_for_action(cls, handle: str) -> str:
+        """Translate a backend action handle into the tool that performs it.
+
+        Accepts either a bare action or an ``update_order_flow:<action>`` handle
+        so callers never have to present the low-level form to the agent.
+        """
+        action = handle.split(":", 1)[1] if handle.startswith("update_order_flow:") else handle
+        return cls.SPECIALIZED_ORDER_TOOLS.get(action, handle)
+
+    @classmethod
+    def choices_for_effect(cls, status: str, effect: str) -> list[dict]:
+        """The distinct actions that leave ``status`` producing ``effect``.
+
+        When more than one is returned they are mutually exclusive: the customer
+        has to pick one, and the backend cannot pick for them.
+        """
+        return sorted(
+            (
+                {
+                    "action": action,
+                    "tool": cls.SPECIALIZED_ORDER_TOOLS.get(
+                        action,
+                        f"update_order_flow:{action}",
+                    ),
+                }
+                for (state, action), next_status in ORDER_TRANSITIONS.items()
+                if state == status
+                and next_status != status
+                and ORDER_ACTION_EFFECTS.get(action) == effect
+            ),
+            key=lambda choice: choice["action"],
+        )
+
     @staticmethod
     def satisfying_effects(status: str) -> frozenset[str]:
         """Effects produced by transitions that actually leave this status.

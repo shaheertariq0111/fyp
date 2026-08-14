@@ -59,6 +59,11 @@ class GroundingEvidence(BaseModel):
     immutable_facts: list[ImmutableFact] = Field(default_factory=list, max_length=50)
     exact_customer_text: str | None = None
     presentation: PresentationConstraints | None = None
+    # Opt-in, set only by responses whose user_message states an outcome and
+    # carries no customer-facing figures, IDs, or contents. Those may be phrased
+    # naturally by the agent so it can add the next step. Any response that
+    # carries facts leaves this False and is still substituted verbatim.
+    allows_natural_phrasing: bool = False
 
 
 class ToolResponse(BaseModel):

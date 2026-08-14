@@ -221,6 +221,7 @@ class CartService:
                                    grounding=GroundingEvidence(
                                        authoritative_domains=["cart"],
                                        transactional_effects=["customization_saved"],
+                                       allows_natural_phrasing=True,
                                    ))
         if cart["status"] == "item_ready":
             return ToolResponse.ok(data=self._cart_data(cart),
@@ -319,6 +320,7 @@ class CartService:
                                grounding=GroundingEvidence(
                                    authoritative_domains=["cart"],
                                    transactional_effects=["cart_progressed"],
+                                   allows_natural_phrasing=True,
                                ))
 
     def create_pending_order(self, user_id: str, cart_id: str) -> ToolResponse:

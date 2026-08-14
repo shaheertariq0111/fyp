@@ -29,6 +29,9 @@ WRITE_TOOLS = {
     "handle_cart_upsell",
     "create_pending_order_from_cart",
     "update_order_flow",
+    "save_customer_name",
+    "confirm_customer_name",
+    "reject_customer_name",
     "begin_checkout",
     "choose_delivery",
     "choose_takeaway",
@@ -443,6 +446,52 @@ def confirm_order(order_id: str) -> dict:
 
 
 @tool
+def save_customer_name(order_id: str, customer_name: str) -> dict:
+    """Save the name the customer gave for this order."""
+    context = get_request_context()
+    return _result(
+        "save_customer_name",
+        lambda: get_services().orders.update_order_flow(
+            context.user_id,
+            order_id,
+            "save_customer_name",
+            customer_name,
+        ),
+        is_write=True,
+    )
+
+
+@tool
+def confirm_customer_name(order_id: str) -> dict:
+    """Accept the trusted profile name the backend suggested for this order."""
+    context = get_request_context()
+    return _result(
+        "confirm_customer_name",
+        lambda: get_services().orders.update_order_flow(
+            context.user_id,
+            order_id,
+            "confirm_customer_name",
+        ),
+        is_write=True,
+    )
+
+
+@tool
+def reject_customer_name(order_id: str) -> dict:
+    """Decline the suggested profile name so the customer can give another."""
+    context = get_request_context()
+    return _result(
+        "reject_customer_name",
+        lambda: get_services().orders.update_order_flow(
+            context.user_id,
+            order_id,
+            "reject_customer_name",
+        ),
+        is_write=True,
+    )
+
+
+@tool
 def cancel_order(order_id: str) -> dict:
     """Cancel a backend order only when its current state allows cancellation."""
     context = get_request_context()
@@ -776,12 +825,14 @@ MVP_TOOLS = [
     save_customization_choice,
     handle_cart_upsell,
     create_pending_order_from_cart,
-    update_order_flow,
     begin_checkout,
     choose_delivery,
     choose_takeaway,
     save_order_address,
     confirm_order,
+    save_customer_name,
+    confirm_customer_name,
+    reject_customer_name,
     cancel_order,
     get_active_cart,
     get_order_status,

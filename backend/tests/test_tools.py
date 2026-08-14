@@ -85,7 +85,7 @@ class OrderMutationStub:
 
 
 def test_mvp_tools_include_active_cart_lookup():
-    assert len(tools.MVP_TOOLS) == 28
+    assert len(tools.MVP_TOOLS) == 30
     assert tools.get_active_cart in tools.MVP_TOOLS
     assert tools.get_customer_profile in tools.MVP_TOOLS
     assert tools.update_customer_profile in tools.MVP_TOOLS

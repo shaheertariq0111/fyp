@@ -234,8 +234,9 @@ def test_awaiting_fulfillment_order_exposes_fulfillment_continuation():
     assert continuation.required_effect == "fulfillment_saved"
     assert continuation.required_input == "fulfillment_method"
     assert continuation.is_outstanding is True
-    assert "update_order_flow:set_takeaway" in continuation.valid_next_actions
-    assert "update_order_flow:set_delivery" in continuation.valid_next_actions
+    # Advertised as the tools that perform them, not as low-level action strings.
+    assert "choose_takeaway" in continuation.valid_next_actions
+    assert "choose_delivery" in continuation.valid_next_actions
     assert continuation.pending_prompt
 
 
