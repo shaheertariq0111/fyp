@@ -19,6 +19,7 @@ from src.agent.whatsapp_submission_safety import (
 )
 
 GroundingSource = Literal[
+    "anchored_write",
     "authoritative_read",
     "authoritative_continuation",
     "continuation_unavailable",
@@ -135,6 +136,11 @@ def ground_authoritative_tool_response(
         exact_text = _clean_text(evidence.get("exact_customer_text"))
         if exact_text:
             return GroundedAgentResponse(exact_text, "exact_artifact")
+        if evidence.get("allows_natural_phrasing") is True and user_message:
+            # The backend marked this outcome as fact-free. Its statement is
+            # still guaranteed to reach the customer; the agent may only add the
+            # next step around it. See _anchor_natural_phrasing.
+            return GroundedAgentResponse(user_message, "anchored_write")
         return GroundedAgentResponse(
             user_message or FAILED_TRANSACTION_FALLBACK,
             "successful_write" if user_message else "write_without_grounding",
@@ -181,6 +187,8 @@ def ground_agent_response(
     """Apply deterministic tool-evidence safeguards without semantic judgment."""
 
     authoritative = ground_authoritative_tool_response(tool_calls=tool_calls)
+    if authoritative is not None and authoritative.source == "anchored_write":
+        authoritative = _anchor_natural_phrasing(authoritative, text)
     selected = authoritative or GroundedAgentResponse(text, "conversation")
     selected = _enforce_transactional_continuation(
         selected=selected,
@@ -207,6 +215,28 @@ def ground_agent_response(
         submission_decision.text,
         selected.source,
         selected.rejection_reason,
+    )
+
+
+def _anchor_natural_phrasing(
+    anchor: GroundedAgentResponse,
+    text: str,
+) -> GroundedAgentResponse:
+    """Keep the backend statement while letting the agent add the next step.
+
+    The authoritative sentence always reaches the customer. The agent's wording
+    is kept around it so the reply can end with a real next step instead of a
+    dead-end status line. This compares backend-authored text against the reply;
+    it never inspects what the customer said.
+    """
+    model_text = _clean_text(text)
+    if not model_text:
+        return GroundedAgentResponse(anchor.text, "successful_write")
+    if anchor.text in model_text:
+        return GroundedAgentResponse(model_text, "successful_write")
+    return GroundedAgentResponse(
+        f"{anchor.text} {model_text}",
+        "successful_write",
     )
 
 

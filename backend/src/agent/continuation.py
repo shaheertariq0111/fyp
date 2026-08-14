@@ -124,6 +124,15 @@ class TransactionalContinuation:
             return self.satisfying_effects
         return frozenset({self.required_effect} if self.required_effect else ())
 
+    @property
+    def requires_unique_choice(self) -> bool:
+        """True when several mutually exclusive options could satisfy this state.
+
+        The backend cannot decide between them, so the agent may act only once
+        the customer's meaning identifies exactly one.
+        """
+        return self.is_outstanding and len(self.offered_options) > 1
+
 
 def resolve_transactional_continuation(
     services: Any,
@@ -226,6 +235,15 @@ def continuation_context_block(
             f"  - id={option.id} label={option.label}"
             for option in continuation.offered_options
         )
+    if continuation.requires_unique_choice:
+        lines.append(
+            "exclusive_choice: true - these options are mutually exclusive and "
+            "the backend cannot pick between them. Act only when the customer's "
+            "meaning identifies exactly one of them. A bare acknowledgement or "
+            "agreement does not identify one; in that case ask which one they "
+            "want and write nothing. When an option's id names a tool, call that "
+            "tool for the choice instead of any generic action listed above."
+        )
     if continuation.related_order_id:
         lines.append(
             f"other_open_order: {continuation.related_order_id} "
@@ -323,12 +341,11 @@ def _resolve_order_continuation(
         state=state,
         required_effect=required_effect,
         required_input=_text(agent.get("required_input")),
-        valid_next_actions=tuple(
-            action
-            for action in _sequence(agent.get("valid_next_actions"))
-            if isinstance(action, str)
+        valid_next_actions=_semantic_order_actions(
+            services,
+            _sequence(agent.get("valid_next_actions")),
         ),
-        offered_options=(),
+        offered_options=_order_choice_options(services, state, required_effect),
         pending_prompt=_order_pending_prompt(services, order, agent),
         satisfying_effects=(
             _order_satisfying_effects(services, state, required_effect)
@@ -351,6 +368,61 @@ def _order_agent_view(services: Any, order: dict) -> dict[str, Any]:
     if not getattr(response, "success", False):
         return {}
     return _mapping(getattr(response, "agent", None))
+
+
+def _semantic_order_actions(services: Any, handles: list[Any]) -> tuple[str, ...]:
+    """Present order actions as the tools that perform them.
+
+    The agent should never have to compose a low-level backend action string, so
+    each handle is translated to its dedicated tool where one exists.
+    """
+    translate = getattr(services.orders, "semantic_tool_for_action", None)
+    actions = [handle for handle in handles if isinstance(handle, str)]
+    if not callable(translate):
+        return tuple(actions)
+    resolved: list[str] = []
+    for handle in actions:
+        try:
+            tool = translate(handle)
+        except Exception:
+            tool = handle
+        if tool not in resolved:
+            resolved.append(tool)
+    return tuple(resolved)
+
+
+def _order_choice_options(
+    services: Any,
+    state: str,
+    required_effect: TransactionalEffect | None,
+) -> tuple[ContinuationOption, ...]:
+    """Expose the authoritative actions that can satisfy this order state.
+
+    Each option carries the tool that performs it, so the agent reaches for the
+    specific action rather than the generic order-flow fallback.
+    """
+    if not required_effect:
+        return ()
+    resolver = getattr(services.orders, "choices_for_effect", None)
+    if not callable(resolver):
+        return ()
+    try:
+        choices = resolver(state, required_effect)
+    except Exception:
+        logger.warning(
+            "Order choices could not be resolved for this state",
+            exc_info=True,
+            extra={
+                "event": "order_choice_lookup_failed",
+                "order_status": state,
+            },
+        )
+        return ()
+    return tuple(
+        ContinuationOption(id=str(choice["tool"]), label=str(choice["action"]))
+        for choice in _sequence(choices)
+        if isinstance(choice, dict) and choice.get("tool") and choice.get("action")
+    )
 
 
 def _order_satisfying_effects(
