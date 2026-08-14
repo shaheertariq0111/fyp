@@ -26,6 +26,32 @@ export type Analytics = {
   failed_orders: number;
   by_status: Record<string, number>;
   recent_orders: AnalyticsOrder[];
+  chart_window: {
+    start_at: string;
+    end_at: string;
+    timezone: "UTC";
+    day_count: 7 | 30;
+  };
+  orders_revenue_trend: Array<{
+    date: string;
+    order_count: number;
+    revenue_by_currency: Record<string, number>;
+  }>;
+  orders_by_hour: Array<{
+    hour: number;
+    order_count: number;
+  }>;
+  status_distribution: Record<string, number>;
+  top_selling_items: Array<{
+    item_id: string | null;
+    name: string;
+    quantity: number;
+  }>;
+  by_fulfillment: {
+    delivery: number;
+    takeaway: number;
+    unspecified: number;
+  };
 };
 
 export type OrderDetail = AnalyticsOrder & {
@@ -129,7 +155,53 @@ function CardHeading({ title, description }: { title: string; description: strin
   );
 }
 
+function snapshotHourLabel(hour: number) {
+  const label = (value: number) => {
+    const normalized = value % 24;
+    if (normalized === 0) return "12 AM";
+    if (normalized === 12) return "12 PM";
+    return `${normalized > 12 ? normalized - 12 : normalized} ${normalized >= 12 ? "PM" : "AM"}`;
+  };
+  return `${label(hour)} \u2013 ${label(hour + 1)}`;
+}
+
+function OrdersSparkline({ points }: { points: Analytics["orders_revenue_trend"] }) {
+  const width = 180;
+  const height = 34;
+  const inset = 3;
+  const maximum = Math.max(...points.map((point) => point.order_count), 1);
+  const xStep = (width - inset * 2) / Math.max(points.length - 1, 1);
+  const polyline = points.map((point, index) => {
+    const x = inset + index * xStep;
+    const y = height - inset - (point.order_count / maximum) * (height - inset * 2);
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg
+      aria-label={`Daily orders: ${points.map((point) => `${point.date} ${point.order_count}`).join(", ")}`}
+      className="ops-revenue-sparkline"
+      role="img"
+      viewBox={`0 0 ${width} ${height}`}
+    >
+      <line stroke="#d5dce3" x1={inset} x2={width - inset} y1={height - inset} y2={height - inset} />
+      <polyline fill="none" points={polyline} stroke="#168438" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
+    </svg>
+  );
+}
+
 export function RevenueOverview({ analytics, loading }: { analytics: Analytics | null; loading: boolean }) {
+  const windowOrders = analytics?.orders_revenue_trend.reduce(
+    (total, point) => total + point.order_count,
+    0,
+  ) ?? 0;
+  const peakHour = analytics?.orders_by_hour.reduce(
+    (peak, point) => point.order_count > peak.order_count ? point : peak,
+    analytics.orders_by_hour[0] ?? { hour: 0, order_count: 0 },
+  );
+  const topItem = analytics?.top_selling_items[0];
+  const snapshotLabel = analytics && windowOrders > 0
+    ? `${windowOrders} orders in ${analytics.chart_window.day_count} days${peakHour && peakHour.order_count > 0 ? `, peak ${snapshotHourLabel(peakHour.hour)}` : ""}${topItem ? `, top item ${topItem.name}` : ""}`
+    : analytics ? "No order activity in this period" : "Analytics snapshot unavailable";
   return (
     <section className="admin-panel ops-revenue-card">
       <div className="ops-revenue-copy">
@@ -137,10 +209,33 @@ export function RevenueOverview({ analytics, loading }: { analytics: Analytics |
         {loading ? <span className="admin-skeleton admin-skeleton-value" /> : <strong>{analytics ? money(analytics.revenue) : "—"}</strong>}
         <p>{analytics ? "Revenue currently reported by the analytics service." : "Unavailable until analytics reconnects."}</p>
       </div>
-      <div className="ops-revenue-visual" aria-label="Revenue time-series data is not provided by the analytics service">
-        <div className="ops-revenue-icon"><OperationsIcon name="revenue" size={25} /></div>
-        <span>Current analytics snapshot</span>
-        <small>Time-series data is not available</small>
+      <div className="ops-revenue-visual" aria-label={snapshotLabel} aria-live="polite" role="group">
+        <div className="ops-revenue-snapshot-heading">
+          <div className="ops-revenue-icon"><OperationsIcon name="revenue" size={20} /></div>
+          <div>
+            <span>Current analytics snapshot</span>
+            {analytics && <small>{analytics.chart_window.day_count} Days {"\u00b7"} UTC</small>}
+          </div>
+        </div>
+        {loading ? (
+          <div className="ops-revenue-snapshot-loading" aria-label="Loading current analytics snapshot">
+            <span className="admin-skeleton admin-skeleton-line" />
+            <span className="admin-skeleton admin-skeleton-line" />
+          </div>
+        ) : !analytics ? (
+          <p className="ops-revenue-snapshot-empty">Analytics snapshot unavailable.</p>
+        ) : windowOrders === 0 ? (
+          <p className="ops-revenue-snapshot-empty">No order activity in this period.</p>
+        ) : (
+          <>
+            <strong className="ops-revenue-snapshot-total">{windowOrders} {windowOrders === 1 ? "order" : "orders"}</strong>
+            <div className="ops-revenue-snapshot-details">
+              {peakHour && peakHour.order_count > 0 && <span><b>Peak:</b> {snapshotHourLabel(peakHour.hour)}</span>}
+              {topItem && <span><b>Top:</b> {topItem.name}</span>}
+            </div>
+            <OrdersSparkline points={analytics.orders_revenue_trend} />
+          </>
+        )}
       </div>
     </section>
   );

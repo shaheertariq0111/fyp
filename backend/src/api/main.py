@@ -8,6 +8,7 @@ import logging
 import os
 import time
 import uuid
+from enum import IntEnum
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -36,6 +37,7 @@ from src.api.schemas import (
     ActionRequest,
     AdminAvailabilityRequest,
     AdminCategoryRequest,
+    AdminAnalyticsResponse,
     AdminCustomerListResponse,
     AdminLoginRequest,
     AdminMenuItemRequest,
@@ -83,6 +85,13 @@ from src.services.ticket_service import (
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 app = FastAPI(title="Pizza Restaurant Ordering Agent API")
 logger = logging.getLogger(__name__)
+
+
+class AdminAnalyticsWindowDays(IntEnum):
+    seven = 7
+    thirty = 30
+
+
 ADMIN_COOKIE_NAME = "pizza_admin_session"
 ADMIN_TICKET_CURSOR_KIND = "admin_ticket_http_cursor"
 ADMIN_TICKET_CURSOR_DOMAIN = b"admin-ticket-http-cursor-v1."
@@ -1207,9 +1216,16 @@ def admin_ticket_reopen(
     )
 
 
-@app.get("/api/admin/analytics")
-def admin_analytics(_admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    return get_services().orders.admin_analytics()
+@app.get("/api/admin/analytics", response_model=AdminAnalyticsResponse)
+def admin_analytics(
+    window_days: AdminAnalyticsWindowDays = Query(
+        default=AdminAnalyticsWindowDays.seven
+    ),
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> AdminAnalyticsResponse:
+    return AdminAnalyticsResponse.model_validate(
+        get_services().orders.admin_analytics(window_days=int(window_days))
+    )
 
 
 @app.get("/api/admin/orders")

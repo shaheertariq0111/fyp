@@ -3949,6 +3949,53 @@ def test_admin_order_routes_use_admin_services(monkeypatch):
     assert updated.json()["order"]["status_history"][0]["reason"] == "Started"
 
 
+def test_admin_analytics_defaults_to_seven_days_accepts_thirty_and_rejects_other_windows(monkeypatch):
+    test_client = client()
+    login_admin(test_client, monkeypatch)
+    services = IdentityServices()
+    requested_windows = []
+
+    def analytics(window_days=7):
+        requested_windows.append(window_days)
+        return {
+            "today_orders": 0,
+            "active_orders": 0,
+            "revenue": 0,
+            "failed_orders": 0,
+            "by_status": {},
+            "recent_orders": [],
+            "chart_window": {
+                "start_at": "2026-08-08T00:00:00+00:00",
+                "end_at": "2026-08-15T00:00:00+00:00",
+                "timezone": "UTC",
+                "day_count": window_days,
+            },
+            "orders_revenue_trend": [],
+            "orders_by_hour": [
+                {"hour": hour, "order_count": 0} for hour in range(24)
+            ],
+            "status_distribution": {},
+            "top_selling_items": [],
+            "by_fulfillment": {
+                "delivery": 0, "takeaway": 0, "unspecified": 0,
+            },
+        }
+
+    services.orders = SimpleNamespace(admin_analytics=analytics)
+    monkeypatch.setattr(main, "get_services", lambda: services)
+
+    default_response = test_client.get("/api/admin/analytics")
+    thirty_day_response = test_client.get("/api/admin/analytics?window_days=30")
+    invalid_response = test_client.get("/api/admin/analytics?window_days=14")
+
+    assert default_response.status_code == 200
+    assert default_response.json()["chart_window"]["day_count"] == 7
+    assert thirty_day_response.status_code == 200
+    assert thirty_day_response.json()["chart_window"]["day_count"] == 30
+    assert invalid_response.status_code == 422
+    assert requested_windows == [7, 30]
+
+
 def test_admin_menu_customer_and_monitoring_routes(monkeypatch):
     test_client = client()
     login_admin(test_client, monkeypatch)

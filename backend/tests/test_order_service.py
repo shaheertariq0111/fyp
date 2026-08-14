@@ -1299,3 +1299,175 @@ def test_invalid_delivery_acknowledgement_does_not_change_order():
 
     assert response.error_code == "INVALID_DELIVERY_ADDRESS"
     assert repository.get("user", order_id) == before
+
+
+class CountingAnalyticsOrderRepository(MemoryOrderRepository):
+    def __init__(self):
+        super().__init__()
+        self.list_all_calls = 0
+
+    def list_all(self):
+        self.list_all_calls += 1
+        return super().list_all()
+
+
+def _analytics_order(
+    order_id,
+    created_at,
+    *,
+    status="accepted",
+    total=100,
+    currency="PKR",
+    fulfillment_method="delivery",
+    items=None,
+):
+    return {
+        "order_id": order_id,
+        "status": status,
+        "total": total,
+        "currency": currency,
+        "fulfillment_method": fulfillment_method,
+        "items": items if items is not None else [],
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+
+
+def test_admin_analytics_builds_all_seven_day_charts_from_one_order_collection(monkeypatch):
+    repository = CountingAnalyticsOrderRepository()
+    repository.data = {
+        "today": _analytics_order(
+            "today",
+            "2026-08-14T19:30:00+00:00",
+            total=100,
+            items=[
+                {"item_id": "pizza", "name": "Fajita Pizza", "quantity": 2},
+                {"item_id": "bad", "name": "Bad Quantity", "quantity": 0},
+                {"item_id": "bad-2", "name": "Bad Quantity", "quantity": "two"},
+                {"item_id": "missing-name", "quantity": 5},
+                "legacy-value",
+            ],
+        ),
+        "usd": _analytics_order(
+            "usd",
+            "2026-08-13T03:10:00Z",
+            status="completed",
+            total=20,
+            currency="USD",
+            fulfillment_method="takeaway",
+            items=[{"item_id": "pizza", "name": "Fajita Pizza", "quantity": 3}],
+        ),
+        "rejected": _analytics_order(
+            "rejected",
+            "2026-08-12T19:00:00+00:00",
+            status="rejected",
+            total=999,
+            fulfillment_method=None,
+            items=[{"item_id": "pizza", "name": "Fajita Pizza", "quantity": 99}],
+        ),
+        "failed": _analytics_order(
+            "failed",
+            "2026-08-09T05:00:00+00:00",
+            status="failed",
+            total=999,
+            fulfillment_method="delivery",
+            items=[{"item_id": "pizza", "name": "Fajita Pizza", "quantity": 99}],
+        ),
+        "outside": _analytics_order(
+            "outside",
+            "2026-08-07T12:00:00+00:00",
+            total=70,
+            items=[{"item_id": "outside", "name": "Outside Item", "quantity": 7}],
+        ),
+        "malformed": _analytics_order(
+            "malformed",
+            "not-a-timestamp",
+            total="not-a-number",
+            currency=None,
+            fulfillment_method="curbside",
+            items=None,
+        ),
+    }
+    service = OrderService(repository, MemoryMenuRepository([], []))
+    monkeypatch.setattr(service, "_now", lambda: "2026-08-14T12:00:00+00:00")
+
+    result = service.admin_analytics()
+
+    assert repository.list_all_calls == 1
+    assert result["chart_window"] == {
+        "start_at": "2026-08-08T00:00:00+00:00",
+        "end_at": "2026-08-15T00:00:00+00:00",
+        "timezone": "UTC",
+        "day_count": 7,
+    }
+    assert [point["date"] for point in result["orders_revenue_trend"]] == [
+        "2026-08-08", "2026-08-09", "2026-08-10", "2026-08-11",
+        "2026-08-12", "2026-08-13", "2026-08-14",
+    ]
+    trend = {point["date"]: point for point in result["orders_revenue_trend"]}
+    assert trend["2026-08-08"] == {
+        "date": "2026-08-08", "order_count": 0, "revenue_by_currency": {},
+    }
+    assert trend["2026-08-14"]["revenue_by_currency"] == {"PKR": 100}
+    assert trend["2026-08-13"]["revenue_by_currency"] == {"USD": 20}
+    assert trend["2026-08-12"]["revenue_by_currency"] == {}
+    assert len(result["orders_by_hour"]) == 24
+    assert [point["hour"] for point in result["orders_by_hour"]] == list(range(24))
+    assert result["orders_by_hour"][19]["order_count"] == 2
+    assert result["orders_by_hour"][3]["order_count"] == 1
+    assert result["status_distribution"] == {
+        "accepted": 1, "completed": 1, "rejected": 1, "failed": 1,
+    }
+    assert result["top_selling_items"] == [{
+        "item_id": "pizza", "name": "Fajita Pizza", "quantity": 5,
+    }]
+    assert result["by_fulfillment"] == {
+        "delivery": 2, "takeaway": 1, "unspecified": 1,
+    }
+    assert result["today_orders"] == 1
+    assert result["active_orders"] == 3
+    assert result["revenue"] == 190
+    assert result["failed_orders"] == 1
+    assert result["by_status"] == {
+        "accepted": 3, "completed": 1, "rejected": 1, "failed": 1,
+    }
+    assert len(result["recent_orders"]) == 6
+
+
+def test_admin_analytics_supports_thirty_days_and_deterministic_top_item_ties(monkeypatch):
+    repository = CountingAnalyticsOrderRepository()
+    repository.data = {
+        "start": _analytics_order(
+            "start",
+            "2026-07-16T00:00:00",
+            currency=None,
+            fulfillment_method=None,
+            items=[
+                {"name": "Legacy Item", "quantity": 2.5},
+                {"item_id": "z", "name": "Ziti", "quantity": 2.5},
+            ],
+        ),
+        "before": _analytics_order(
+            "before", "2026-07-15T23:59:59+00:00",
+            items=[{"item_id": "before", "name": "Before", "quantity": 100}],
+        ),
+        "cancelled": _analytics_order(
+            "cancelled", "2026-08-14T10:00:00+00:00", status="cancelled",
+            items=[{"item_id": "cancelled", "name": "Cancelled", "quantity": 100}],
+        ),
+    }
+    service = OrderService(repository, MemoryMenuRepository([], []))
+    monkeypatch.setattr(service, "_now", lambda: "2026-08-14T12:00:00+00:00")
+
+    result = service.admin_analytics(window_days=30)
+
+    assert repository.list_all_calls == 1
+    assert result["chart_window"]["day_count"] == 30
+    assert result["orders_revenue_trend"][0]["date"] == "2026-07-16"
+    assert result["orders_revenue_trend"][-1]["date"] == "2026-08-14"
+    assert sum(point["order_count"] for point in result["orders_revenue_trend"]) == 2
+    assert result["top_selling_items"] == [
+        {"item_id": None, "name": "Legacy Item", "quantity": 2.5},
+        {"item_id": "z", "name": "Ziti", "quantity": 2.5},
+    ]
+    assert result["orders_revenue_trend"][0]["revenue_by_currency"] == {}

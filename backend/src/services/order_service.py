@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from src.models.tool_responses import GroundingEvidence, ImmutableFact, ToolResponse
 
@@ -551,19 +552,97 @@ class OrderService:
         public["allowed_actions"] = self._admin_allowed_actions(order)
         return {"order": public}
 
-    def admin_analytics(self) -> dict:
+    def admin_analytics(self, window_days: int = 7) -> dict:
         orders = [self._public(order) for order in self.orders.list_all()]
         by_status: dict[str, int] = {}
-        revenue = 0
-        today = self._now()[:10]
+        revenue: int | float = 0
+        now = self._analytics_datetime(self._now()) or datetime.now(timezone.utc)
+        today = now.date().isoformat()
         today_orders = 0
         for order in orders:
-            status = order.get("status") or "unknown"
+            status = self._analytics_status(order.get("status"))
             by_status[status] = by_status.get(status, 0) + 1
             if status not in {"rejected", "cancelled", "failed"}:
-                revenue += order.get("total") or 0
+                revenue += self._analytics_number(order.get("total")) or 0
             if str(order.get("created_at", "")).startswith(today):
                 today_orders += 1
+
+        start_date = now.date() - timedelta(days=window_days - 1)
+        end_date = now.date() + timedelta(days=1)
+        start_at = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+        end_at = datetime.combine(end_date, time.min, tzinfo=timezone.utc)
+        daily = {
+            (start_date + timedelta(days=offset)).isoformat(): {
+                "order_count": 0,
+                "revenue_by_currency": {},
+            }
+            for offset in range(window_days)
+        }
+        hourly = [0 for _hour in range(24)]
+        status_distribution: dict[str, int] = {}
+        fulfillment = {"delivery": 0, "takeaway": 0, "unspecified": 0}
+        item_totals: dict[str, dict] = {}
+
+        for order in orders:
+            created_at = self._analytics_datetime(order.get("created_at"))
+            if created_at is None or not start_at <= created_at < end_at:
+                continue
+
+            date_key = created_at.date().isoformat()
+            daily[date_key]["order_count"] += 1
+            hourly[created_at.hour] += 1
+            status = self._analytics_status(order.get("status"))
+            status_distribution[status] = status_distribution.get(status, 0) + 1
+
+            fulfillment_method = order.get("fulfillment_method")
+            if fulfillment_method in {"delivery", "takeaway"}:
+                fulfillment[fulfillment_method] += 1
+            else:
+                fulfillment["unspecified"] += 1
+
+            if status in {"rejected", "cancelled", "failed"}:
+                continue
+
+            total = self._analytics_number(order.get("total"))
+            currency = order.get("currency")
+            if total is not None and isinstance(currency, str) and currency.strip():
+                currency_key = currency.strip().upper()
+                revenue_by_currency = daily[date_key]["revenue_by_currency"]
+                revenue_by_currency[currency_key] = (
+                    revenue_by_currency.get(currency_key, 0) + total
+                )
+
+            items = order.get("items")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                quantity = self._analytics_number(item.get("quantity"))
+                if quantity is None or quantity <= 0:
+                    continue
+                raw_name = item.get("name")
+                if not isinstance(raw_name, str) or not raw_name.strip():
+                    continue
+                name = raw_name.strip()
+                raw_item_id = item.get("item_id")
+                item_id = (
+                    raw_item_id.strip()
+                    if isinstance(raw_item_id, str) and raw_item_id.strip()
+                    else None
+                )
+                identity = f"id:{item_id}" if item_id else f"name:{name.casefold()}"
+                aggregate = item_totals.setdefault(identity, {
+                    "item_id": item_id,
+                    "name": name,
+                    "quantity": 0,
+                })
+                aggregate["quantity"] += quantity
+                if (name.casefold(), name) < (
+                    aggregate["name"].casefold(), aggregate["name"]
+                ):
+                    aggregate["name"] = name
+
         active_orders = [
             order for order in orders
             if order.get("status") not in {"delivered", "completed", "rejected", "cancelled", "failed"}
@@ -571,9 +650,17 @@ class OrderService:
         failed_orders = [order for order in orders if order.get("status") == "failed"]
         recent_orders = sorted(
             orders,
-            key=lambda order: order.get("updated_at") or order.get("created_at") or "",
+            key=lambda order: str(order.get("updated_at") or order.get("created_at") or ""),
             reverse=True,
         )[:10]
+        top_selling_items = sorted(
+            item_totals.values(),
+            key=lambda item: (
+                -item["quantity"],
+                item["name"].casefold(),
+                item["item_id"] or "",
+            ),
+        )[:5]
         return {
             "today_orders": today_orders,
             "active_orders": len(active_orders),
@@ -581,7 +668,53 @@ class OrderService:
             "failed_orders": len(failed_orders),
             "by_status": by_status,
             "recent_orders": recent_orders,
+            "chart_window": {
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "timezone": "UTC",
+                "day_count": window_days,
+            },
+            "orders_revenue_trend": [
+                {"date": date_key, **values}
+                for date_key, values in daily.items()
+            ],
+            "orders_by_hour": [
+                {"hour": hour, "order_count": count}
+                for hour, count in enumerate(hourly)
+            ],
+            "status_distribution": status_distribution,
+            "top_selling_items": top_selling_items,
+            "by_fulfillment": fulfillment,
         }
+
+    @staticmethod
+    def _analytics_datetime(value: object) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _analytics_number(value: object) -> int | float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value
+
+    @staticmethod
+    def _analytics_status(value: object) -> str:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return "unknown"
 
     def admin_failed_orders(self, limit: int = 50) -> dict:
         orders = [
