@@ -1204,3 +1204,56 @@ class OrderService:
         if suggested_name and not order.get("customer_name_suggestion_rejected"):
             return f"Should I put this order under the name {suggested_name}?"
         return "Can I have your name for the order?"
+
+    @classmethod
+    def pending_input_prompt(cls, order: dict) -> str | None:
+        """Customer-facing text for the input this order state still needs.
+
+        Keyed by authoritative order status so the backend, not the model, owns
+        what an unfinished order is waiting for.
+        """
+        status = order.get("status")
+        if status == "awaiting_customer_name":
+            return cls._customer_name_prompt(order)
+        if status == "pending_confirmation":
+            return cls._confirmation_summary(order)
+        return {
+            "awaiting_fulfillment_method": (
+                "Would you like delivery or takeaway for this order?"
+            ),
+            "awaiting_delivery_address": (
+                "Please send the delivery address for this order."
+            ),
+        }.get(status)
+
+    @classmethod
+    def order_continuation_view(cls, order: dict) -> dict:
+        """Agent-facing view of an order that has already been read.
+
+        Lets a caller holding an order build continuation context without paying
+        for a second read of the same record.
+        """
+        status = order.get("status")
+        return cls._order_agent(
+            order,
+            cls._next_action(status),
+            required_input=cls._required_input(status),
+        )
+
+    @staticmethod
+    def satisfying_effects(status: str) -> frozenset[str]:
+        """Effects produced by transitions that actually leave this status.
+
+        Derived from the authoritative transition table so a state counts as
+        resolved by every legitimate action that moves it on, including
+        cancellation, rather than by one privileged action. Self-transitions are
+        excluded: an action that leaves the order in the same status changed
+        something, but it did not settle what this status is waiting for.
+        """
+        return frozenset(
+            ORDER_ACTION_EFFECTS[action]
+            for (state, action), next_status in ORDER_TRANSITIONS.items()
+            if state == status
+            and action in ORDER_ACTION_EFFECTS
+            and next_status != status
+        )

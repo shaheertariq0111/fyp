@@ -1,4 +1,5 @@
 from collections.abc import Callable
+import json
 import logging
 from typing import Literal
 
@@ -10,6 +11,16 @@ from src.models.tool_responses import ToolResponse
 
 
 logger = logging.getLogger(__name__)
+
+# A read that keeps returning byte-identical authoritative state is not making
+# progress. Bounding it stops runaway tool loops without fabricating any effect.
+REPEATED_READ_LIMIT = 3
+REPEATED_READ_ERROR_CODE = "REPEATED_READ_WITHOUT_PROGRESS"
+REPEATED_READ_MESSAGE = (
+    "This read returned the same authoritative state again, so nothing has "
+    "changed. Answer the customer from the state you already have instead of "
+    "reading it again."
+)
 
 WRITE_TOOLS = {
     "start_cart_item_customization",
@@ -60,7 +71,8 @@ def _record_tool_call(tool_name: str, is_write: bool, result: dict) -> None:
     })
 
 
-def _result(tool_name: str, call: Callable[[], ToolResponse], *, is_write: bool = False) -> dict:
+def _result(tool_name: str, call: Callable[[], ToolResponse], *, is_write: bool = False,
+            args: dict | None = None) -> dict:
     try:
         result = call().model_dump(exclude_none=True)
     except Exception as exc:
@@ -105,8 +117,66 @@ def _result(tool_name: str, call: Callable[[], ToolResponse], *, is_write: bool 
             user_message="I couldn't complete that request right now.",
             retryable=True,
         ).model_dump(exclude_none=True)
+    if not is_write:
+        result = _repeated_read_guard(tool_name, result, args) or result
     _record_tool_call(tool_name, is_write, result)
     return result
+
+
+def _repeated_read_guard(
+    tool_name: str,
+    result: dict,
+    args: dict | None,
+) -> dict | None:
+    """Stop a read that keeps returning identical authoritative state.
+
+    Repetition identity is the tool name, its normalized arguments, and the
+    authoritative result, so two different reads can never share a counter just
+    because their payloads happen to serialize alike. Returns a replacement tool
+    result once the same read has produced the same state more than
+    ``REPEATED_READ_LIMIT`` times in one invocation. The replacement reports the
+    lack of progress; it never reports success and never advances cart or order
+    state, so real progress naturally changes the identity and resets counting.
+    """
+    if not result.get("success"):
+        return None
+    try:
+        context = get_request_context()
+    except RuntimeError:
+        return None
+    try:
+        signature = json.dumps(
+            {
+                "tool": tool_name,
+                "args": args or {},
+                "result": result,
+            },
+            sort_keys=True,
+            default=str,
+        )
+    except (TypeError, ValueError):
+        return None
+    count = context.read_result_counts.get(signature, 0) + 1
+    context.read_result_counts[signature] = count
+    if count <= REPEATED_READ_LIMIT:
+        return None
+    logger.warning(
+        "Repeated identical read was stopped",
+        extra={
+            "event": "repeated_read_without_progress",
+            "tool_name": tool_name,
+            "actor_id": context.user_id,
+            "agent_session_id": context.agent_session_id,
+            "channel": context.channel,
+            "error_code": REPEATED_READ_ERROR_CODE,
+            "repeated_read_count": count,
+        },
+    )
+    return ToolResponse.error(
+        error_code=REPEATED_READ_ERROR_CODE,
+        user_message=REPEATED_READ_MESSAGE,
+        agent={"instruction": REPEATED_READ_MESSAGE},
+    ).model_dump(exclude_none=True)
 
 
 @tool
@@ -125,17 +195,63 @@ def search_menu(query: str | None = None, category: str | None = None,
     menu = get_services().menu
     configured_limit = menu.customer_result_limit
     limit = min(max(1, max_results or configured_limit), configured_limit)
-    return _result("search_menu", lambda: menu.search_menu(
-        query=query, category=category, tags=tags, max_price=max_price,
-        available_only=available_only, limit=limit,
-        exclude_product_ids=exclude_product_ids,
-    ))
+
+    def search_and_remember_offer() -> ToolResponse:
+        response = menu.search_menu(
+            query=query, category=category, tags=tags, max_price=max_price,
+            available_only=available_only, limit=limit,
+            exclude_product_ids=exclude_product_ids,
+        )
+        _remember_offered_options(response)
+        return response
+
+    return _result("search_menu", search_and_remember_offer, args={
+        "query": query, "category": category, "tags": tags,
+        "max_price": max_price, "available_only": available_only,
+        "limit": limit, "exclude_product_ids": exclude_product_ids,
+    })
+
+
+def _remember_offered_options(response: ToolResponse) -> None:
+    """Persist the options this read offered so a later reply can bind to them.
+
+    Stores only backend-issued IDs and labels the backend itself produced. The
+    newest offer replaces any earlier one.
+    """
+    if not response.success or response.grounding is None:
+        return
+    try:
+        context = get_request_context()
+    except RuntimeError:
+        # Bookkeeping only. A missing context must never fail a good search.
+        return
+    try:
+        get_services().agent_sessions.save_menu_offer_context(
+            context.user_id,
+            context.agent_session_id,
+            options=[
+                {"id": option.id, "label": option.label}
+                for option in response.grounding.offered_options
+            ],
+        )
+    except Exception as exc:
+        logger.error(
+            "Offered menu options could not be persisted",
+            extra={
+                "event": "menu_offer_context_persistence_failed",
+                "tool_name": "search_menu",
+                "actor_id": context.user_id,
+                "agent_session_id": context.agent_session_id,
+                "exception_type": type(exc).__name__,
+            },
+        )
 
 
 @tool
 def get_menu_item(item_id: str) -> dict:
     """Get current details and customization groups for one menu item."""
-    return _result("get_menu_item", lambda: get_services().menu.get_menu_item(item_id))
+    return _result("get_menu_item", lambda: get_services().menu.get_menu_item(item_id),
+                   args={"item_id": item_id})
 
 
 @tool
@@ -381,7 +497,8 @@ def get_order_status(order_id: str | None = None) -> dict:
                 )
         return response
 
-    return _result("get_order_status", get_and_remember_order)
+    return _result("get_order_status", get_and_remember_order,
+                   args={"order_id": order_id})
 
 
 def _selected_verified_order(response: ToolResponse) -> dict | None:
@@ -584,6 +701,7 @@ def get_support_ticket_status(
             context.user_id,
             ticket_id,
         ),
+        args={"ticket_id": ticket_id},
     )
 
 
@@ -597,6 +715,7 @@ def get_support_ticket(ticket_id: str | None = None) -> dict:
             context.user_id,
             ticket_id,
         ),
+        args={"ticket_id": ticket_id},
     )
 
 
@@ -645,7 +764,7 @@ def retrieve_restaurant_knowledge(question: str, branch_id: str | None = None,
     effective_branch = branch_id or context.branch_id
     return _result("retrieve_restaurant_knowledge", lambda: get_services().knowledge.retrieve(
         question, effective_branch, language
-    ))
+    ), args={"question": question, "branch_id": effective_branch, "language": language})
 
 
 MVP_TOOLS = [

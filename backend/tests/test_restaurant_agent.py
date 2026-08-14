@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from src.agent.context import get_request_context
 from src.agent import restaurant_agent
+from src.agent.continuation import TransactionalContinuation
 from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT
 from src.agent.tools import MVP_TOOLS
 
@@ -332,7 +333,10 @@ def test_invoke_restaurant_agent_injects_trusted_context():
     assert result == {
         "message": "hello",
         "current_message": "hello",
-        "kwargs": {"invocation_state": {"source": "test"}},
+        "kwargs": {
+            "invocation_state": {"source": "test"},
+            "limits": {"turns": restaurant_agent.MAX_AGENT_TURNS_PER_INVOCATION},
+        },
         "user_id": "trusted-user",
         "session_id": "trusted-session",
         "branch_id": "trusted-branch",
@@ -487,3 +491,154 @@ def test_system_prompt_defines_customer_order_tracking_policy():
         "tracking references, not hidden internal IDs."
         in normalized_prompt
     )
+
+
+def test_invoke_restaurant_agent_bounds_tool_turns_per_invocation():
+    """Regression: an unbounded loop ran ~245s before a client read timeout."""
+    captured = {}
+
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            captured.update(kwargs)
+            return {"message": message}
+
+    restaurant_agent.invoke_restaurant_agent(
+        "hello",
+        user_id="user",
+        agent_session_id="session",
+        agent=FakeAgent(),
+    )
+
+    limits = captured.get("limits")
+    assert limits is not None
+    assert limits["turns"] == restaurant_agent.MAX_AGENT_TURNS_PER_INVOCATION
+    assert 1 < limits["turns"] < 36
+
+
+def test_explicit_limits_override_the_default_cap():
+    captured = {}
+
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            captured.update(kwargs)
+            return {"message": message}
+
+    restaurant_agent.invoke_restaurant_agent(
+        "hello",
+        user_id="user",
+        agent_session_id="session",
+        agent=FakeAgent(),
+        limits={"turns": 3},
+    )
+
+    assert captured["limits"] == {"turns": 3}
+
+
+def test_invoke_restaurant_agent_attaches_resolved_continuation(monkeypatch):
+    sentinel = TransactionalContinuation(
+        scope="order",
+        resource_id="ORD-1",
+        state="awaiting_fulfillment_method",
+        required_effect="fulfillment_saved",
+        required_input="fulfillment_method",
+        valid_next_actions=("update_order_flow:set_takeaway",),
+        offered_options=(),
+        pending_prompt="Would you like delivery or takeaway?",
+    )
+    monkeypatch.setattr(
+        restaurant_agent,
+        "resolve_request_continuation",
+        lambda **kwargs: sentinel,
+    )
+
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            return SimpleNamespace(message=message)
+
+    result = restaurant_agent.invoke_restaurant_agent(
+        "takeaway",
+        user_id="user",
+        agent_session_id="session",
+        agent=FakeAgent(),
+    )
+
+    assert getattr(result, "continuation") is sentinel
+
+
+def test_continuation_context_is_prepended_as_trusted_machine_context(monkeypatch):
+    monkeypatch.setattr(
+        restaurant_agent,
+        "resolve_request_continuation",
+        lambda **kwargs: "CONTINUATION",
+    )
+    monkeypatch.setattr(
+        restaurant_agent,
+        "continuation_context_block",
+        lambda continuation: "<<TRUSTED STATE>>",
+    )
+    seen = {}
+
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            seen["message"] = message
+            return SimpleNamespace(message=message)
+
+    restaurant_agent.invoke_restaurant_agent(
+        "takeaway",
+        user_id="user",
+        agent_session_id="session",
+        agent=FakeAgent(),
+    )
+
+    assert "<<TRUSTED STATE>>" in seen["message"]
+    assert seen["message"].endswith("takeaway")
+
+
+def test_customer_message_remains_untouched_without_continuation(monkeypatch):
+    monkeypatch.setattr(
+        restaurant_agent,
+        "resolve_request_continuation",
+        lambda **kwargs: None,
+    )
+    seen = {}
+
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            seen["message"] = message
+            return SimpleNamespace(message=message)
+
+    restaurant_agent.invoke_restaurant_agent(
+        "hello",
+        user_id="user",
+        agent_session_id="session",
+        agent=FakeAgent(),
+    )
+
+    assert seen["message"] == "hello"
+
+
+def test_system_prompt_forbids_binding_ordinals_without_an_authoritative_offer():
+    assert "no authoritative offer on" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "may be stale or superseded" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    # Naming a product directly must stay possible.
+    assert "names\n  directly is unaffected" in RESTAURANT_AGENT_SYSTEM_PROMPT
+
+
+def test_service_failure_resolves_to_continuation_unavailable(monkeypatch):
+    from src.agent.continuation import continuation_unavailable
+
+    def explode():
+        raise RuntimeError("services unavailable")
+
+    monkeypatch.setattr(
+        "src.agent.dependencies.get_services",
+        explode,
+        raising=False,
+    )
+
+    resolved = restaurant_agent.resolve_request_continuation(
+        user_id="user",
+        agent_session_id="session",
+    )
+
+    assert continuation_unavailable(resolved) is True

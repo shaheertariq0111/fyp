@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.agent.continuation import TransactionalContinuation
 from src.agent.response_grounding import (
     FAILED_TRANSACTION_FALLBACK,
     GroundedAssistantMemoryBuffer,
@@ -430,3 +431,174 @@ def test_grounding_log_fields_contain_only_deterministic_diagnostics():
         "grounding_source": "conversation",
         "grounding_rejection_reason": None,
     }
+
+
+def continuation(
+    *,
+    scope="order",
+    resource_id="ORD-1",
+    state="awaiting_fulfillment_method",
+    required_effect="fulfillment_saved",
+    required_input="fulfillment_method",
+    valid_next_actions=("update_order_flow:set_takeaway",),
+    offered_options=(),
+    pending_prompt="Would you like delivery or takeaway?",
+):
+    return TransactionalContinuation(
+        scope=scope,
+        resource_id=resource_id,
+        state=state,
+        required_effect=required_effect,
+        required_input=required_input,
+        valid_next_actions=tuple(valid_next_actions),
+        offered_options=tuple(offered_options),
+        pending_prompt=pending_prompt,
+    )
+
+
+def effect_call(effect, *, tool_name="update_order_flow", success=True):
+    return {
+        "tool_name": tool_name,
+        "is_write": True,
+        "success": success,
+        "result": {
+            "success": success,
+            "user_message": "Backend confirmed the change.",
+            "grounding": {"transactional_effects": [effect]},
+        },
+    }
+
+
+def test_no_tool_turn_cannot_claim_fulfillment_progress_without_effect():
+    """Regression: production emitted 'takeaway selected' with no tool call."""
+    result = ground_agent_response(
+        text=(
+            "Fulfillment Method: Takeaway\n"
+            "Your order is now ready for pickup."
+        ),
+        tool_calls=[],
+        continuation=continuation(),
+    )
+
+    assert "ready for pickup" not in result.text
+    assert result.text == "Would you like delivery or takeaway?"
+    assert result.source == "authoritative_continuation"
+    assert result.rejection_reason == "required_effect_not_satisfied"
+
+
+def test_no_tool_turn_cannot_claim_customization_progress_without_effect():
+    """Regression: production claimed crust selection with no tool call."""
+    result = ground_agent_response(
+        text="Great, Classic Crust it is! Your pizza is fully customized.",
+        tool_calls=[],
+        continuation=continuation(
+            scope="cart",
+            resource_id="cart-1",
+            state="customizing_item",
+            required_effect="customization_saved",
+            required_input="customization_choice",
+            valid_next_actions=("save_customization_choice",),
+            pending_prompt="Choose a crust.\n\n1. Regular Crust\n2. Crunchy Thin Crust",
+        ),
+    )
+
+    assert "Classic Crust" not in result.text
+    assert result.text.startswith("Choose a crust.")
+    assert result.source == "authoritative_continuation"
+
+
+def test_successful_required_effect_restores_normal_grounding():
+    result = ground_agent_response(
+        text="Takeaway is set.",
+        tool_calls=[effect_call("fulfillment_saved")],
+        continuation=continuation(),
+    )
+
+    assert result.text == "Backend confirmed the change."
+    assert result.source == "successful_write"
+    assert result.rejection_reason is None
+
+
+def test_unrelated_successful_effect_does_not_satisfy_continuation():
+    result = ground_agent_response(
+        text="All set!",
+        tool_calls=[effect_call("customization_saved")],
+        continuation=continuation(),
+    )
+
+    assert "Would you like delivery or takeaway?" in result.text
+
+
+def test_failed_write_keeps_backend_failure_text_and_restates_pending_state():
+    result = ground_agent_response(
+        text="Takeaway selected!",
+        tool_calls=[effect_call("fulfillment_saved", success=False)],
+        continuation=continuation(),
+    )
+
+    assert "Takeaway selected!" not in result.text
+    assert "Backend confirmed the change." in result.text
+    assert "Would you like delivery or takeaway?" in result.text
+
+
+def test_informational_tool_turn_keeps_answer_and_restates_pending_state():
+    """FAQ answers must survive; the pending question is restated, not replaced."""
+    result = ground_agent_response(
+        text="We close at 11pm.",
+        tool_calls=[
+            {
+                "tool_name": "retrieve_restaurant_knowledge",
+                "is_write": False,
+                "success": True,
+                "result": {"success": True, "user_message": "knowledge"},
+            }
+        ],
+        continuation=continuation(),
+    )
+
+    assert "We close at 11pm." in result.text
+    assert "Would you like delivery or takeaway?" in result.text
+
+
+def test_pending_prompt_is_not_duplicated_when_already_present():
+    result = ground_agent_response(
+        text="Would you like delivery or takeaway?",
+        tool_calls=[
+            {
+                "tool_name": "retrieve_restaurant_knowledge",
+                "is_write": False,
+                "success": True,
+                "result": {"success": True, "user_message": "knowledge"},
+            }
+        ],
+        continuation=continuation(),
+    )
+
+    assert result.text.count("Would you like delivery or takeaway?") == 1
+
+
+def test_non_blocking_continuation_leaves_general_conversation_untouched():
+    result = ground_agent_response(
+        text="Hello! How can I help?",
+        tool_calls=[],
+        continuation=continuation(
+            state="pending_confirmation",
+            required_effect=None,
+            required_input="confirm_or_cancel",
+            pending_prompt=None,
+        ),
+    )
+
+    assert result.text == "Hello! How can I help?"
+    assert result.source == "conversation"
+
+
+def test_general_conversation_without_continuation_is_unchanged():
+    result = ground_agent_response(
+        text="Hello! How can I help with your order today?",
+        tool_calls=[],
+        continuation=None,
+    )
+
+    assert result.text == "Hello! How can I help with your order today?"
+    assert result.source == "conversation"

@@ -9,12 +9,19 @@ from strands.hooks.events import (
     MessageAddedEvent,
 )
 
+from src.agent.continuation import (
+    TransactionalContinuation,
+    continuation_satisfied_by,
+    continuation_unavailable,
+)
 from src.agent.whatsapp_submission_safety import (
     select_submission_safe_response,
 )
 
 GroundingSource = Literal[
     "authoritative_read",
+    "authoritative_continuation",
+    "continuation_unavailable",
     "conversation",
     "exact_artifact",
     "failed_read",
@@ -27,6 +34,8 @@ GroundingRejectionReason = Literal[
     "authoritative_menu_read_missing_exact_artifact",
     "authoritative_read_failed",
     "authoritative_write_failed",
+    "continuation_resolution_failed",
+    "required_effect_not_satisfied",
     "successful_write_missing_safe_grounding",
     "unsupported_order_submission_claim",
 ]
@@ -167,11 +176,18 @@ def ground_agent_response(
     *,
     text: str,
     tool_calls: list[Any],
+    continuation: TransactionalContinuation | None = None,
 ) -> GroundedAgentResponse:
     """Apply deterministic tool-evidence safeguards without semantic judgment."""
 
     authoritative = ground_authoritative_tool_response(tool_calls=tool_calls)
     selected = authoritative or GroundedAgentResponse(text, "conversation")
+    selected = _enforce_transactional_continuation(
+        selected=selected,
+        authoritative=authoritative,
+        tool_calls=tool_calls,
+        continuation=continuation,
+    )
     submission_decision = select_submission_safe_response(
         text=selected.text,
         tool_calls=tool_calls,
@@ -190,6 +206,58 @@ def ground_agent_response(
     return GroundedAgentResponse(
         submission_decision.text,
         selected.source,
+        selected.rejection_reason,
+    )
+
+
+def _enforce_transactional_continuation(
+    *,
+    selected: GroundedAgentResponse,
+    authoritative: GroundedAgentResponse | None,
+    tool_calls: list[Any],
+    continuation: TransactionalContinuation | None,
+) -> GroundedAgentResponse:
+    """Keep the response consistent with an unsatisfied backend requirement.
+
+    This is state-based, not phrase-based: the only question asked is whether
+    the effect the backend requires was actually produced this turn. When it was
+    not, the authoritative pending state — never the model's prose — decides what
+    the customer is told about that state.
+    """
+
+    if continuation_unavailable(continuation):
+        # Authoritative state could not be read, so nothing can vouch for a
+        # claim the model makes from memory alone. Backend-authored text from
+        # this turn's own tool results is still trustworthy and is kept.
+        if authoritative is not None:
+            return selected
+        return GroundedAgentResponse(
+            FAILED_READ_FALLBACK,
+            "continuation_unavailable",
+            "continuation_resolution_failed",
+        )
+    if continuation is None or not continuation.is_outstanding:
+        return selected
+    if continuation_satisfied_by(continuation, tool_calls):
+        return selected
+    pending_prompt = _clean_text(continuation.pending_prompt)
+    if not pending_prompt:
+        return selected
+    if not tool_calls:
+        # No tool ran, so the model learned nothing new this turn and cannot
+        # speak for a state that did not move.
+        return GroundedAgentResponse(
+            pending_prompt,
+            "authoritative_continuation",
+            "required_effect_not_satisfied",
+        )
+    if pending_prompt in selected.text:
+        return selected
+    # Tools ran but none satisfied the requirement. Keep the grounded or
+    # informational answer and restate the authoritative pending state.
+    return GroundedAgentResponse(
+        f"{selected.text}\n\n{pending_prompt}".strip(),
+        selected.source if authoritative is not None else "conversation",
         selected.rejection_reason,
     )
 

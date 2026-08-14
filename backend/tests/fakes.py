@@ -148,6 +148,10 @@ class MemoryAgentSessionRepository:
         "verified_order_status",
         "verified_order_at",
     }
+    MENU_OFFER_FIELDS = {
+        "menu_offer_options",
+        "menu_offer_at",
+    }
 
     def __init__(self):
         self.data = {}
@@ -197,6 +201,31 @@ class MemoryAgentSessionRepository:
             for key, value in session.items()
             if key in self.SUPPORT_FIELDS
         }
+
+    def get_menu_offer_context(self, customer_id, agent_session_id):
+        session = self._get_owned_session(customer_id, agent_session_id)
+        return {
+            key: deepcopy(value)
+            for key, value in session.items()
+            if key in self.MENU_OFFER_FIELDS
+        }
+
+    def update_menu_offer_context(
+        self,
+        customer_id,
+        agent_session_id,
+        *,
+        options,
+        offered_at,
+    ):
+        session = self._get_owned_session(customer_id, agent_session_id)
+        session["menu_offer_options"] = deepcopy(options)
+        session["menu_offer_at"] = offered_at
+
+    def clear_menu_offer_context(self, customer_id, agent_session_id):
+        session = self._get_owned_session(customer_id, agent_session_id)
+        session.pop("menu_offer_options", None)
+        session.pop("menu_offer_at", None)
 
     def get_verified_order_context(self, customer_id, agent_session_id):
         session = self._get_owned_session(customer_id, agent_session_id)

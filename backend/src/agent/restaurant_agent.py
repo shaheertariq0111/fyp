@@ -1,17 +1,35 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 import re
 from typing import Any
 
 from strands import Agent
 from strands.models.bedrock import BedrockModel
 from strands.session import FileSessionManager
+from strands.types.agent import Limits
 
 from src.agent.context import AgentRequestContext, request_context
+from src.agent.continuation import (
+    CONTINUATION_UNAVAILABLE,
+    continuation_context_block,
+    resolve_transactional_continuation,
+)
 from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT
 from src.agent.tools import MVP_TOOLS
 from src.infrastructure.config import get_bedrock_model_settings, get_settings
+
+
+logger = logging.getLogger(__name__)
+
+# One customer message can legitimately need a short chain of tool calls, for
+# example: search_menu, start_cart_item_customization, two customization saves,
+# an upsell decision, checkout, then a status read. That realistic worst case is
+# roughly eight turns, so this leaves headroom while still bounding the runaway
+# read loop seen in production, which reached 36 identical calls before the
+# caller timed out. This is per incoming customer message, not per order.
+MAX_AGENT_TURNS_PER_INVOCATION = 12
 
 
 def build_bedrock_model() -> BedrockModel:
@@ -87,13 +105,69 @@ def invoke_restaurant_agent(
     runtime_agent = agent or build_restaurant_agent(
         session_manager=build_session_manager(agent_session_id)
     )
+    kwargs.setdefault("limits", Limits(turns=MAX_AGENT_TURNS_PER_INVOCATION))
     with request_context(context):
-        result = runtime_agent(message, **kwargs)
+        continuation = resolve_request_continuation(
+            user_id=user_id,
+            agent_session_id=agent_session_id,
+        )
+        result = runtime_agent(
+            _message_with_continuation(message, continuation),
+            **kwargs,
+        )
+        # Attached independently so losing one never silently drops the other.
+        # A missing continuation attribute would read as "nothing pending".
+        try:
+            setattr(result, "continuation", continuation)
+        except Exception:
+            logger.warning(
+                "Continuation could not be attached to the agent result",
+                exc_info=True,
+                extra={"event": "continuation_attachment_failed"},
+            )
         try:
             setattr(result, "tool_calls", list(context.tool_calls))
         except Exception:
-            pass
+            logger.warning(
+                "Tool calls could not be attached to the agent result",
+                exc_info=True,
+                extra={"event": "tool_calls_attachment_failed"},
+            )
         return result
+
+
+def resolve_request_continuation(*, user_id: str, agent_session_id: str):
+    """Resolve authoritative pending state for this turn.
+
+    Returns ``CONTINUATION_UNAVAILABLE`` rather than ``None`` when the backend
+    cannot be reached, so a failed read is never mistaken for "nothing pending".
+    """
+    try:
+        from src.agent.dependencies import get_services
+
+        services = get_services()
+    except Exception:
+        logger.warning(
+            "Services unavailable while resolving transactional continuation",
+            exc_info=True,
+            extra={
+                "event": "continuation_services_unavailable",
+                "actor_id": user_id,
+                "agent_session_id": agent_session_id,
+            },
+        )
+        return CONTINUATION_UNAVAILABLE
+    return resolve_transactional_continuation(
+        services,
+        user_id=user_id,
+        agent_session_id=agent_session_id,
+    )
+
+
+def _message_with_continuation(message: str, continuation) -> str:
+    """Prepend trusted backend state so state is read, never inferred."""
+    block = continuation_context_block(continuation)
+    return f"{block}\n\n{message}" if block else message
 
 
 def agent_result_text(result: Any) -> str:
