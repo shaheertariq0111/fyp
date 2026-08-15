@@ -250,6 +250,7 @@ def test_system_prompt_requires_tool_grounding():
     assert "Do not perform an unrelated status check as a mandatory preamble" in (
         normalized_prompt
     )
+    assert '"proced"' in normalized_prompt
     assert "FORBIDDEN WHATSAPP FAILURE PATTERNS" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "I've added wings to your cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "User chooses a menu item such as \"Chicken Fajita\"" in (

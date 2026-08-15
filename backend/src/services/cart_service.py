@@ -463,7 +463,10 @@ class CartService:
                 active_choice=data if cart.get("status") == "customizing_item" else None,
                 instruction="Present the current cart from data.cart. If a question is present, ask that question next.",
             ),
-            grounding=GroundingEvidence(authoritative_domains=["cart"]),
+            grounding=GroundingEvidence(
+                authoritative_domains=["cart"],
+                exact_customer_text=self._active_cart_customer_text(data),
+            ),
         )
 
     def discard_active_cart(self, user_id: str, session_id: str) -> ToolResponse:
@@ -1134,6 +1137,39 @@ class CartService:
         return {key: deepcopy(cart.get(key)) for key in
                 ("cart_id", "status", "customization_mode", "active_cart_item_id",
                  "items", "subtotal", "currency", "version")}
+
+    @classmethod
+    def _active_cart_customer_text(cls, cart_data: dict) -> str:
+        currency = str(cart_data.get("currency") or "").strip()
+
+        def money(value) -> str:
+            amount = str(value if value is not None else 0)
+            return " ".join(part for part in (currency, amount) if part)
+
+        lines = ["Here is the current cart."]
+        item_lines = []
+        for index, item in enumerate(cart_data.get("items") or [], start=1):
+            name = str(item.get("name") or item.get("label") or "Item").strip()
+            quantity = item.get("quantity") or 1
+            line_total = money(item.get("current_price"))
+            item_lines.append(
+                f"{index}) {name}\nQuantity: {quantity}\nItem total: {line_total}"
+            )
+        if item_lines:
+            lines.extend(item_lines)
+            lines.append(f"Subtotal: {money(cart_data.get('subtotal'))}")
+        if cart_data.get("question"):
+            lines.append(str(cart_data["question"]).strip())
+            option_lines = []
+            for index, option in enumerate(cart_data.get("options") or [], start=1):
+                label = str(option.get("label") or option.get("name") or "").strip()
+                if label:
+                    option_lines.append(f"{index}. {label}")
+            if option_lines:
+                lines.extend(option_lines)
+        elif cart_data.get("status") == "cart_ready":
+            lines.append("You can proceed to checkout.")
+        return "\n".join(lines)
 
     def _cart_agent(
         self,

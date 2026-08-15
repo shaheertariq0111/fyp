@@ -199,6 +199,34 @@ def test_get_active_cart_includes_current_customization_prompt():
     assert cart["options"][0]["label"] == "Choice A"
     assert response.agent["cart_status"] == "customizing_item"
     assert response.agent["active_choice"]["question"] == "Choose dynamically"
+    assert "Here is the current cart." in response.grounding.exact_customer_text
+    assert "Configured Item" in response.grounding.exact_customer_text
+    assert "Choose dynamically" in response.grounding.exact_customer_text
+    assert "1. Choice A" in response.grounding.exact_customer_text
+
+
+def test_get_active_cart_exact_customer_text_includes_ready_cart_summary():
+    service, _, _ = build_services()
+    started = service.start_item_customization("user", "session", "configurable")
+    ready = service.save_choice(
+        "user",
+        started.data["cart_item_id"],
+        "dynamic-choice",
+        "choice-a",
+    )
+    service.handle_upsell("user", ready.data["cart_id"], "skip")
+
+    response = service.get_active_cart("user", "session")
+
+    assert response.data["cart"]["status"] == "cart_ready"
+    assert response.grounding.exact_customer_text == (
+        "Here is the current cart.\n"
+        "1) Configured Item\n"
+        "Quantity: 1\n"
+        "Item total: CUR 15\n"
+        "Subtotal: CUR 15\n"
+        "You can proceed to checkout."
+    )
 
 
 def test_cart_tool_response_includes_agent_next_step_packet():

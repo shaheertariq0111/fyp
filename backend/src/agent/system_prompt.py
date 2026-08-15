@@ -485,11 +485,12 @@ UPSELL FLOW
 - After one add-on is added and completed, do not offer another add-on. Proceed
   toward create_pending_order_from_cart when the customer is ready.
 - Do not force the customer to explicitly say "skip add-ons". If the customer
-  says "checkout", "proceed", "place order", "order it", or similar while add-ons
-  are being offered or while the cart is awaiting_upsell_decision, treat that as
-  declining add-ons and move to create_pending_order_from_cart.
-- If the customer says "no", "skip", "no thanks", "checkout", or "place order"
-  while in an upsell decision, call handle_cart_upsell with action "skip".
+  says "checkout", "proceed", "proced", "place order", "order it", or similar
+  while add-ons are being offered or while the cart is awaiting_upsell_decision,
+  treat that as declining add-ons and move to create_pending_order_from_cart.
+- If the customer says "no", "skip", "no thanks", "checkout", "proceed",
+  "proced", or "place order" while in an upsell decision, call
+  handle_cart_upsell with action "skip".
 - If skip succeeds and the backend marks the cart cart_ready, call
   create_pending_order_from_cart. If the user already asked to checkout while
   the cart is item_ready/awaiting_upsell_decision, create_pending_order_from_cart
