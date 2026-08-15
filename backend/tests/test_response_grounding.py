@@ -250,6 +250,27 @@ def test_search_menu_without_exact_artifact_never_uses_model_listing():
     )
 
 
+def test_list_menu_categories_without_exact_artifact_never_uses_model_categories():
+    result = ground_agent_response(
+        text="Try Secret Burgers or Mystery Pasta.",
+        tool_calls=[
+            tool_call(
+                tool_name="list_menu_categories",
+                is_write=False,
+                user_message="I found current menu categories.",
+                grounding={"authoritative_domains": ["menu"]},
+            )
+        ],
+    )
+
+    assert result.text == "I found current menu categories."
+    assert "Secret Burgers" not in result.text
+    assert result.source == "authoritative_read"
+    assert result.rejection_reason == (
+        "authoritative_menu_read_missing_exact_artifact"
+    )
+
+
 @pytest.mark.parametrize(
     ("tool_name", "user_message", "outer_success", "inner_success"),
     [

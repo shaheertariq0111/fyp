@@ -208,6 +208,56 @@ class MenuService:
             ),
         )
 
+    def list_menu_categories(self, limit=None) -> ToolResponse:
+        categories = [
+            self._public_category(category)
+            for category in self.repository.list_entities("category")
+            if not category.get("archived") and category.get("available", True)
+        ]
+        if not categories:
+            categories = self._categories_from_available_items()
+        categories.sort(
+            key=lambda category: (
+                category.get("sort_order", 999),
+                str(category.get("name") or category.get("category_id") or ""),
+            )
+        )
+        effective_limit = min(
+            max(1, limit or self.customer_result_limit),
+            self.customer_result_limit,
+        )
+        limited = categories[:effective_limit]
+        has_more = len(categories) > len(limited)
+        user_message = (
+            "I found current menu categories."
+            if limited
+            else "I couldn't find current menu categories."
+        )
+        return ToolResponse.ok(
+            data={"categories": limited, "has_more": has_more},
+            user_message=user_message,
+            next_action="present_menu_categories",
+            grounding=GroundingEvidence(
+                authoritative_domains=["menu"],
+                offered_options=[
+                    GroundingOption(
+                        id=str(category["category_id"]),
+                        label=str(category.get("name") or category["category_id"]),
+                    )
+                    for category in limited
+                    if category.get("category_id")
+                ],
+                presentation=PresentationConstraints(
+                    max_items=self.customer_result_limit,
+                ),
+                exact_customer_text=self._menu_categories_customer_text(
+                    limited,
+                    has_more=has_more,
+                    fallback_text=user_message,
+                ),
+            ),
+        )
+
     def admin_list_entities(self, entity_type: str) -> dict:
         self._validate_entity_type(entity_type)
         return {"items": sorted(
@@ -320,6 +370,51 @@ class MenuService:
                    "requires_customization", "customization_group_ids", "upsell_group_ids",
                    "tags", "image_url", "metadata", "customization_rules")
         return {key: item.get(key) for key in allowed if key in item}
+
+    @staticmethod
+    def _public_category(category):
+        allowed = ("category_id", "name", "description", "sort_order")
+        return {key: category.get(key) for key in allowed if key in category}
+
+    def _categories_from_available_items(self) -> list[dict]:
+        categories = {}
+        for item in self.repository.search(available_only=True):
+            category_id = str(item.get("category") or "").strip()
+            if not category_id:
+                continue
+            category_name = (
+                str(item.get("source_category") or "").strip()
+                or category_id.replace("-", " ").replace("_", " ").title()
+            )
+            categories.setdefault(
+                category_id,
+                {
+                    "category_id": category_id,
+                    "name": category_name,
+                    "sort_order": 999,
+                },
+            )
+        return list(categories.values())
+
+    @classmethod
+    def _menu_categories_customer_text(
+        cls,
+        categories: list[dict],
+        *,
+        has_more: bool,
+        fallback_text: str,
+    ) -> str:
+        lines = []
+        for category in categories:
+            name = cls._customer_name(category.get("name"))
+            if name:
+                lines.append(f"{len(lines) + 1}. {name}")
+        if not lines:
+            return fallback_text
+        response = "You can start with these menu categories:\n" + "\n".join(lines)
+        if has_more:
+            return response + "\nThere are more categories available too. Which one sounds good?"
+        return response + "\nWhich one sounds good?"
 
     @classmethod
     def _search_menu_customer_text(

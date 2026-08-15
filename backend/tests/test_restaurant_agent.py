@@ -21,11 +21,16 @@ def test_system_prompt_requires_tool_grounding():
     assert "Do not report an order status unless the customer asks" in (
         normalized_full_prompt
     )
+    assert "Ignore prior submitted-order context for greetings" in normalized_full_prompt
+    assert "do not mention an Order ID" in normalized_full_prompt
     assert "prefer a tool call over guessing" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "If a tool returns an agent object" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "call it in the same turn" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "The chat UI may not show buttons" in RESTAURANT_AGENT_SYSTEM_PROMPT
-    assert "1. search_menu" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "1. list_menu_categories" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "2. search_menu" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "open-ended browsing moment" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "Categories must come from this" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "broad food/category query" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "never imply that the returned page is the entire menu" in (
         RESTAURANT_AGENT_SYSTEM_PROMPT
@@ -50,6 +55,8 @@ def test_system_prompt_requires_tool_grounding():
     assert "discard_active_cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "ask_customization_choice" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "Do not answer cart contents from memory" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "Never say \"I need to use get_active_cart\"" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "Call get_active_cart silently" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "get_active_cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "A cart_id is never an order_id" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "treat those orders" in (
@@ -140,6 +147,9 @@ def test_system_prompt_requires_tool_grounding():
         in normalized_prompt
     )
     assert "The backend sends one outbound WhatsApp reply" in normalized_prompt
+    assert "Never ask the customer to approve tool use" in normalized_prompt
+    assert "Tools are internal actions" in normalized_prompt
+    assert "call it silently in the same turn" in normalized_prompt
     assert "WHATSAPP RESPONSE DISCIPLINE" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "WhatsApp replies must be short and action-oriented" in normalized_prompt
     assert "Ask exactly one next-step question" in normalized_prompt
@@ -167,6 +177,10 @@ def test_system_prompt_requires_tool_grounding():
     assert "Checkout does not require special instructions" in normalized_prompt
     assert "Ask only for the backend-required next input" in normalized_prompt
     assert "Never refuse to collect a delivery address" in normalized_prompt
+    assert "has not named food yet, call list_menu_categories" in normalized_prompt
+    assert "Do not ask a bare \"what item/category would you like?\"" in (
+        normalized_prompt
+    )
     assert "names a food or category while starting an order" in normalized_prompt
     assert "ask the customer to choose the item" in normalized_prompt
     assert "The selection identifies only the product" in normalized_prompt
@@ -176,7 +190,18 @@ def test_system_prompt_requires_tool_grounding():
         "selected in the same turn"
         in normalized_prompt
     )
+    assert "If the customer says they want another order" in normalized_prompt
+    assert "call list_menu_categories and present returned categories" in (
+        normalized_prompt
+    )
+    assert "call search_menu immediately" in normalized_prompt
+    assert "Do not conduct freehand slot-filling from world knowledge" in normalized_prompt
+    assert "Call search_menu(\"wings\")" in normalized_prompt
     assert "every subsequent customization question" in normalized_prompt
+    assert "Do not ask for a sauce, drink, flavor, size, crust, or quantity" in (
+        normalized_prompt
+    )
+    assert "do not merely thank them or claim the item was added" in normalized_prompt
     assert "MENU GROUNDING" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert (
         "For any customer question about menu items, prices, sizes, availability,"
@@ -202,16 +227,15 @@ def test_system_prompt_requires_tool_grounding():
     assert "Do not perform an unrelated status check as a mandatory preamble" in (
         normalized_prompt
     )
+    assert "FORBIDDEN WHATSAPP FAILURE PATTERNS" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "I've added wings to your cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
 
 
 def test_system_prompt_keeps_live_menu_continuations_authoritative_and_chat_native():
     prompt = " ".join(RESTAURANT_AGENT_SYSTEM_PROMPT.split())
 
-    assert (
-        "Every live-menu turn, including a follow-up or continuation, must call "
-        "search_menu or get_menu_item in that same turn before answering."
-        in prompt
-    )
+    assert "Every live-menu turn, including a follow-up or continuation" in prompt
+    assert "list_menu_categories, search_menu, or get_menu_item" in prompt
     assert (
         "reuse the same authoritative query, category, tags, max_price, and "
         "available_only filters"
@@ -382,11 +406,21 @@ def test_system_prompt_defines_agent_led_support_ticket_behavior():
 
     assert "CUSTOMER SUPPORT TICKETS" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "request_human_support immediately" in prompt
+    assert "Use request_human_support for non-order support" in prompt
+    assert "account/profile help" in prompt
+    assert "app or website trouble" in prompt
+    assert "request for staff to call back" in prompt
     assert "do not make the customer repeat the reason" in prompt.lower()
     assert "create_order_complaint" in prompt
+    assert "call create_order_complaint immediately" in prompt
+    assert "I need to create a support ticket" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "let me process this" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "pending complaint state does not mean every later customer message" in prompt
     assert "cancel_support_request" in prompt
     assert "get_support_ticket" in prompt
+    assert "call get_support_ticket in that turn" in prompt
+    assert "Call get_support_ticket in the same turn" in prompt
+    assert "Where is my ticket?" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "present its returned user_message exactly" in prompt
     assert "General policy questions may use retrieve_restaurant_knowledge" in prompt
     assert "must use the ticket tools" in prompt
@@ -404,9 +438,14 @@ def test_system_prompt_routes_order_problems_before_human_assistance():
 
     assert "order complaint routing takes precedence" in prompt
     assert "missing item" in prompt
+    assert "i didn't receive my order" in prompt
+    assert "my order didn't reach me" in prompt
+    assert "something was missing in my order" in prompt
     assert "wrong item" in prompt
     assert "damaged" in prompt
     assert "cold" in prompt
+    assert "bad taste" in prompt
+    assert "poor food quality" in prompt
     assert "late delivery" in prompt
     assert "refund or replacement" in prompt
     assert "do not use request_human_support" in prompt

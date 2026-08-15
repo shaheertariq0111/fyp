@@ -79,6 +79,77 @@ def test_configured_customer_result_limit_bounds_default_search_page():
     assert len(result.grounding.offered_options) == 2
 
 
+def test_list_menu_categories_returns_customer_facing_database_categories():
+    repository = MemoryMenuRepository([], [])
+    repository.categories = {
+        "pizza": {
+            "category_id": "pizza",
+            "name": "Pizza",
+            "description": "Configured category",
+            "sort_order": 2,
+            "available": True,
+        },
+        "wings": {
+            "category_id": "wings",
+            "name": "Wings",
+            "sort_order": 1,
+            "available": True,
+        },
+        "hidden": {
+            "category_id": "hidden",
+            "name": "Hidden",
+            "sort_order": 0,
+            "available": False,
+        },
+    }
+    result = MenuService(repository, customer_result_limit=2).list_menu_categories()
+
+    assert result.data == {
+        "categories": [
+            {"category_id": "wings", "name": "Wings", "sort_order": 1},
+            {
+                "category_id": "pizza",
+                "name": "Pizza",
+                "description": "Configured category",
+                "sort_order": 2,
+            },
+        ],
+        "has_more": False,
+    }
+    assert result.next_action == "present_menu_categories"
+    assert result.grounding.authoritative_domains == ["menu"]
+    assert [option.label for option in result.grounding.offered_options] == [
+        "Wings",
+        "Pizza",
+    ]
+    assert result.grounding.exact_customer_text == (
+        "You can start with these menu categories:\n"
+        "1. Wings\n"
+        "2. Pizza\n"
+        "Which one sounds good?"
+    )
+
+
+def test_list_menu_categories_falls_back_to_available_item_categories():
+    result = service([
+        item("pizza", name="Pizza Item", category="pizza", source_category="Pizza"),
+        item("wings", name="Wing Item", category="wings", source_category="Wings"),
+        item(
+            "archived",
+            name="Archived",
+            category="hidden",
+            source_category="Hidden",
+            available=False,
+        ),
+    ]).list_menu_categories()
+
+    assert [category["name"] for category in result.data["categories"]] == [
+        "Pizza",
+        "Wings",
+    ]
+    assert "Hidden" not in result.grounding.exact_customer_text
+
+
 def test_search_menu_exact_customer_text_uses_only_returned_limited_records():
     menu = MenuService(
         MemoryMenuRepository([

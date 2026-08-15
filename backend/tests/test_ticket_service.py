@@ -435,6 +435,7 @@ def test_customer_ticket_view_uses_strict_allowlist_for_all_internal_fields():
     response = service.get_ticket_status("user-1", stored["ticket_id"])
 
     assert_customer_ticket_view(response.data["ticket"])
+    assert response.grounding.exact_customer_text == response.user_message
     assert response.data["ticket"] == {
         "ticket_id": "TKT-20260724-A1B2C3",
         "ticket_type": "human_assistance",
@@ -1019,6 +1020,7 @@ def test_single_non_terminal_ticket_is_selected_automatically():
     assert response.agent["tracking_state"] == "single_active_ticket"
     assert response.agent["selected_ticket_id"] == created.data["ticket"]["ticket_id"]
     assert response.agent["requires_ticket_id"] is False
+    assert response.grounding.exact_customer_text == response.user_message
     assert_customer_ticket_view(response.data["ticket"])
 
 
@@ -1037,6 +1039,7 @@ def test_multiple_non_terminal_tickets_require_ticket_id():
     assert response.agent["tracking_state"] == "multiple_active_tickets"
     assert response.agent["requires_ticket_id"] is True
     assert response.agent["required_input"] == "ticket_id"
+    assert response.grounding.exact_customer_text == response.user_message
     assert all(
         set(ticket) == CUSTOMER_TICKET_KEYS
         for ticket in response.data["tickets"]
@@ -1067,6 +1070,7 @@ def test_no_non_terminal_ticket_requests_older_ticket_id():
     assert response.agent["tracking_state"] == "no_active_tickets"
     assert response.agent["requires_ticket_id"] is True
     assert "older ticket" in response.user_message
+    assert response.grounding.exact_customer_text == response.user_message
 
 
 def test_customer_tracking_considers_tickets_across_conceptual_pages():
