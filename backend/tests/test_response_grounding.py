@@ -537,6 +537,53 @@ def test_no_tool_turn_cannot_claim_customization_progress_without_effect():
     assert result.source == "authoritative_continuation"
 
 
+def test_no_tool_turn_cannot_ask_menu_offer_customization_from_memory():
+    result = ground_agent_response(
+        text=(
+            "Great choice! To add the Chicken Fajita to your cart, I need to "
+            "start the customization process. Please confirm the size you'd "
+            "like: small, medium, or large."
+        ),
+        tool_calls=[],
+        continuation=continuation(
+            scope="menu_offer",
+            resource_id="offer-1",
+            state="menu_options_offered",
+            required_effect=None,
+            required_input=None,
+            valid_next_actions=("start_cart_item_customization", "get_menu_item"),
+            pending_prompt=None,
+        ),
+    )
+
+    assert "Chicken Fajita" not in result.text
+    assert "small, medium, or large" not in result.text
+    assert result.text == (
+        "Please choose one of the menu options by number or name so I can continue."
+    )
+    assert result.source == "authoritative_continuation"
+    assert result.rejection_reason == "required_effect_not_satisfied"
+
+
+def test_menu_offer_without_unsupported_customization_remains_non_blocking():
+    result = ground_agent_response(
+        text="Sure, I can help with that.",
+        tool_calls=[],
+        continuation=continuation(
+            scope="menu_offer",
+            resource_id="offer-1",
+            state="menu_options_offered",
+            required_effect=None,
+            required_input=None,
+            valid_next_actions=("start_cart_item_customization", "get_menu_item"),
+            pending_prompt=None,
+        ),
+    )
+
+    assert result.text == "Sure, I can help with that."
+    assert result.source == "conversation"
+
+
 def test_successful_required_effect_restores_normal_grounding():
     result = ground_agent_response(
         text="Takeaway is set.",

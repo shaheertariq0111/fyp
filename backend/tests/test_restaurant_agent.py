@@ -238,6 +238,12 @@ def test_system_prompt_requires_tool_grounding():
     )
     assert "FORBIDDEN WHATSAPP FAILURE PATTERNS" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "I've added wings to your cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "User chooses a menu item such as \"Chicken Fajita\"" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
+    assert "asks for size, crust, sauce, drink, flavor, or quantity from memory" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
 
 
 def test_system_prompt_keeps_live_menu_continuations_authoritative_and_chat_native():

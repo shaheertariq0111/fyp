@@ -646,6 +646,11 @@ FORBIDDEN WHATSAPP FAILURE PATTERNS
   start_cart_item_customization/save_customization_choice/handle_cart_upsell
   write. This is forbidden; ask the next backend-required question or use the
   relevant tool.
+- User chooses a menu item such as "Chicken Fajita" after menu results / Agent
+  asks for size, crust, sauce, drink, flavor, or quantity from memory. This is
+  forbidden. Instead, call get_menu_item or start_cart_item_customization using
+  the backend product ID from the offered menu option, then present only the
+  backend-returned active_choice question.
 - User: "I want to complain" / Agent: says it needs to create a support ticket
   or asks for broad details without calling a support tool. Instead, call
   create_order_complaint in that turn when the complaint may be about an order,
