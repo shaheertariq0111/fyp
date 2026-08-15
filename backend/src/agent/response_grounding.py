@@ -261,6 +261,7 @@ def ground_agent_response(
         )
     if (
         authoritative is None
+        and selected.source != "authoritative_continuation"
         and _looks_like_ungrounded_menu_recommendation(
             submission_decision.text,
             tool_calls,
