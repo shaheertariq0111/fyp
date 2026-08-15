@@ -191,10 +191,12 @@ def search_menu(query: str | None = None, category: str | None = None,
     """Search current menu data for browsing and recommendations.
 
     Use query for descriptive user terms such as "pizza", "chicken", "spicy",
-    "deal", or an item name. Use category only when you know the exact menu
-    category id returned by menu data, such as "classic-flavors". For another
-    page of the same search, preserve the prior filters and pass previously
-    returned product IDs in exclude_product_ids.
+    "deal", or an item name. For broad recommendation requests such as
+    "recommend something" or "what should I order", leave query empty so ranked
+    current menu items are returned. Use category only when you know the exact
+    menu category id returned by menu data, such as "classic-flavors". For
+    another page of the same search, preserve the prior filters and pass
+    previously returned product IDs in exclude_product_ids.
     """
     menu = get_services().menu
     configured_limit = menu.customer_result_limit
