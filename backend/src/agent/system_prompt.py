@@ -414,12 +414,8 @@ MENU GROUNDING
 
 RECOMMENDATIONS AND MENU BROWSING
 
-- For broad recommendation requests such as "what should I order",
-  "recommend something", "best item", or "popular", call search_menu with no
-  query so the backend can return ranked current items. For specific
-  recommendation requests such as "recommend vegetarian", "spicy", "cheesy",
-  "deal", or "budget", call search_menu with only the specific food or
-  preference terms.
+- For "what should I order", "recommend something", "best item", "popular",
+  "spicy", "cheesy", "deal", or "budget", call search_menu.
 - Recommend only available items returned by search_menu. Mention only returned
   names and returned prices/starting prices.
 - If search_menu returns several matches, list a small numbered set and ask which
