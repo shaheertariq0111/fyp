@@ -147,9 +147,14 @@ def test_system_prompt_requires_tool_grounding():
         in normalized_prompt
     )
     assert "The backend sends one outbound WhatsApp reply" in normalized_prompt
-    assert "Never ask the customer to approve tool use" in normalized_prompt
+    assert "Never mention tool names or tool execution to the customer" in normalized_prompt
+    assert "Never ask the customer to approve tool use" not in normalized_prompt
     assert "Tools are internal actions" in normalized_prompt
     assert "call it silently in the same turn" in normalized_prompt
+    assert "I need to search_menu" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "I need to retrieve_restaurant_knowledge" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "I need to create_order_complaint" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "I need to get_support_ticket" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "WHATSAPP RESPONSE DISCIPLINE" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "WhatsApp replies must be short and action-oriented" in normalized_prompt
     assert "Ask exactly one next-step question" in normalized_prompt
@@ -166,6 +171,10 @@ def test_system_prompt_requires_tool_grounding():
     assert "Do not include XML wrappers, JSON, chain of thought, or tool traces" in (
         normalized_prompt
     )
+    assert "Never mention tool names to the customer" in normalized_prompt
+    assert "without naming tools, functions, APIs, services, tables" in (
+        normalized_prompt
+    )
     assert "customer refuses the address step" in normalized_prompt
     assert "do not keep asking for an address" in normalized_prompt
     assert "switch to takeaway or cancel the order" in normalized_prompt
@@ -176,6 +185,16 @@ def test_system_prompt_requires_tool_grounding():
     assert "Use that WhatsApp number as the contact number" in normalized_prompt
     assert "Checkout does not require special instructions" in normalized_prompt
     assert "Ask only for the backend-required next input" in normalized_prompt
+    assert "until create_pending_order_from_cart/begin_checkout succeeds" in (
+        normalized_prompt
+    )
+    assert "returned backend order state requests that exact detail" in (
+        normalized_prompt
+    )
+    assert "use the trusted channel phone number" in normalized_prompt
+    assert "Ask for a name only if the backend/profile state still requires it" in (
+        normalized_prompt
+    )
     assert "Never refuse to collect a delivery address" in normalized_prompt
     assert "has not named food yet, call list_menu_categories" in normalized_prompt
     assert "Do not ask a bare \"what item/category would you like?\"" in (
@@ -229,6 +248,16 @@ def test_system_prompt_requires_tool_grounding():
     )
     assert "FORBIDDEN WHATSAPP FAILURE PATTERNS" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "I've added wings to your cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "User chooses a menu item such as \"Chicken Fajita\"" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
+    assert "asks for size, crust, sauce, drink, flavor, or quantity from memory" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
+    assert "asks for delivery address, name, phone number, or presents an order summary" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
+    assert "without a real backend cart/order" in RESTAURANT_AGENT_SYSTEM_PROMPT
 
 
 def test_system_prompt_keeps_live_menu_continuations_authoritative_and_chat_native():
@@ -244,12 +273,10 @@ def test_system_prompt_keeps_live_menu_continuations_authoritative_and_chat_nati
     assert "exclude_product_ids" in prompt
     assert "product_id values already returned" in prompt
     assert "Keep normal WhatsApp menu browsing and continuation in chat." in prompt
-    assert (
-        "Only call create_menu_session_link when the customer explicitly asks"
-        in prompt
-    )
-    assert "offer another page or the menu website" not in prompt
-    assert "ask whether to build it in chat or open it on the website" not in prompt
+    assert "Do not redirect the customer to another channel" in prompt
+    assert "create_menu_session_link" not in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "website" not in RESTAURANT_AGENT_SYSTEM_PROMPT.lower()
+    assert "menu link" not in RESTAURANT_AGENT_SYSTEM_PROMPT.lower()
 
 
 def test_build_bedrock_model_uses_runtime_settings(monkeypatch):
@@ -408,7 +435,7 @@ def test_system_prompt_defines_agent_led_support_ticket_behavior():
     assert "request_human_support immediately" in prompt
     assert "Use request_human_support for non-order support" in prompt
     assert "account/profile help" in prompt
-    assert "app or website trouble" in prompt
+    assert "app trouble" in prompt
     assert "request for staff to call back" in prompt
     assert "do not make the customer repeat the reason" in prompt.lower()
     assert "create_order_complaint" in prompt

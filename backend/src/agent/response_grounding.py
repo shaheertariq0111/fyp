@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Literal
 
 from strands.hooks.events import (
@@ -48,8 +49,30 @@ FAILED_TRANSACTION_FALLBACK = (
 FAILED_READ_FALLBACK = (
     "I couldn't retrieve that information right now. Please try again."
 )
+MENU_SELECTION_FALLBACK = (
+    "Please choose one of the menu options by number or name so I can continue."
+)
 AUTHORITATIVE_MENU_READ_TOOLS = frozenset(
     {"list_menu_categories", "search_menu", "get_menu_item", "search_menu_options"}
+)
+UNSUPPORTED_MENU_CUSTOMIZATION_PATTERN = re.compile(
+    r"\b(?:"
+    r"customi[sz]ation process|"
+    r"start (?:the )?customi[sz]ation|"
+    r"add (?:the )?.{0,80}\s+to (?:your|the) cart|"
+    r"proceed to checkout|"
+    r"delivery address|"
+    r"name and phone|"
+    r"phone number|"
+    r"order details (?:are )?(?:now )?confirmed|"
+    r"summary of your order|"
+    r"ready for submission|"
+    r"submit (?:your|the) order|"
+    r"confirm (?:the )?(?:size|crust|sauce|drink|flavou?r|quantity)|"
+    r"choose (?:the |a )?(?:size|crust|sauce|drink|flavou?r|quantity)|"
+    r"which (?:size|crust|sauce|drink|flavou?r|quantity)"
+    r")\b",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -284,6 +307,16 @@ def _enforce_transactional_continuation(
             "continuation_unavailable",
             "continuation_resolution_failed",
         )
+    if _unsupported_menu_offer_customization(
+        selected=selected,
+        tool_calls=tool_calls,
+        continuation=continuation,
+    ):
+        return GroundedAgentResponse(
+            MENU_SELECTION_FALLBACK,
+            "authoritative_continuation",
+            "required_effect_not_satisfied",
+        )
     if continuation is None or not continuation.is_outstanding:
         return selected
     if continuation_satisfied_by(continuation, tool_calls):
@@ -308,6 +341,19 @@ def _enforce_transactional_continuation(
         selected.source if authoritative is not None else "conversation",
         selected.rejection_reason,
     )
+
+
+def _unsupported_menu_offer_customization(
+    *,
+    selected: GroundedAgentResponse,
+    tool_calls: list[Any],
+    continuation: TransactionalContinuation | None,
+) -> bool:
+    if continuation is None or continuation.scope != "menu_offer":
+        return False
+    if tool_calls:
+        return False
+    return bool(UNSUPPORTED_MENU_CUSTOMIZATION_PATTERN.search(selected.text))
 
 
 def grounding_decision_log_fields(response: GroundedAgentResponse) -> dict[str, Any]:
