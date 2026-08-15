@@ -147,9 +147,14 @@ def test_system_prompt_requires_tool_grounding():
         in normalized_prompt
     )
     assert "The backend sends one outbound WhatsApp reply" in normalized_prompt
-    assert "Never ask the customer to approve tool use" in normalized_prompt
+    assert "Never mention tool names or tool execution to the customer" in normalized_prompt
+    assert "Never ask the customer to approve tool use" not in normalized_prompt
     assert "Tools are internal actions" in normalized_prompt
     assert "call it silently in the same turn" in normalized_prompt
+    assert "I need to search_menu" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "I need to retrieve_restaurant_knowledge" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "I need to create_order_complaint" in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "I need to get_support_ticket" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "WHATSAPP RESPONSE DISCIPLINE" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "WhatsApp replies must be short and action-oriented" in normalized_prompt
     assert "Ask exactly one next-step question" in normalized_prompt
@@ -164,6 +169,10 @@ def test_system_prompt_requires_tool_grounding():
     assert "briefly decline the request" in normalized_prompt
     assert "Think through tool routing privately" in normalized_prompt
     assert "Do not include XML wrappers, JSON, chain of thought, or tool traces" in (
+        normalized_prompt
+    )
+    assert "Never mention tool names to the customer" in normalized_prompt
+    assert "without naming tools, functions, APIs, services, tables" in (
         normalized_prompt
     )
     assert "customer refuses the address step" in normalized_prompt
