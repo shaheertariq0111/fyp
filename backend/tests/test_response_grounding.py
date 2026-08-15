@@ -6,6 +6,7 @@ from src.agent.continuation import TransactionalContinuation
 from src.agent.response_grounding import (
     FAILED_TRANSACTION_FALLBACK,
     GroundedAssistantMemoryBuffer,
+    UNGROUNDED_MENU_RECOMMENDATION_FALLBACK,
     ground_agent_response,
     ground_authoritative_tool_response,
     grounding_decision_log_fields,
@@ -166,6 +167,46 @@ def test_successful_write_without_safe_text_fails_closed():
     assert result.text == FAILED_TRANSACTION_FALLBACK
     assert result.source == "write_without_grounding"
     assert result.rejection_reason == "successful_write_missing_safe_grounding"
+
+
+def test_ungrounded_menu_recommendation_is_replaced():
+    result = ground_agent_response(
+        text=(
+            "Sure, here are some popular items from our menu:\n\n"
+            "1. *Pepperoni Passion* - A classic favorite with pepperoni slices.\n"
+            "2. *Veggie Delight* - A vegetarian option loaded with fresh vegetables.\n"
+            "3. *Cheese Lovers* - Extra cheese on a cheesy crust."
+        ),
+        tool_calls=[],
+    )
+
+    assert result.text == UNGROUNDED_MENU_RECOMMENDATION_FALLBACK
+    assert result.source == "conversation"
+    assert result.rejection_reason == "ungrounded_menu_recommendation"
+
+
+def test_ungrounded_menu_recommendation_guard_keeps_menu_tool_artifact():
+    authoritative = (
+        "Here are the current menu options I found:\n"
+        "1. Super Cheese - from PKR 650\n"
+        "2. Chicken Tikka - from PKR 650\n"
+        "Which item would you like?"
+    )
+    result = ground_agent_response(
+        text="Sure, here are some popular items from our menu.",
+        tool_calls=[
+            tool_call(
+                tool_name="search_menu",
+                is_write=False,
+                user_message="I found current menu options.",
+                grounding={"exact_customer_text": authoritative},
+            )
+        ],
+    )
+
+    assert result.text == authoritative
+    assert result.source == "exact_artifact"
+    assert result.rejection_reason is None
 
 
 def test_latest_successful_write_backend_message_wins_over_earlier_exact_artifact():
