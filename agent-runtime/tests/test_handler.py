@@ -75,7 +75,7 @@ def reset_fake_memory():
 def settings(
     memory_id="memory-1",
     environment="production",
-    whatsapp_memory_namespace="whatsapp-agent-v2",
+    whatsapp_memory_namespace="whatsapp-agent-v3",
     whatsapp_memory_ttl_hours=6,
 ):
     return SimpleNamespace(

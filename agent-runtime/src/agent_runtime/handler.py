@@ -52,7 +52,7 @@ def agentcore_memory_session_id(request: RuntimeRequest, settings: Any) -> str:
         return request.agent_session_id
     namespace = str(
         getattr(settings, "whatsapp_agentcore_memory_namespace", "")
-        or "whatsapp-agent-v2"
+        or "whatsapp-agent-v3"
     ).strip()
     ttl_hours = int(getattr(settings, "whatsapp_agentcore_memory_ttl_hours", 6) or 6)
     ttl_seconds = max(ttl_hours, 1) * 60 * 60
