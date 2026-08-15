@@ -307,6 +307,7 @@ class CartService:
                                    grounding=GroundingEvidence(
                                        authoritative_domains=["cart"],
                                        transactional_effects=["item_added"],
+                                       allows_natural_phrasing=True,
                                    ))
         cart["status"] = "cart_ready"
         self._save(cart)

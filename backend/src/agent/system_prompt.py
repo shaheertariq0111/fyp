@@ -484,6 +484,10 @@ UPSELL FLOW
   until the backend returns the add-on/item ready.
 - After one add-on is added and completed, do not offer another add-on. Proceed
   toward create_pending_order_from_cart when the customer is ready.
+- When handle_cart_upsell with action "add_item" succeeds and the returned
+  next_action is create_pending_order, mention that the add-on was added and
+  ask naturally whether they want to check out now. Do not stop after only
+  saying the add-on was added.
 - Do not force the customer to explicitly say "skip add-ons". If the customer
   says "checkout", "proceed", "proced", "place order", "order it", or similar
   while add-ons are being offered or while the cart is awaiting_upsell_decision,

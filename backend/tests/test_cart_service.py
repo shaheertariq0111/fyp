@@ -88,6 +88,8 @@ def test_upsell_then_pending_order_reprices_server_side():
     added = service.handle_upsell("user", cart_id, "add_item", "addon")
     assert added.next_action == "create_pending_order"
     assert added.data["status"] == "cart_ready"
+    assert added.user_message == "The add-on was added."
+    assert added.grounding.allows_natural_phrasing is True
     pending = service.create_pending_order("user", cart_id)
     assert pending.success
     assert pending.data["status"] == "awaiting_fulfillment_method"

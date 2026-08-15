@@ -442,3 +442,27 @@ def test_cart_ready_prose_cannot_suppress_the_backend_outcome():
     )
 
     assert skipped.user_message in grounded.text
+
+
+def test_added_upsell_response_keeps_checkout_prompt():
+    grounded = ground_agent_response(
+        text="The add-on was added. Want to check out now?",
+        tool_calls=[
+            {
+                "tool_name": "handle_cart_upsell",
+                "is_write": True,
+                "success": True,
+                "result": {
+                    "success": True,
+                    "user_message": "The add-on was added.",
+                    "grounding": {
+                        "transactional_effects": ["item_added"],
+                        "allows_natural_phrasing": True,
+                    },
+                },
+            }
+        ],
+        continuation=None,
+    )
+
+    assert grounded.text == "The add-on was added. Want to check out now?"

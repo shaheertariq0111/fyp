@@ -251,6 +251,9 @@ def test_system_prompt_requires_tool_grounding():
         normalized_prompt
     )
     assert '"proced"' in normalized_prompt
+    assert "Do not stop after only saying the add-on was added" in (
+        normalized_prompt
+    )
     assert "FORBIDDEN WHATSAPP FAILURE PATTERNS" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "I've added wings to your cart" in RESTAURANT_AGENT_SYSTEM_PROMPT
     assert "User chooses a menu item such as \"Chicken Fajita\"" in (
