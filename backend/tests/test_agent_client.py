@@ -156,6 +156,87 @@ def test_local_whatsapp_menu_read_uses_exact_artifact_and_logs_safe_tool_summary
     assert selected.tool_names == ["search_menu"]
 
 
+def test_local_whatsapp_ungrounded_menu_recommendation_retries_silently(
+    monkeypatch,
+    caplog,
+):
+    manager = MemoryManager()
+    authoritative = (
+        "Here are the current menu options I found:\n"
+        "1. Super Cheese - from PKR 650\n"
+        "Which item would you like?"
+    )
+    hallucinated = (
+        "Sure, here are some popular items from our menu:\n"
+        "1. *Pepperoni Passion* - A classic favorite."
+    )
+    calls = []
+
+    monkeypatch.setattr(
+        "src.agent_client.local.build_session_manager",
+        lambda session_id: manager,
+    )
+    monkeypatch.setattr(
+        "src.agent_client.local.build_restaurant_agent",
+        lambda *, session_manager: SimpleNamespace(session_manager=session_manager),
+    )
+
+    def invoke(message, **kwargs):
+        calls.append(message)
+        agent = kwargs["agent"]
+        if len(calls) == 1:
+            agent.session_manager.append_message(
+                {"role": "assistant", "content": [{"text": hallucinated}]},
+                agent,
+            )
+            return SimpleNamespace(
+                message={"content": [{"text": hallucinated}]},
+                tool_calls=[],
+            )
+        return SimpleNamespace(
+            message={"content": [{"text": "Natural retry draft"}]},
+            tool_calls=[
+                SimpleNamespace(
+                    tool_name="search_menu",
+                    success=True,
+                    is_write=False,
+                    result={
+                        "success": True,
+                        "user_message": "I found current menu options.",
+                        "grounding": {"exact_customer_text": authoritative},
+                    },
+                )
+            ],
+        )
+
+    monkeypatch.setattr("src.agent_client.local.invoke_restaurant_agent", invoke)
+    monkeypatch.setattr(
+        "src.agent_client.local.agent_result_text",
+        lambda result: result.message["content"][0]["text"],
+    )
+
+    with caplog.at_level("INFO"):
+        result = LocalStrandsAgentRuntimeClient().invoke(
+            request(message="recommend something", channel="whatsapp")
+        )
+
+    assert result.text == authoritative
+    assert len(calls) == 2
+    assert calls[0] == "recommend something"
+    assert "Internal retry instruction" in calls[1]
+    assert manager.messages == [
+        {"role": "assistant", "content": [{"text": authoritative}]},
+    ]
+    assert hallucinated not in str(manager.messages)
+    selected = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "whatsapp_response_selected"
+    )
+    assert selected.grounding_retry_count == 1
+    assert selected.grounding_source == "exact_artifact"
+
+
 def test_local_whatsapp_failed_write_replaces_raw_draft_in_memory(monkeypatch):
     raw = "Your customization was saved."
     failure = "That option is unavailable."

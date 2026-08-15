@@ -10,6 +10,8 @@ from src.agent.response_grounding import (
     GroundedAssistantMemoryBuffer,
     ground_agent_response,
     grounding_decision_log_fields,
+    retry_message_for_grounding_failure,
+    should_retry_grounding,
 )
 from src.agent.restaurant_agent import agent_result_text, build_restaurant_agent, invoke_restaurant_agent
 from src.agent.dependencies import get_services
@@ -104,16 +106,9 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 runtime_agent = build_restaurant_agent(
                     session_manager=memory_buffer or session_manager
                 )
-                result = invoke_restaurant_agent(
-                    request.message,
-                    user_id=request.user_id,
-                    agent_session_id=request.agent_session_id,
-                    request_id=request.request_id,
-                    branch_id=request.branch_id,
-                    customer_id=request.customer_id,
-                    customer_name=request.customer_name,
-                    customer_phone=request.customer_phone,
-                    channel=request.channel,
+                result = _invoke_restaurant(
+                    request,
+                    message=request.message,
                     agent=runtime_agent,
                 )
                 tool_calls = [
@@ -122,18 +117,46 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 ]
                 raw_text = agent_result_text(result)
                 grounded_text = raw_text
+                retry_count = 0
                 if request.channel == "whatsapp":
                     grounded = ground_agent_response(
                         text=raw_text,
                         tool_calls=tool_calls,
                         continuation=getattr(result, "continuation", None),
                     )
+                    if should_retry_grounding(grounded):
+                        retry_count = 1
+                        if memory_buffer is not None:
+                            memory_buffer.pending_assistant = None
+                        retry_agent = build_restaurant_agent(
+                            session_manager=None
+                        )
+                        result = _invoke_restaurant(
+                            request,
+                            message=retry_message_for_grounding_failure(
+                                request.message
+                            ),
+                            agent=retry_agent,
+                        )
+                        tool_calls = [
+                            ToolCallResult.model_validate(call)
+                            for call in (
+                                getattr(result, "tool_calls", []) or []
+                            )
+                        ]
+                        raw_text = agent_result_text(result)
+                        grounded = ground_agent_response(
+                            text=raw_text,
+                            tool_calls=tool_calls,
+                            continuation=getattr(result, "continuation", None),
+                        )
                     logger.info(
                         "WhatsApp response selected",
                         extra={
                             "event": "whatsapp_response_selected",
                             "tool_call_count": len(tool_calls),
                             "tool_names": [call.tool_name for call in tool_calls],
+                            "grounding_retry_count": retry_count,
                             **grounding_decision_log_fields(grounded),
                         },
                     )
@@ -195,6 +218,21 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
         },
     )
     return response.model_dump(exclude_none=True)
+
+
+def _invoke_restaurant(request: RuntimeRequest, *, message: str, agent: Any):
+    return invoke_restaurant_agent(
+        message,
+        user_id=request.user_id,
+        agent_session_id=request.agent_session_id,
+        request_id=request.request_id,
+        branch_id=request.branch_id,
+        customer_id=request.customer_id,
+        customer_name=request.customer_name,
+        customer_phone=request.customer_phone,
+        channel=request.channel,
+        agent=agent,
+    )
 
 
 if __name__ == "__main__":

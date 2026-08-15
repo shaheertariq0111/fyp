@@ -7,6 +7,8 @@ from src.agent.response_grounding import (
     GroundedAssistantMemoryBuffer,
     ground_agent_response,
     grounding_decision_log_fields,
+    retry_message_for_grounding_failure,
+    should_retry_grounding,
 )
 from src.agent.restaurant_agent import (
     agent_result_text,
@@ -62,17 +64,10 @@ class LocalStrandsAgentRuntimeClient:
             invocation_kwargs = {}
             if runtime_agent is not None:
                 invocation_kwargs["agent"] = runtime_agent
-            raw_result = invoke_restaurant_agent(
-                request.message,
-                user_id=request.user_id,
-                agent_session_id=request.agent_session_id,
-                request_id=request.request_id,
-                branch_id=request.branch_id,
-                customer_id=request.customer_id,
-                customer_name=request.customer_name,
-                customer_phone=request.customer_phone,
-                channel=request.channel,
-                **invocation_kwargs,
+            raw_result = self._invoke_restaurant(
+                request,
+                message=request.message,
+                invocation_kwargs=invocation_kwargs,
             )
             response_text = agent_result_text(raw_result)
             if request.channel == "whatsapp":
@@ -82,12 +77,33 @@ class LocalStrandsAgentRuntimeClient:
                     tool_calls=tool_calls,
                     continuation=getattr(raw_result, "continuation", None),
                 )
+                retry_count = 0
+                if should_retry_grounding(grounded):
+                    retry_count = 1
+                    if memory_buffer is not None:
+                        memory_buffer.pending_assistant = None
+                    retry_agent = build_restaurant_agent(session_manager=None)
+                    raw_result = self._invoke_restaurant(
+                        request,
+                        message=retry_message_for_grounding_failure(
+                            request.message
+                        ),
+                        invocation_kwargs={"agent": retry_agent},
+                    )
+                    response_text = agent_result_text(raw_result)
+                    tool_calls = list(getattr(raw_result, "tool_calls", []) or [])
+                    grounded = ground_agent_response(
+                        text=response_text,
+                        tool_calls=tool_calls,
+                        continuation=getattr(raw_result, "continuation", None),
+                    )
                 logger.info(
                     "Local WhatsApp response selected",
                     extra={
                         "event": "whatsapp_response_selected",
                         "tool_call_count": len(tool_calls),
                         "tool_names": _safe_tool_names(tool_calls),
+                        "grounding_retry_count": retry_count,
                         **grounding_decision_log_fields(grounded),
                     },
                 )
@@ -128,6 +144,26 @@ class LocalStrandsAgentRuntimeClient:
             },
         )
         return AgentInvocationResult(text=response_text, raw_result=raw_result)
+
+    @staticmethod
+    def _invoke_restaurant(
+        request: AgentInvocationRequest,
+        *,
+        message: str,
+        invocation_kwargs: dict,
+    ):
+        return invoke_restaurant_agent(
+            message,
+            user_id=request.user_id,
+            agent_session_id=request.agent_session_id,
+            request_id=request.request_id,
+            branch_id=request.branch_id,
+            customer_id=request.customer_id,
+            customer_name=request.customer_name,
+            customer_phone=request.customer_phone,
+            channel=request.channel,
+            **invocation_kwargs,
+        )
 
     async def start_request(self, request: AgentInvocationRequest) -> dict:
         raise NotImplementedError(

@@ -201,6 +201,7 @@ def test_whatsapp_response_selection_log_has_only_safe_tool_summary(monkeypatch)
         "event": "whatsapp_response_selected",
         "grounding_source": "exact_artifact",
         "grounding_rejection_reason": None,
+        "grounding_retry_count": 0,
         "tool_call_count": 2,
         "tool_names": ["search_menu", "get_menu_item"],
     }
@@ -256,6 +257,97 @@ def test_whatsapp_menu_read_uses_authoritative_artifact_without_classifier(
         {"role": "assistant", "content": [{"text": authoritative}]},
     ]
     assert raw not in str(history)
+
+
+def test_whatsapp_ungrounded_menu_recommendation_retries_silently(
+    monkeypatch,
+):
+    class RecordingLogger:
+        def __init__(self):
+            self.infos = []
+
+        def info(self, message, *, extra):
+            self.infos.append((message, extra))
+
+        def exception(self, message, *, extra):
+            raise AssertionError(f"unexpected exception log: {message} {extra}")
+
+    authoritative = (
+        "Here are the current menu options I found:\n"
+        "1. Super Cheese - from PKR 650\n"
+        "Which item would you like?"
+    )
+    hallucinated = (
+        "Sure, here are some popular items from our menu:\n"
+        "1. *Pepperoni Passion* - A classic favorite."
+    )
+    messages = []
+
+    class FakeAgent:
+        def __init__(self, session_manager):
+            self.session_manager = session_manager
+
+    def build(*, session_manager):
+        return FakeAgent(session_manager)
+
+    def invoke_agent(message, **kwargs):
+        messages.append(message)
+        agent = kwargs["agent"]
+        if len(messages) == 1:
+            agent.session_manager.append_message(
+                {"role": "assistant", "content": [{"text": hallucinated}]},
+                agent,
+            )
+            return SimpleNamespace(
+                message={"content": [{"text": hallucinated}]},
+                tool_calls=[],
+            )
+        return SimpleNamespace(
+            message={"content": [{"text": "Natural retry draft"}]},
+            tool_calls=[
+                {
+                    "tool_name": "search_menu",
+                    "success": True,
+                    "is_write": False,
+                    "result": {
+                        "success": True,
+                        "user_message": "I found current menu options.",
+                        "grounding": {"exact_customer_text": authoritative},
+                    },
+                }
+            ],
+        )
+
+    monkeypatch.setattr(handler, "build_restaurant_agent", build)
+    monkeypatch.setattr(handler, "invoke_restaurant_agent", invoke_agent)
+    monkeypatch.setattr(
+        handler,
+        "agent_result_text",
+        lambda result: result.message["content"][0]["text"],
+    )
+    recording_logger = RecordingLogger()
+    monkeypatch.setattr(handler, "logger", recording_logger)
+
+    response = handler.invoke(
+        runtime_payload(message="recommend something", channel="whatsapp")
+    )
+
+    assert response["text"] == authoritative
+    assert len(messages) == 2
+    assert messages[0] == "recommend something"
+    assert "Internal retry instruction" in messages[1]
+    history = next(iter(FakeMemorySessionManager.history_by_session.values()))
+    assert history == [
+        {"role": "assistant", "content": [{"text": authoritative}]},
+    ]
+    assert hallucinated not in str(history)
+    selected = next(
+        extra
+        for _message, extra in recording_logger.infos
+        if extra.get("event") == "whatsapp_response_selected"
+    )
+    assert selected["grounding_retry_count"] == 1
+    assert selected["grounding_source"] == "exact_artifact"
 
 
 def test_whatsapp_general_conversation_survives_without_semantic_classifier(
