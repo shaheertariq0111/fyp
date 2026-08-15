@@ -273,12 +273,10 @@ def test_system_prompt_keeps_live_menu_continuations_authoritative_and_chat_nati
     assert "exclude_product_ids" in prompt
     assert "product_id values already returned" in prompt
     assert "Keep normal WhatsApp menu browsing and continuation in chat." in prompt
-    assert (
-        "Only call create_menu_session_link when the customer explicitly asks"
-        in prompt
-    )
-    assert "offer another page or the menu website" not in prompt
-    assert "ask whether to build it in chat or open it on the website" not in prompt
+    assert "Do not redirect the customer to another channel" in prompt
+    assert "create_menu_session_link" not in RESTAURANT_AGENT_SYSTEM_PROMPT
+    assert "website" not in RESTAURANT_AGENT_SYSTEM_PROMPT.lower()
+    assert "menu link" not in RESTAURANT_AGENT_SYSTEM_PROMPT.lower()
 
 
 def test_build_bedrock_model_uses_runtime_settings(monkeypatch):
@@ -437,7 +435,7 @@ def test_system_prompt_defines_agent_led_support_ticket_behavior():
     assert "request_human_support immediately" in prompt
     assert "Use request_human_support for non-order support" in prompt
     assert "account/profile help" in prompt
-    assert "app or website trouble" in prompt
+    assert "app trouble" in prompt
     assert "request for staff to call back" in prompt
     assert "do not make the customer repeat the reason" in prompt.lower()
     assert "create_order_complaint" in prompt
