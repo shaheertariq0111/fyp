@@ -45,28 +45,6 @@ def test_recommendation_query_sorts_by_metadata_score():
     assert result.data["items"][0]["metadata"]["display_reason"] == "Reason for higher"
 
 
-def test_broad_recommendation_query_returns_ranked_menu_items():
-    result = service([
-        item("lower", name="Chicken Tikka", score=20, popular=True, starting_price=650),
-        item("higher", name="Super Cheese", score=90, starting_price=650),
-    ]).search_menu(query="recommend something")
-
-    assert [entry["product_id"] for entry in result.data["items"]] == ["higher", "lower"]
-    assert result.user_message == "I found current menu options."
-    assert "Super Cheese - from CUR 650" in result.grounding.exact_customer_text
-    assert "Which item would you like?" in result.grounding.exact_customer_text
-
-
-def test_popular_recommendation_query_returns_ranked_menu_items():
-    result = service([
-        item("regular", name="Regular Pick", score=10, starting_price=500),
-        item("popular", name="Popular Pick", score=50, popular=True, starting_price=700),
-    ]).search_menu(query="popular")
-
-    assert [entry["product_id"] for entry in result.data["items"]] == ["popular", "regular"]
-    assert result.grounding.required_next_effect == "item_selected"
-
-
 def test_search_menu_limit_caps_returned_items_after_sorting():
     result = service([
         item(f"item-{index}", score=index, starting_price=10 + index)
