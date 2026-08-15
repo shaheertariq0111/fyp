@@ -306,6 +306,22 @@ def test_equivalent_clear_submission_success_claims_are_blocked(text):
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "I've submitted your order complaint to the team.",
+        "We've confirmed your order issue ticket.",
+        "Your order support request was submitted.",
+        "The complaint about your order has been submitted.",
+    ],
+)
+def test_order_support_context_does_not_trigger_submission_fallback(text):
+    reply, _ = conversation_result(response(text=text, tool_calls=[]))
+
+    assert reply.reply == text
+    assert reply.submitted_order_id is None
+
+
+@pytest.mark.parametrize(
     "persisted_response",
     [
         response(tool_call("get_order_status", is_write=False)),
@@ -500,22 +516,35 @@ def test_authoritative_existing_submitted_order_status_is_allowed_as_read():
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        f"Your order {ORDER_ID} has been submitted to the restaurant.",
+        "Your order is already submitted to the restaurant.",
+        f"Order {ORDER_ID} is confirmed with the restaurant.",
+    ],
+)
+def test_authoritative_existing_submitted_order_status_may_be_rephrased(text):
+    reply, _ = conversation_result(response(order_status_tool_call(), text=text))
+
+    assert reply.reply == text
+    assert reply.submitted_order_id is None
+
+
+@pytest.mark.parametrize(
     "persisted",
     [
         response(text=STATUS_MESSAGE, tool_calls=[]),
         response(
             order_status_tool_call(),
-            text=(
-                f"Your order {ORDER_ID} has been submitted to the restaurant."
-            ),
+            text="Your order ORD-FABRICATED has been submitted to the restaurant.",
         ),
         response(
-            order_status_tool_call(message="Different authoritative status"),
-            text=STATUS_MESSAGE,
+            order_status_tool_call(),
+            text="I've confirmed your order.",
         ),
     ],
 )
-def test_fabricated_or_paraphrased_submitted_status_is_not_trusted(persisted):
+def test_fabricated_or_agent_action_submitted_status_is_not_trusted(persisted):
     reply, _ = conversation_result(persisted)
     assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
     assert reply.submitted_order_id is None

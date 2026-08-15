@@ -22,6 +22,9 @@ class MenuStub:
     def get_menu_item(self, item_id):
         return ToolResponse.ok(data={"item_id": item_id}, user_message="ok")
 
+    def list_menu_categories(self, limit=None):
+        return ToolResponse.ok(data={"limit": limit}, user_message="ok")
+
 
 class SessionStub:
     def create_link(self, user_id, session_id, item_id, customer_id=None):
@@ -94,7 +97,8 @@ class OrderMutationStub:
 
 
 def test_mvp_tools_include_active_cart_lookup():
-    assert len(tools.MVP_TOOLS) == 31
+    assert len(tools.MVP_TOOLS) == 32
+    assert tools.list_menu_categories in tools.MVP_TOOLS
     assert tools.get_active_cart in tools.MVP_TOOLS
     assert tools.get_customer_profile in tools.MVP_TOOLS
     assert tools.update_customer_profile in tools.MVP_TOOLS
@@ -1076,6 +1080,16 @@ def test_search_menu_tool_uses_configured_customer_limit(monkeypatch):
     result = tools.search_menu(query="recommend", max_results=12)
 
     assert result["data"]["limit"] == 3
+
+
+def test_list_menu_categories_tool_uses_configured_customer_limit(monkeypatch):
+    menu = MenuStub()
+    menu.customer_result_limit = 4
+    monkeypatch.setattr(tools, "get_services", lambda: SimpleNamespace(menu=menu))
+
+    result = tools.list_menu_categories(max_results=12)
+
+    assert result["data"]["limit"] == 4
 
 
 def test_search_menu_tool_forwards_exclusions_and_records_read_call(

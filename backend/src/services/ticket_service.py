@@ -379,7 +379,13 @@ class TicketService:
                     "requires_ticket_id": True,
                     "required_input": "ticket_id",
                 },
-                grounding=GroundingEvidence(authoritative_domains=["support"]),
+                grounding=GroundingEvidence(
+                    authoritative_domains=["support"],
+                    exact_customer_text=(
+                        "You have multiple active support tickets. "
+                        "Please provide a Ticket ID."
+                    ),
+                ),
             )
         return ToolResponse.ok(
             data={"tickets": []},
@@ -394,7 +400,13 @@ class TicketService:
                 "requires_ticket_id": True,
                 "required_input": "ticket_id",
             },
-            grounding=GroundingEvidence(authoritative_domains=["support"]),
+            grounding=GroundingEvidence(
+                authoritative_domains=["support"],
+                exact_customer_text=(
+                    "You have no active support tickets. Please provide the "
+                    "Ticket ID for an older ticket."
+                ),
+            ),
         )
 
     def get_admin_ticket(self, ticket_id: str) -> dict:
@@ -1165,7 +1177,10 @@ class TicketService:
                 "requires_ticket_id": requires_ticket_id,
                 "status_message": message,
             },
-            grounding=GroundingEvidence(authoritative_domains=["support"]),
+            grounding=GroundingEvidence(
+                authoritative_domains=["support"],
+                exact_customer_text=message,
+            ),
         )
 
     @staticmethod

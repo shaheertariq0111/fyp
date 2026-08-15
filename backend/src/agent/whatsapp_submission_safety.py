@@ -45,6 +45,12 @@ _ORDER_SUBMISSION_CLAIM_PATTERNS = (
         re.IGNORECASE | re.DOTALL,
     ),
 )
+_ORDER_SUPPORT_CONTEXT_PATTERN = re.compile(
+    r"\border\s+(?:complaint|support|ticket|request|issue|problem|case)\b"
+    r"|\b(?:complaint|support|ticket|request|issue|problem|case)\s+"
+    r"(?:about|for|regarding)\s+(?:your|the|this)?\s*order\b",
+    re.IGNORECASE,
+)
 
 SubmissionSafetySource = Literal[
     "unchanged",
@@ -158,14 +164,28 @@ def authoritative_order_submission_from_tool_calls(
 
 
 def _claims_successful_order_submission(text: str) -> bool:
+    if _ORDER_SUPPORT_CONTEXT_PATTERN.search(text):
+        return False
     return any(pattern.search(text) for pattern in _ORDER_SUBMISSION_CLAIM_PATTERNS)
+
+
+def _claims_agent_submission_action(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:i|we)(?:'ve|\s+have)?\s+(?:successfully\s+)?"
+            r"(?:submitted|placed|confirmed)\s+(?:your|the)\s+order\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _is_authoritative_existing_order_status(
     text: str,
     tool_calls: list[Any],
 ) -> bool:
-    trusted_messages: set[str] = set()
+    if _claims_agent_submission_action(text):
+        return False
     for call in tool_calls:
         if (
             _value(call, "tool_name") != "get_order_status"
@@ -197,8 +217,19 @@ def _is_authoritative_existing_order_status(
             and order.get("status") == "submitted_to_restaurant"
             for order in orders
         ):
-            trusted_messages.add(status_message)
-    return text in trusted_messages
+            mentioned_order_ids = _mentioned_order_ids(text)
+            if not mentioned_order_ids or mentioned_order_ids == {
+                selected_order_id
+            }:
+                return True
+    return False
+
+
+def _mentioned_order_ids(text: str) -> set[str]:
+    return {
+        match.rstrip(".,;:!?)]}")
+        for match in re.findall(r"\bORD-[A-Za-z0-9][A-Za-z0-9_-]*", text)
+    }
 
 
 def _is_canonical_string(value: Any) -> bool:

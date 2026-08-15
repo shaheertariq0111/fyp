@@ -49,7 +49,7 @@ FAILED_READ_FALLBACK = (
     "I couldn't retrieve that information right now. Please try again."
 )
 AUTHORITATIVE_MENU_READ_TOOLS = frozenset(
-    {"search_menu", "get_menu_item", "search_menu_options"}
+    {"list_menu_categories", "search_menu", "get_menu_item", "search_menu_options"}
 )
 
 

@@ -216,6 +216,19 @@ def search_menu(query: str | None = None, category: str | None = None,
     })
 
 
+@tool
+def list_menu_categories(max_results: int | None = None) -> dict:
+    """List current customer-facing menu categories from menu data."""
+    menu = get_services().menu
+    configured_limit = menu.customer_result_limit
+    limit = min(max(1, max_results or configured_limit), configured_limit)
+    return _result(
+        "list_menu_categories",
+        lambda: menu.list_menu_categories(limit=limit),
+        args={"limit": limit},
+    )
+
+
 def _remember_offered_options(response: ToolResponse) -> None:
     """Persist the options this read offered so a later reply can bind to them.
 
@@ -832,6 +845,7 @@ def retrieve_restaurant_knowledge(question: str, branch_id: str | None = None,
 
 
 MVP_TOOLS = [
+    list_menu_categories,
     search_menu,
     get_menu_item,
     create_menu_session_link,
