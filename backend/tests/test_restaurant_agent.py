@@ -238,6 +238,10 @@ def test_system_prompt_requires_tool_grounding():
     assert "Do not expose internal menu metadata" in normalized_prompt
     assert "recommendation scores" in normalized_prompt
     assert "upsell group IDs" in normalized_prompt
+    assert "call search_menu without a query" in normalized_prompt
+    assert "do not pass generic words like \"recommend\" or \"something\"" in (
+        normalized_prompt
+    )
     assert (
         "customer saying they want an item is not proof" in normalized_prompt
     )
