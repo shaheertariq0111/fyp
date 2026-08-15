@@ -12,24 +12,6 @@ from src.models.tool_responses import (
 
 
 class MenuService:
-    RECOMMENDATION_INTENT_TOKENS = frozenset(
-        {
-            "anything",
-            "best",
-            "famous",
-            "good",
-            "popular",
-            "recommend",
-            "recommended",
-            "recommends",
-            "recommendation",
-            "suggest",
-            "suggestion",
-            "something",
-            "top",
-        }
-    )
-
     def __init__(
         self,
         repository,
@@ -52,17 +34,13 @@ class MenuService:
             for token in tokens
         }
         query_terms = self._menu_relevant_tokens(normalized_query, corpus_terms) if normalized_query else []
-        broad_recommendation = (
-            bool(normalized_query)
-            and self._is_broad_recommendation_query(normalized_query, query_terms)
-        )
         matches = []
         for item, searchable, searchable_tokens in searchable_index:
             if item.get("archived"):
                 continue
             metadata = item.get("metadata") or {}
             match_score = 0
-            if normalized_query and not broad_recommendation:
+            if normalized_query:
                 searchable_terms = set(searchable_tokens)
                 match_score = self._query_match_score(normalized_query, query_terms, searchable,
                                                       searchable_tokens, searchable_terms)
@@ -639,26 +617,10 @@ class MenuService:
     @classmethod
     def _menu_relevant_tokens(cls, value: str, corpus_terms: set[str]) -> list[str]:
         tokens = [token for token in cls._tokens(value) if len(token) > 1 or token.isdigit()]
-        tokens = [
-            token for token in tokens
-            if token not in cls.RECOMMENDATION_INTENT_TOKENS
-        ]
         return [
             token for token in tokens
             if token in corpus_terms or cls._has_close_token(token, corpus_terms)
         ]
-
-    @classmethod
-    def _is_broad_recommendation_query(
-        cls,
-        value: str,
-        query_terms: list[str],
-    ) -> bool:
-        tokens = cls._tokens(value)
-        return bool(tokens) and not query_terms and any(
-            token in cls.RECOMMENDATION_INTENT_TOKENS
-            for token in tokens
-        )
 
     @classmethod
     def _searchable_text_and_tokens(cls, item) -> tuple[str, list[str]]:
