@@ -40,6 +40,7 @@ GroundingRejectionReason = Literal[
     "continuation_resolution_failed",
     "required_effect_not_satisfied",
     "successful_write_missing_safe_grounding",
+    "tool_execution_leaked",
     "unsupported_order_submission_claim",
 ]
 
@@ -52,8 +53,30 @@ FAILED_READ_FALLBACK = (
 MENU_SELECTION_FALLBACK = (
     "Please choose one of the menu options by number or name so I can continue."
 )
+TOOL_EXECUTION_FALLBACK = (
+    "I can help with that. Please send your request again."
+)
 AUTHORITATIVE_MENU_READ_TOOLS = frozenset(
     {"list_menu_categories", "search_menu", "get_menu_item", "search_menu_options"}
+)
+TOOL_EXECUTION_LEAK_PATTERN = re.compile(
+    r"\b(?:"
+    r"I\s+need\s+to\s+(?:use|call|run|retrieve|fetch|check|list)\b|"
+    r"let\s+me\s+(?:retrieve|fetch|check|list|use|call|run)\b|"
+    r"get_order_status|"
+    r"get_active_cart|"
+    r"list_menu_categories|"
+    r"search_menu|"
+    r"get_menu_item|"
+    r"retrieve_restaurant_knowledge|"
+    r"create_order_complaint|"
+    r"get_support_ticket|"
+    r"start_cart_item_customization|"
+    r"create_pending_order_from_cart|"
+    r"begin_checkout|"
+    r"confirm_order"
+    r")\b",
+    re.IGNORECASE,
 )
 UNSUPPORTED_MENU_CUSTOMIZATION_PATTERN = re.compile(
     r"\b(?:"
@@ -239,6 +262,15 @@ def ground_agent_response(
             "submission_safety_fallback",
             "unsupported_order_submission_claim",
         )
+    if (
+        authoritative is None
+        and _leaks_tool_execution(submission_decision.text)
+    ):
+        return GroundedAgentResponse(
+            TOOL_EXECUTION_FALLBACK,
+            "conversation",
+            "tool_execution_leaked",
+        )
     return GroundedAgentResponse(
         submission_decision.text,
         selected.source,
@@ -354,6 +386,10 @@ def _unsupported_menu_offer_customization(
     if tool_calls:
         return False
     return bool(UNSUPPORTED_MENU_CUSTOMIZATION_PATTERN.search(selected.text))
+
+
+def _leaks_tool_execution(text: str) -> bool:
+    return bool(TOOL_EXECUTION_LEAK_PATTERN.search(text))
 
 
 def grounding_decision_log_fields(response: GroundedAgentResponse) -> dict[str, Any]:

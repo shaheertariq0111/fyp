@@ -6,6 +6,7 @@ from src.agent.continuation import TransactionalContinuation
 from src.agent.response_grounding import (
     FAILED_TRANSACTION_FALLBACK,
     GroundedAssistantMemoryBuffer,
+    TOOL_EXECUTION_FALLBACK,
     ground_agent_response,
     ground_authoritative_tool_response,
     grounding_decision_log_fields,
@@ -93,6 +94,47 @@ def test_successful_write_uses_exact_authoritative_customer_artifact():
     )
     assert result.source == "exact_artifact"
     assert result.rejection_reason is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        (
+            "To check the status of your order, I need to use the "
+            "get_order_status tool. Let me retrieve that information for you."
+        ),
+        (
+            "To help you with your new order, I need to list the current menu "
+            "categories. Let me fetch that information for you."
+        ),
+        "I need to use get_active_cart before I can answer.",
+        "Let me retrieve_restaurant_knowledge for that.",
+    ],
+)
+def test_tool_execution_leaks_are_replaced_without_authoritative_result(text):
+    result = ground_agent_response(text=text, tool_calls=[])
+
+    assert result.text == TOOL_EXECUTION_FALLBACK
+    assert result.source == "conversation"
+    assert result.rejection_reason == "tool_execution_leaked"
+
+
+def test_tool_execution_leak_guard_does_not_replace_exact_artifact():
+    authoritative = "You can start with these menu categories:\n1. Deals"
+
+    result = ground_agent_response(
+        text="I need to use list_menu_categories.",
+        tool_calls=[
+            tool_call(
+                tool_name="list_menu_categories",
+                is_write=False,
+                grounding={"exact_customer_text": authoritative},
+            )
+        ],
+    )
+
+    assert result.text == authoritative
+    assert result.source == "exact_artifact"
 
 
 @pytest.mark.parametrize(
