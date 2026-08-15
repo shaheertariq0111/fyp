@@ -185,6 +185,16 @@ def test_system_prompt_requires_tool_grounding():
     assert "Use that WhatsApp number as the contact number" in normalized_prompt
     assert "Checkout does not require special instructions" in normalized_prompt
     assert "Ask only for the backend-required next input" in normalized_prompt
+    assert "until create_pending_order_from_cart/begin_checkout succeeds" in (
+        normalized_prompt
+    )
+    assert "returned backend order state requests that exact detail" in (
+        normalized_prompt
+    )
+    assert "use the trusted channel phone number" in normalized_prompt
+    assert "Ask for a name only if the backend/profile state still requires it" in (
+        normalized_prompt
+    )
     assert "Never refuse to collect a delivery address" in normalized_prompt
     assert "has not named food yet, call list_menu_categories" in normalized_prompt
     assert "Do not ask a bare \"what item/category would you like?\"" in (
@@ -244,6 +254,10 @@ def test_system_prompt_requires_tool_grounding():
     assert "asks for size, crust, sauce, drink, flavor, or quantity from memory" in (
         RESTAURANT_AGENT_SYSTEM_PROMPT
     )
+    assert "asks for delivery address, name, phone number, or presents an order summary" in (
+        RESTAURANT_AGENT_SYSTEM_PROMPT
+    )
+    assert "without a real backend cart/order" in RESTAURANT_AGENT_SYSTEM_PROMPT
 
 
 def test_system_prompt_keeps_live_menu_continuations_authoritative_and_chat_native():

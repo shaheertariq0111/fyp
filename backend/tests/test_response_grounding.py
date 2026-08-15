@@ -565,6 +565,49 @@ def test_no_tool_turn_cannot_ask_menu_offer_customization_from_memory():
     assert result.rejection_reason == "required_effect_not_satisfied"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        (
+            "Understood. Let's proceed to checkout. First, I need to confirm "
+            "your delivery address."
+        ),
+        (
+            "Thank you for providing the delivery address. Now, I need to "
+            "confirm your name and phone number for the order."
+        ),
+        (
+            "Your order details are now confirmed. Here's a summary of your "
+            "order: Item: Chicken Fajita, Size: Small, Crust: Regular."
+        ),
+        (
+            "Great! Your order is now ready for submission. I will now proceed "
+            "to submit your order to the restaurant."
+        ),
+    ],
+)
+def test_no_tool_turn_cannot_jump_from_menu_offer_to_checkout_memory(text):
+    result = ground_agent_response(
+        text=text,
+        tool_calls=[],
+        continuation=continuation(
+            scope="menu_offer",
+            resource_id="offer-1",
+            state="menu_options_offered",
+            required_effect=None,
+            required_input=None,
+            valid_next_actions=("start_cart_item_customization", "get_menu_item"),
+            pending_prompt=None,
+        ),
+    )
+
+    assert result.text == (
+        "Please choose one of the menu options by number or name so I can continue."
+    )
+    assert result.source == "authoritative_continuation"
+    assert result.rejection_reason == "required_effect_not_satisfied"
+
+
 def test_menu_offer_without_unsupported_customization_remains_non_blocking():
     result = ground_agent_response(
         text="Sure, I can help with that.",
