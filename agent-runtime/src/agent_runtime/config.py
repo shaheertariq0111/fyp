@@ -10,7 +10,7 @@ class AgentCoreRuntimeSettings(BaseSettings):
 
     environment: str = "production"
     agentcore_memory_id: str = ""
-    whatsapp_agentcore_memory_namespace: str = "whatsapp-agent-v2"
+    whatsapp_agentcore_memory_namespace: str = "whatsapp-agent-v3"
     whatsapp_agentcore_memory_ttl_hours: int = Field(default=6, gt=0, le=168)
     log_level: str = "INFO"
     aws_region: str = Field(default="us-east-1", min_length=1)

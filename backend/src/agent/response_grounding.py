@@ -40,6 +40,7 @@ GroundingRejectionReason = Literal[
     "continuation_resolution_failed",
     "required_effect_not_satisfied",
     "successful_write_missing_safe_grounding",
+    "ungrounded_menu_recommendation",
     "unsupported_order_submission_claim",
 ]
 
@@ -52,8 +53,27 @@ FAILED_READ_FALLBACK = (
 MENU_SELECTION_FALLBACK = (
     "Please choose one of the menu options by number or name so I can continue."
 )
+UNGROUNDED_MENU_RECOMMENDATION_FALLBACK = (
+    "I should check the current menu before recommending items. Please ask me "
+    "to show current recommendations or browse the menu."
+)
+UNGROUNDED_MENU_RECOMMENDATION_RETRY_INSTRUCTION = (
+    "Internal retry instruction: your previous draft recommended or listed menu "
+    "items without a successful menu tool result. Do not answer from memory. "
+    "Silently call search_menu now. For broad recommendation requests, call "
+    "search_menu without a query. Answer only from successful menu tool results."
+)
 AUTHORITATIVE_MENU_READ_TOOLS = frozenset(
     {"list_menu_categories", "search_menu", "get_menu_item", "search_menu_options"}
+)
+UNGROUNDED_MENU_RECOMMENDATION_PATTERN = re.compile(
+    r"\b(?:"
+    r"popular items from (?:our|the) menu|"
+    r"recommend(?:ed|ation)?(?:\s+\w+){0,4}\s+(?:items?|picks?|options?)|"
+    r"here are (?:some|a few|the) .{0,80}(?:items?|picks?|options?)|"
+    r"\d+\.\s+\*?[\w][^\n]{0,60}\*?\s+-\s+"
+    r")\b",
+    re.IGNORECASE | re.DOTALL,
 )
 UNSUPPORTED_MENU_CUSTOMIZATION_PATTERN = re.compile(
     r"\b(?:"
@@ -239,6 +259,19 @@ def ground_agent_response(
             "submission_safety_fallback",
             "unsupported_order_submission_claim",
         )
+    if (
+        authoritative is None
+        and selected.source != "authoritative_continuation"
+        and _looks_like_ungrounded_menu_recommendation(
+            submission_decision.text,
+            tool_calls,
+        )
+    ):
+        return GroundedAgentResponse(
+            UNGROUNDED_MENU_RECOMMENDATION_FALLBACK,
+            "conversation",
+            "ungrounded_menu_recommendation",
+        )
     return GroundedAgentResponse(
         submission_decision.text,
         selected.source,
@@ -356,11 +389,32 @@ def _unsupported_menu_offer_customization(
     return bool(UNSUPPORTED_MENU_CUSTOMIZATION_PATTERN.search(selected.text))
 
 
+def _looks_like_ungrounded_menu_recommendation(
+    text: str,
+    tool_calls: list[Any],
+) -> bool:
+    for call in tool_calls:
+        if (
+            _value(call, "tool_name") in AUTHORITATIVE_MENU_READ_TOOLS
+            and _call_succeeded(call)
+        ):
+            return False
+    return bool(UNGROUNDED_MENU_RECOMMENDATION_PATTERN.search(text))
+
+
 def grounding_decision_log_fields(response: GroundedAgentResponse) -> dict[str, Any]:
     return {
         "grounding_source": response.source,
         "grounding_rejection_reason": response.rejection_reason,
     }
+
+
+def should_retry_grounding(response: GroundedAgentResponse) -> bool:
+    return response.rejection_reason == "ungrounded_menu_recommendation"
+
+
+def retry_message_for_grounding_failure(message: str) -> str:
+    return f"{message}\n\n{UNGROUNDED_MENU_RECOMMENDATION_RETRY_INSTRUCTION}"
 
 
 def _grounding_evidence(call: Any) -> dict[str, Any]:
