@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 import logging
 import math
 import uuid
@@ -500,11 +501,17 @@ class OrderService:
         self,
         user_id: str,
         agent_session_id: str,
+        *,
+        allowed_statuses: Collection[str] | None = None,
     ) -> dict | None:
         matches = [
             order
             for order in self.orders.list_active(user_id, TERMINAL_STATUSES)
             if order.get("agent_session_id") == agent_session_id
+            and (
+                allowed_statuses is None
+                or order.get("status") in allowed_statuses
+            )
         ]
         if not matches:
             return None

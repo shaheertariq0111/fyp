@@ -1214,6 +1214,27 @@ def test_single_active_order_is_selected_without_requesting_order_id():
     assert response.agent["status_message"] == response.user_message
 
 
+def test_session_order_status_filter_applies_before_newest_selection():
+    service, _, create_order = _build_customer_tracking_service()
+    pending_order_id = create_order(cart_id="pending-cart")
+    service.update_order_flow("user", pending_order_id, "set_takeaway")
+    preparing_order_id = create_order(cart_id="preparing-cart")
+    service.update_order_flow("user", preparing_order_id, "set_takeaway")
+    service.update_order_flow("user", preparing_order_id, "confirm")
+    service.admin_update_status(preparing_order_id, "accept")
+    service.admin_update_status(preparing_order_id, "start_preparing")
+
+    selected = service.get_active_order_for_session(
+        "user",
+        "session",
+        allowed_statuses={"pending_confirmation"},
+    )
+
+    assert selected is not None
+    assert selected["order_id"] == pending_order_id
+    assert selected["status"] == "pending_confirmation"
+
+
 def test_multiple_active_orders_require_customer_to_choose_order_id():
     service, _, create_order = _build_customer_tracking_service()
 

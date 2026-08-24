@@ -29,8 +29,8 @@ ContinuationScope = Literal["cart", "order", "menu_offer"]
 
 # Backend resource state -> the transactional effect the backend still requires
 # before that state can advance. Keys are authoritative backend status values,
-# never customer phrasing. States absent from these maps are surfaced as context
-# but never block a response.
+# never customer phrasing. An order state absent from its map is operationally
+# active at most; it is not waiting for customer input and must not be resumed.
 CART_REQUIRED_EFFECTS: dict[str, TransactionalEffect] = {
     "customizing_item": "customization_saved",
     "awaiting_upsell_decision": "cart_progressed",
@@ -41,7 +41,7 @@ CART_ALTERNATIVE_EFFECTS: dict[str, frozenset[str]] = {
     "customizing_item": frozenset({"cart_cancelled", "item_added"}),
     "awaiting_upsell_decision": frozenset({"cart_cancelled", "item_added"}),
 }
-ORDER_REQUIRED_EFFECTS: dict[str, TransactionalEffect] = {
+ORDER_PENDING_CUSTOMER_EFFECTS: dict[str, TransactionalEffect] = {
     "awaiting_fulfillment_method": "fulfillment_saved",
     "awaiting_delivery_address": "address_saved",
     "awaiting_customer_name": "customer_name_updated",
@@ -324,7 +324,11 @@ def _resolve_order_continuation(
     user_id: str,
     agent_session_id: str,
 ) -> TransactionalContinuation | None:
-    order = services.orders.get_active_order_for_session(user_id, agent_session_id)
+    order = services.orders.get_active_order_for_session(
+        user_id,
+        agent_session_id,
+        allowed_statuses=ORDER_PENDING_CUSTOMER_EFFECTS.keys(),
+    )
     if not isinstance(order, dict):
         return None
     order_id = order.get("order_id")
@@ -334,7 +338,9 @@ def _resolve_order_continuation(
     state = agent.get("order_status") or order.get("status")
     if not isinstance(state, str) or not state:
         return None
-    required_effect = ORDER_REQUIRED_EFFECTS.get(state)
+    required_effect = ORDER_PENDING_CUSTOMER_EFFECTS.get(state)
+    if required_effect is None:
+        return None
     return TransactionalContinuation(
         scope="order",
         resource_id=order_id,

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.agent.whatsapp_submission_safety import select_submission_safe_response
 from src.services.whatsapp_conversation_service import (
     UNGROUNDED_ORDER_SUBMISSION_ERROR_CODE,
     UNGROUNDED_ORDER_SUBMISSION_FALLBACK,
@@ -303,6 +304,34 @@ def test_equivalent_clear_submission_success_claims_are_blocked(text):
     reply, _ = conversation_result(response(text=text, tool_calls=[]))
     assert reply.reply == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
     assert reply.submitted_order_id is None
+
+
+def test_canonical_submission_fallback_is_idempotent():
+    first = select_submission_safe_response(
+        text="Your order was submitted.",
+        tool_calls=[],
+    )
+    second = select_submission_safe_response(
+        text=first.text,
+        tool_calls=[],
+    )
+
+    assert first.source == "unsupported_submission_claim"
+    assert first.blocked is True
+    assert first.text == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
+    assert second.source == "unchanged"
+    assert second.blocked is False
+    assert second.text == UNGROUNDED_ORDER_SUBMISSION_FALLBACK
+
+
+def test_authoritative_submission_proof_precedes_fallback_idempotency():
+    decision = select_submission_safe_response(
+        text=UNGROUNDED_ORDER_SUBMISSION_FALLBACK,
+        tool_calls=[tool_call("confirm_order")],
+    )
+
+    assert decision.source == "authoritative_submission"
+    assert decision.text == SUBMISSION_CONFIRMATION
 
 
 @pytest.mark.parametrize(
