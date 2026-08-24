@@ -1,14 +1,19 @@
+from copy import deepcopy
 from types import SimpleNamespace
 
+import pytest
+
 from src.agent.continuation import (
+    ORDER_PENDING_CUSTOMER_EFFECTS,
     TransactionalContinuation,
+    _resolve_order_continuation,
     continuation_context_block,
     continuation_satisfied_by,
     resolve_transactional_continuation,
 )
 from src.agent.response_grounding import ground_agent_response
 from src.services.cart_service import CartService
-from src.services.order_service import OrderService
+from src.services.order_service import ORDER_TRANSITIONS, OrderService
 from fakes import (
     MemoryAgentSessionRepository,
     MemoryCartRepository,
@@ -111,6 +116,28 @@ def reach_awaiting_fulfillment(
     services.carts.save_choice(user_id, cart_item_id, "pizza-crust", "regular")
     created = services.carts.create_pending_order(user_id, cart_id)
     return created.data["order_id"]
+
+
+def reach_operational_order(services, state):
+    fulfillment = "delivery" if state == "out_for_delivery" else "takeaway"
+    order_id = reach_awaiting_fulfillment(services, channel="web")
+    if fulfillment == "delivery":
+        services.orders.update_order_flow("user", order_id, "set_delivery")
+        services.orders.update_order_flow(
+            "user", order_id, "save_address", "123 Test Street"
+        )
+    else:
+        services.orders.update_order_flow("user", order_id, "set_takeaway")
+    services.orders.update_order_flow("user", order_id, "confirm")
+    for action in {
+        "submitted_to_restaurant": (),
+        "accepted": ("accept",),
+        "preparing": ("accept", "start_preparing"),
+        "ready_for_pickup": ("accept", "start_preparing", "mark_ready"),
+        "out_for_delivery": ("accept", "start_preparing", "dispatch"),
+    }[state]:
+        services.orders.admin_update_status(order_id, action)
+    return order_id
 
 
 def tool_call(
@@ -408,6 +435,108 @@ def test_delivery_flow_requires_address_before_confirmation():
     assert continuation.state == "awaiting_delivery_address"
     assert continuation.required_effect == "address_saved"
     assert continuation.is_outstanding is True
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "submitted_to_restaurant",
+        "accepted",
+        "preparing",
+        "ready_for_pickup",
+        "out_for_delivery",
+    ],
+)
+def test_operational_order_does_not_become_customer_continuation(state):
+    services = build_services()
+    order_id = reach_operational_order(services, state)
+    before = deepcopy(services.orders.orders.data[order_id])
+
+    continuation = resolve_transactional_continuation(
+        services,
+        user_id="user",
+        agent_session_id="session",
+    )
+
+    assert continuation is None
+    assert services.orders.orders.data[order_id] == before
+
+
+def test_order_continuation_defensively_rejects_unmapped_state():
+    orders = SimpleNamespace(
+        get_active_order_for_session=lambda *_args, **_kwargs: {
+            "order_id": "ORD-OPERATIONAL",
+            "status": "preparing",
+        },
+        order_continuation_view=lambda order: {
+            "order_status": order["status"],
+        },
+    )
+
+    continuation = _resolve_order_continuation(
+        SimpleNamespace(orders=orders),
+        "user",
+        "session",
+    )
+
+    assert continuation is None
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_effect"),
+    list(ORDER_PENDING_CUSTOMER_EFFECTS.items()),
+)
+def test_pending_customer_order_states_remain_resumable(state, expected_effect):
+    services = build_services()
+    order_id = reach_awaiting_fulfillment(
+        services,
+        channel="whatsapp" if state == "awaiting_customer_name" else "web",
+    )
+    if state == "awaiting_delivery_address":
+        services.orders.update_order_flow("user", order_id, "set_delivery")
+    elif state == "awaiting_customer_name":
+        services.orders.update_order_flow("user", order_id, "set_takeaway")
+    elif state == "pending_confirmation":
+        services.orders.update_order_flow("user", order_id, "set_takeaway")
+
+    continuation = resolve_transactional_continuation(
+        services,
+        user_id="user",
+        agent_session_id="session",
+    )
+
+    assert continuation is not None
+    assert continuation.resource_id == order_id
+    assert continuation.state == state
+    assert continuation.required_effect == expected_effect
+
+
+def test_newer_operational_order_does_not_hide_pending_same_session_order():
+    services = build_services()
+    pending_order_id = reach_awaiting_fulfillment(services, channel="web")
+    services.orders.update_order_flow(
+        "user", pending_order_id, "set_takeaway"
+    )
+    preparing_order_id = reach_operational_order(services, "preparing")
+
+    continuation = resolve_transactional_continuation(
+        services,
+        user_id="user",
+        agent_session_id="session",
+    )
+
+    assert continuation is not None
+    assert continuation.resource_id == pending_order_id
+    assert continuation.state == "pending_confirmation"
+    assert continuation.resource_id != preparing_order_id
+
+
+def test_pending_customer_effect_map_covers_customer_order_transition_states():
+    customer_transition_states = {
+        state for state, _action in ORDER_TRANSITIONS
+    }
+
+    assert set(ORDER_PENDING_CUSTOMER_EFFECTS) == customer_transition_states
 
 
 def test_no_active_resource_yields_no_continuation():

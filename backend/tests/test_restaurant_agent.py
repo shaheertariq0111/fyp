@@ -1,10 +1,15 @@
+from copy import deepcopy
 from types import SimpleNamespace
 
 from src.agent.context import get_request_context
 from src.agent import restaurant_agent
-from src.agent.continuation import TransactionalContinuation
+from src.agent.continuation import (
+    TransactionalContinuation,
+    resolve_transactional_continuation,
+)
 from src.agent.system_prompt import RESTAURANT_AGENT_SYSTEM_PROMPT
-from src.agent.tools import MVP_TOOLS
+from src.agent.tools import MVP_TOOLS, get_order_status
+from test_agent_continuation import build_services, reach_operational_order
 
 
 def test_system_prompt_requires_tool_grounding():
@@ -553,6 +558,8 @@ def test_system_prompt_defines_customer_order_tracking_policy():
         RESTAURANT_AGENT_SYSTEM_PROMPT.split()
     )
 
+    assert "For order status, call get_order_status." in normalized_prompt
+    assert get_order_status in MVP_TOOLS
     assert (
         "If the agent object contains submission_confirmation, "
         "present that exact text."
@@ -703,6 +710,38 @@ def test_customer_message_remains_untouched_without_continuation(monkeypatch):
     )
 
     assert seen["message"] == "hello"
+
+
+def test_old_submitted_order_does_not_prepend_context_to_hello(monkeypatch):
+    services = build_services()
+    order_id = reach_operational_order(services, "submitted_to_restaurant")
+    before = deepcopy(services.orders.orders.data[order_id])
+    monkeypatch.setattr(
+        restaurant_agent,
+        "resolve_request_continuation",
+        lambda **kwargs: resolve_transactional_continuation(services, **kwargs),
+    )
+    seen = {}
+
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            seen["message"] = message
+            return SimpleNamespace(
+                message={"content": [{"text": "Hello! How can I help?"}]}
+            )
+
+    result = restaurant_agent.invoke_restaurant_agent(
+        "hello",
+        user_id="user",
+        agent_session_id="session",
+        channel="whatsapp",
+        agent=FakeAgent(),
+    )
+
+    assert seen["message"] == "hello"
+    assert result.tool_calls == []
+    assert restaurant_agent.agent_result_text(result) == "Hello! How can I help?"
+    assert services.orders.orders.data[order_id] == before
 
 
 def test_system_prompt_forbids_binding_ordinals_without_an_authoritative_offer():

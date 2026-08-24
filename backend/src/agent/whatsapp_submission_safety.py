@@ -96,6 +96,8 @@ def select_submission_safe_response(
             "authoritative_submission",
             submission,
         )
+    if text == UNGROUNDED_ORDER_SUBMISSION_FALLBACK:
+        return SubmissionSafetyDecision(text, "unchanged")
     if not _claims_successful_order_submission(text):
         return SubmissionSafetyDecision(text, "unchanged")
     if _is_authoritative_existing_order_status(text, calls):
