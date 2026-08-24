@@ -51,6 +51,8 @@ class LocalStrandsAgentRuntimeClient:
             },
         )
         memory_buffer = None
+        grounding_source = None
+        grounding_rejection_reason = None
         try:
             session_manager = None
             runtime_agent = None
@@ -108,6 +110,8 @@ class LocalStrandsAgentRuntimeClient:
                     },
                 )
                 response_text = grounded.text
+                grounding_source = grounded.source
+                grounding_rejection_reason = grounded.rejection_reason
                 if memory_buffer is not None:
                     memory_buffer.commit(response_text, runtime_agent)
         except Exception:
@@ -143,7 +147,12 @@ class LocalStrandsAgentRuntimeClient:
                 ),
             },
         )
-        return AgentInvocationResult(text=response_text, raw_result=raw_result)
+        return AgentInvocationResult(
+            text=response_text,
+            raw_result=raw_result,
+            grounding_source=grounding_source,
+            grounding_rejection_reason=grounding_rejection_reason,
+        )
 
     @staticmethod
     def _invoke_restaurant(

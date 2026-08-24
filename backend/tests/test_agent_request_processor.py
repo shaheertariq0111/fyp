@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from src.agent.response_grounding import UNGROUNDED_MENU_RECOMMENDATION_FALLBACK
 from src.services.agent_request_processor import (
     AgentRequestProcessor,
     PreparedAgentRequest,
@@ -190,12 +191,24 @@ def response_context(channel="whatsapp"):
     )
 
 
-def build_response(*, text, tool_calls, channel="whatsapp"):
+def build_response(
+    *,
+    text,
+    tool_calls,
+    channel="whatsapp",
+    grounding_source=None,
+    grounding_rejection_reason=None,
+):
     builder = build_response_builder(response_services)
     return builder(
         response_context(channel),
         {"customer": {}},
-        SimpleNamespace(text=text, raw_result={"tool_calls": tool_calls}),
+        SimpleNamespace(
+            text=text,
+            raw_result={"tool_calls": tool_calls},
+            grounding_source=grounding_source,
+            grounding_rejection_reason=grounding_rejection_reason,
+        ),
     )
 
 
@@ -236,6 +249,27 @@ def test_backend_whatsapp_menu_read_uses_authoritative_artifact():
 
     assert response.text == authoritative
     assert "Imaginary Supreme" not in response.text
+
+
+def test_shared_builder_preserves_trusted_continuation_prompt():
+    prompt = (
+        "Which pizza size would you like?\n\n"
+        "1. Small - PKR 850\n"
+        "2. Medium - PKR 1,700\n"
+        "3. Large - PKR 2,400"
+    )
+
+    response = build_response(
+        text=prompt,
+        tool_calls=[],
+        grounding_source="authoritative_continuation",
+        grounding_rejection_reason="required_effect_not_satisfied",
+    )
+
+    assert response.text == prompt
+
+    untrusted = build_response(text=prompt, tool_calls=[])
+    assert untrusted.text == UNGROUNDED_MENU_RECOMMENDATION_FALLBACK
 
 
 def test_backend_whatsapp_failed_write_uses_authoritative_failure():

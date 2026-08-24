@@ -185,6 +185,60 @@ def test_ungrounded_menu_recommendation_is_replaced():
     assert result.rejection_reason == "ungrounded_menu_recommendation"
 
 
+SIZE_CONTINUATION_PROMPT = (
+    "Which pizza size would you like?\n\n"
+    "1. Small - PKR 850\n"
+    "2. Medium - PKR 1,700\n"
+    "3. Large - PKR 2,400"
+)
+
+
+def test_trusted_upstream_continuation_prompt_survives_second_grounding_pass():
+    result = ground_agent_response(
+        text=SIZE_CONTINUATION_PROMPT,
+        tool_calls=[],
+        upstream_grounding_source="authoritative_continuation",
+        upstream_grounding_rejection_reason="required_effect_not_satisfied",
+    )
+
+    assert result.text == SIZE_CONTINUATION_PROMPT
+    assert result.source == "authoritative_continuation"
+    assert result.rejection_reason == "required_effect_not_satisfied"
+
+
+def test_numbered_name_price_prompt_without_trusted_provenance_is_blocked():
+    result = ground_agent_response(
+        text=SIZE_CONTINUATION_PROMPT,
+        tool_calls=[],
+    )
+
+    assert result.text == UNGROUNDED_MENU_RECOMMENDATION_FALLBACK
+    assert result.rejection_reason == "ungrounded_menu_recommendation"
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        ("authoritative_continuation", "unknown_reason"),
+        ("unknown_source", "required_effect_not_satisfied"),
+        ("authoritative_continuation", None),
+    ],
+)
+def test_unknown_or_incomplete_upstream_provenance_cannot_bypass_menu_guard(
+    source,
+    reason,
+):
+    result = ground_agent_response(
+        text=SIZE_CONTINUATION_PROMPT,
+        tool_calls=[],
+        upstream_grounding_source=source,
+        upstream_grounding_rejection_reason=reason,
+    )
+
+    assert result.text == UNGROUNDED_MENU_RECOMMENDATION_FALLBACK
+    assert result.rejection_reason == "ungrounded_menu_recommendation"
+
+
 def test_ungrounded_menu_recommendation_guard_keeps_menu_tool_artifact():
     authoritative = (
         "Here are the current menu options I found:\n"

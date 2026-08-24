@@ -21,3 +21,5 @@ class AgentInvocationRequest:
 class AgentInvocationResult:
     text: str
     raw_result: Any
+    grounding_source: str | None = None
+    grounding_rejection_reason: str | None = None

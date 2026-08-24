@@ -66,6 +66,10 @@ UNGROUNDED_MENU_RECOMMENDATION_RETRY_INSTRUCTION = (
 AUTHORITATIVE_MENU_READ_TOOLS = frozenset(
     {"list_menu_categories", "search_menu", "get_menu_item", "search_menu_options"}
 )
+TRUSTED_UPSTREAM_CONTINUATION_PROVENANCE = (
+    "authoritative_continuation",
+    "required_effect_not_satisfied",
+)
 UNGROUNDED_MENU_RECOMMENDATION_PATTERN = re.compile(
     r"\b(?:"
     r"popular items from (?:our|the) menu|"
@@ -229,6 +233,8 @@ def ground_agent_response(
     text: str,
     tool_calls: list[Any],
     continuation: TransactionalContinuation | None = None,
+    upstream_grounding_source: str | None = None,
+    upstream_grounding_rejection_reason: str | None = None,
 ) -> GroundedAgentResponse:
     """Apply deterministic tool-evidence safeguards without semantic judgment."""
 
@@ -237,7 +243,12 @@ def ground_agent_response(
         authoritative = _use_semantic_rephrasing(authoritative, text)
     if authoritative is not None and authoritative.source == "anchored_write":
         authoritative = _anchor_natural_phrasing(authoritative, text)
-    selected = authoritative or GroundedAgentResponse(text, "conversation")
+    upstream = _trusted_upstream_grounding(
+        text=text,
+        source=upstream_grounding_source,
+        rejection_reason=upstream_grounding_rejection_reason,
+    )
+    selected = authoritative or upstream or GroundedAgentResponse(text, "conversation")
     selected = _enforce_transactional_continuation(
         selected=selected,
         authoritative=authoritative,
@@ -400,6 +411,27 @@ def _looks_like_ungrounded_menu_recommendation(
         ):
             return False
     return bool(UNGROUNDED_MENU_RECOMMENDATION_PATTERN.search(text))
+
+
+def _trusted_upstream_grounding(
+    *,
+    text: str,
+    source: str | None,
+    rejection_reason: str | None,
+) -> GroundedAgentResponse | None:
+    """Recognize only the narrow provenance emitted by our internal runtime.
+
+    Arbitrary or future values fail closed and are treated as ordinary
+    conversation text by ``ground_agent_response``.
+    """
+
+    if (source, rejection_reason) != TRUSTED_UPSTREAM_CONTINUATION_PROVENANCE:
+        return None
+    return GroundedAgentResponse(
+        text,
+        "authoritative_continuation",
+        "required_effect_not_satisfied",
+    )
 
 
 def grounding_decision_log_fields(response: GroundedAgentResponse) -> dict[str, Any]:

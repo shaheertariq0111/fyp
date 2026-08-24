@@ -3254,6 +3254,37 @@ def test_runtime_response_needs_no_classifier_transport_metadata(caplog):
     assert "grounding_rejection_reason" not in public
 
 
+def test_ecs_builder_preserves_trusted_agentcore_continuation_prompt():
+    prompt = (
+        "Which pizza size would you like?\n\n"
+        "1. Small - PKR 850\n"
+        "2. Medium - PKR 1,700\n"
+        "3. Large - PKR 2,400"
+    )
+    context = AgentRequestContext(
+        user_id="user",
+        agent_session_id="session",
+        customer_id="user",
+        channel="whatsapp",
+    )
+
+    response = main._chat_response_from_invocation(
+        context,
+        {
+            "customer": {"customer_id": "user", "phone_verified": True},
+            "session": {"session_id": "session", "channel": "whatsapp"},
+        },
+        AgentInvocationResult(
+            text=prompt,
+            raw_result={"tool_calls": []},
+            grounding_source="authoritative_continuation",
+            grounding_rejection_reason="required_effect_not_satisfied",
+        ),
+    )
+
+    assert response.text == prompt
+
+
 def test_chat_preserves_authoritative_submitted_order_cancel_protection():
     context = AgentRequestContext(
         user_id="user",

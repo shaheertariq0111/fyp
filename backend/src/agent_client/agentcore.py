@@ -45,6 +45,16 @@ class AgentCoreRuntimeClient:
         return AgentInvocationResult(
             text=str(result.get("text") or ""),
             raw_result=result,
+            grounding_source=(
+                result.get("grounding_source")
+                if isinstance(result.get("grounding_source"), str)
+                else None
+            ),
+            grounding_rejection_reason=(
+                result.get("grounding_rejection_reason")
+                if isinstance(result.get("grounding_rejection_reason"), str)
+                else None
+            ),
         )
 
     def _invoke_payload(

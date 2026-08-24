@@ -242,6 +242,12 @@ def build_response_builder(services_provider: Callable[[], Any]):
             backend_grounded = ground_agent_response(
                 text=response_text,
                 tool_calls=calls,
+                upstream_grounding_source=getattr(
+                    invocation, "grounding_source", None
+                ),
+                upstream_grounding_rejection_reason=getattr(
+                    invocation, "grounding_rejection_reason", None
+                ),
             )
             response_text = backend_grounded.text
             logger.info(

@@ -182,7 +182,7 @@ def test_customizing_cart_exposes_required_customization_effect():
 
 def test_customizing_cart_offers_authoritative_backend_option_ids():
     services = build_services()
-    start_customizing_cart(services)
+    started = start_customizing_cart(services)
 
     continuation = resolve_transactional_continuation(
         services,
@@ -196,8 +196,33 @@ def test_customizing_cart_offers_authoritative_backend_option_ids():
         "large",
     ]
     assert continuation.field_name == "pizza-size"
+    assert continuation.selection_tools == ("save_customization_choice",)
+    assert continuation.fixed_arguments == (
+        ("cart_item_id", started.data["cart_item_id"]),
+        ("field_name", "pizza-size"),
+    )
+    assert continuation.selected_option_argument == "selected_option_id"
     # The pending prompt is backend-authored text, not model prose.
     assert "Which size would you like?" in continuation.pending_prompt
+
+
+def test_customization_context_block_exposes_complete_selection_contract():
+    services = build_services()
+    started = start_customizing_cart(services)
+
+    continuation = resolve_transactional_continuation(
+        services,
+        user_id="user",
+        agent_session_id="session",
+    )
+    block = continuation_context_block(continuation)
+
+    assert "selection_tool: save_customization_choice" in block
+    assert "fixed_arguments:" in block
+    assert f"cart_item_id: {started.data['cart_item_id']}" in block
+    assert "field_name: pizza-size" in block
+    assert "selected_option_argument: selected_option_id" in block
+    assert "id=medium label=Medium - PKR 1,500" in block
 
 
 def test_continuation_advances_to_next_backend_step_after_successful_choice():
@@ -243,6 +268,30 @@ def test_invalid_option_does_not_advance_continuation():
     assert rejected.success is False
     assert continuation.field_name == "pizza-size"
     assert continuation.required_effect == "customization_saved"
+
+
+def test_no_tool_customization_turn_keeps_cart_and_returns_pending_prompt():
+    services = build_services()
+    started = start_customizing_cart(services)
+    continuation = resolve_transactional_continuation(
+        services,
+        user_id="user",
+        agent_session_id="session",
+    )
+
+    grounded = ground_agent_response(
+        text="The selection has been saved.",
+        tool_calls=[],
+        continuation=continuation,
+    )
+    active = services.carts.get_active_cart("user", "session").data["cart"]
+
+    assert grounded.text == continuation.pending_prompt
+    assert grounded.source == "authoritative_continuation"
+    assert grounded.rejection_reason == "required_effect_not_satisfied"
+    assert active["status"] == "customizing_item"
+    assert active["active_cart_item_id"] == started.data["cart_item_id"]
+    assert active["items"][0]["selected_options"] == {}
 
 
 def test_awaiting_fulfillment_order_exposes_fulfillment_continuation():
@@ -867,6 +916,13 @@ def test_menu_offer_context_block_exposes_ids_for_ordinal_resolution():
 
     assert "id=lava-cake-2-pcs" in block
     assert "never a quantity" in block
+    assert (
+        "tool=get_menu_item selected_option_argument=item_id" in block
+    )
+    assert (
+        "tool=start_cart_item_customization selected_option_argument=item_id"
+        in block
+    )
 
 
 def test_newer_offer_replaces_the_previous_one():
