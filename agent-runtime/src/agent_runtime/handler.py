@@ -117,6 +117,8 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                 ]
                 raw_text = agent_result_text(result)
                 grounded_text = raw_text
+                grounding_source = None
+                grounding_rejection_reason = None
                 retry_count = 0
                 if request.channel == "whatsapp":
                     grounded = ground_agent_response(
@@ -161,6 +163,8 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
                         },
                     )
                     grounded_text = grounded.text
+                    grounding_source = grounded.source
+                    grounding_rejection_reason = grounded.rejection_reason
                 if memory_buffer is not None:
                     memory_buffer.commit(grounded_text, runtime_agent)
             finally:
@@ -216,6 +220,8 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             "actor_id": actor_id,
             "session_id": memory_session_id,
         },
+        grounding_source=grounding_source,
+        grounding_rejection_reason=grounding_rejection_reason,
     )
     return response.model_dump(exclude_none=True)
 

@@ -112,6 +112,11 @@ class TransactionalContinuation:
     # Every effect that counts as progress out of ``state``. Defaults to the
     # primary required effect when a caller does not widen it.
     satisfying_effects: frozenset[str] = frozenset()
+    # Explicit bindings for the one semantic agent. These values come only from
+    # authoritative backend state; they never interpret customer language.
+    selection_tools: tuple[str, ...] = ()
+    fixed_arguments: tuple[tuple[str, str], ...] = ()
+    selected_option_argument: str | None = None
 
     @property
     def is_outstanding(self) -> bool:
@@ -235,6 +240,30 @@ def continuation_context_block(
             f"  - id={option.id} label={option.label}"
             for option in continuation.offered_options
         )
+    if continuation.selection_tools:
+        if len(continuation.selection_tools) == 1:
+            lines.append(f"selection_tool: {continuation.selection_tools[0]}")
+        else:
+            lines.append("semantic_selection_tool_bindings:")
+            lines.extend(
+                f"  - tool={tool} selected_option_argument="
+                f"{continuation.selected_option_argument}"
+                for tool in continuation.selection_tools
+            )
+    if continuation.fixed_arguments:
+        lines.append("fixed_arguments:")
+        lines.extend(
+            f"  {name}: {value}"
+            for name, value in continuation.fixed_arguments
+        )
+    if (
+        continuation.selected_option_argument
+        and len(continuation.selection_tools) == 1
+    ):
+        lines.append(
+            "selected_option_argument: "
+            f"{continuation.selected_option_argument}"
+        )
     if continuation.requires_unique_choice:
         lines.append(
             "exclusive_choice: true - these options are mutually exclusive and "
@@ -271,6 +300,8 @@ def _resolve_cart_continuation(
     if not isinstance(state, str) or not state:
         return None
     active_choice = _mapping(agent.get("active_choice"))
+    cart_item_id = _text(active_choice.get("cart_item_id"))
+    field_name = _text(active_choice.get("field_name"))
     options = tuple(
         ContinuationOption(id=option["option_id"], label=label)
         for option in _sequence(active_choice.get("options"))
@@ -307,7 +338,7 @@ def _resolve_cart_continuation(
         offered_options=options,
         pending_prompt=_text(active_choice.get("choice_prompt"))
         or _text(getattr(response, "user_message", None)),
-        field_name=_text(active_choice.get("field_name")),
+        field_name=field_name,
         related_order_id=related_order_id,
         related_order_state=related_order_state,
         satisfying_effects=(
@@ -315,6 +346,21 @@ def _resolve_cart_continuation(
             | CART_ALTERNATIVE_EFFECTS.get(state, frozenset())
             if required_effect
             else frozenset()
+        ),
+        selection_tools=(
+            ("save_customization_choice",)
+            if state == "customizing_item" and cart_item_id and field_name and options
+            else ()
+        ),
+        fixed_arguments=(
+            (("cart_item_id", cart_item_id), ("field_name", field_name))
+            if state == "customizing_item" and cart_item_id and field_name and options
+            else ()
+        ),
+        selected_option_argument=(
+            "selected_option_id"
+            if state == "customizing_item" and cart_item_id and field_name and options
+            else None
         ),
     )
 
@@ -489,6 +535,8 @@ def _resolve_menu_offer_continuation(
         valid_next_actions=("start_cart_item_customization", "get_menu_item"),
         offered_options=options,
         pending_prompt=None,
+        selection_tools=("get_menu_item", "start_cart_item_customization"),
+        selected_option_argument="item_id",
     )
 
 

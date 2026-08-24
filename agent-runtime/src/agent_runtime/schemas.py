@@ -28,3 +28,5 @@ class RuntimeResponse(BaseModel):
     text: str
     tool_calls: list[ToolCallResult] = Field(default_factory=list)
     memory: dict[str, str] = Field(default_factory=dict)
+    grounding_source: str | None = None
+    grounding_rejection_reason: str | None = None

@@ -268,7 +268,7 @@ def _remember_offered_options(response: ToolResponse) -> None:
 
 @tool
 def get_menu_item(item_id: str) -> dict:
-    """Get current details and customization groups for one menu item."""
+    """Get one menu item; bind a matched trusted offered option ID to item_id."""
     return _result("get_menu_item", lambda: get_services().menu.get_menu_item(item_id),
                    args={"item_id": item_id})
 
@@ -285,7 +285,7 @@ def create_menu_session_link(item_id: str | None = None) -> dict:
 
 @tool
 def start_cart_item_customization(item_id: str, quantity: int = 1) -> dict:
-    """Start chat customization; multiple customizable units require a mode choice."""
+    """Start customization using a trusted offered item_id; quantity is explicit."""
     context = get_request_context()
     return _result("start_cart_item_customization", lambda: get_services().carts.start_item_customization(
         context.user_id, context.agent_session_id, item_id, quantity,
@@ -310,7 +310,7 @@ def save_customization_choice(
     field_name: str,
     selected_option_id: str | list[str],
 ) -> dict:
-    """Save authoritative single- or multi-select customization choices."""
+    """Save a trusted continuation choice using its fixed IDs and selected option ID."""
 
     def save_and_fetch_upsells() -> ToolResponse:
         services = get_services()

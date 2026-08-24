@@ -333,6 +333,8 @@ def test_whatsapp_ungrounded_menu_recommendation_retries_silently(
     )
 
     assert response["text"] == authoritative
+    assert response["grounding_source"] == "exact_artifact"
+    assert "grounding_rejection_reason" not in response
     assert len(messages) == 2
     assert messages[0] == "recommend something"
     assert "Internal retry instruction" in messages[1]
@@ -847,8 +849,10 @@ def test_whatsapp_no_tool_turn_cannot_claim_unsatisfied_continuation(monkeypatch
         pending_prompt="Would you like delivery or takeaway?",
     )
     raw = "Fulfillment Method: Takeaway. Your order is ready for pickup."
+    messages = []
 
     def invoke(message, **kwargs):
+        messages.append(message)
         return SimpleNamespace(
             message={"content": [{"text": raw}]},
             tool_calls=[],
@@ -867,5 +871,11 @@ def test_whatsapp_no_tool_turn_cannot_claim_unsatisfied_continuation(monkeypatch
 
     assert "ready for pickup" not in response["text"]
     assert response["text"] == "Would you like delivery or takeaway?"
+    assert response["grounding_source"] == "authoritative_continuation"
+    assert (
+        response["grounding_rejection_reason"]
+        == "required_effect_not_satisfied"
+    )
+    assert messages == ["hello"]
     history = next(iter(FakeMemorySessionManager.history_by_session.values()))
     assert history[-1]["content"][0]["text"] == "Would you like delivery or takeaway?"

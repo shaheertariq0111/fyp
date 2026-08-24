@@ -141,6 +141,8 @@ def test_local_whatsapp_menu_read_uses_exact_artifact_and_logs_safe_tool_summary
         )
 
     assert result.text == authoritative
+    assert result.grounding_source == "exact_artifact"
+    assert result.grounding_rejection_reason is None
     assert manager.messages == [
         {"role": "assistant", "content": [{"text": authoritative}]},
     ]
@@ -344,6 +346,10 @@ def test_agentcore_runtime_client_invokes_only_conversation_runtime_surface():
                             "text": "AgentCore response",
                             "tool_calls": [],
                             "memory": {"session_id": "session-1"},
+                            "grounding_source": "authoritative_continuation",
+                            "grounding_rejection_reason": (
+                                "required_effect_not_satisfied"
+                            ),
                         }
                     ).encode("utf-8")
                 ),
@@ -358,6 +364,10 @@ def test_agentcore_runtime_client_invokes_only_conversation_runtime_surface():
 
     assert result.text == "AgentCore response"
     assert result.raw_result["memory"] == {"session_id": "session-1"}
+    assert result.grounding_source == "authoritative_continuation"
+    assert (
+        result.grounding_rejection_reason == "required_effect_not_satisfied"
+    )
     assert captured["runtimeSessionId"] == "req-trusted"
     assert captured["runtimeUserId"] == "user-1"
     assert json.loads(captured["payload"].decode("utf-8")) == {

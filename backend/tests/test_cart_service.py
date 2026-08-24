@@ -291,6 +291,55 @@ def test_size_choice_includes_authoritative_prices():
     assert response.grounding.exact_customer_text == active_choice["choice_prompt"]
 
 
+def test_authoritative_medium_option_id_saves_and_advances_customization():
+    service, carts, _ = build_services()
+    started = service.start_item_customization(
+        "user",
+        "session",
+        "priced-pizza",
+    )
+
+    response = service.save_choice(
+        "user",
+        started.data["cart_item_id"],
+        "pizza-size",
+        "medium",
+    )
+    saved = carts.find_by_cart_id("user", started.data["cart_id"])
+
+    assert response.success is True
+    assert response.grounding.transactional_effects == ["customization_saved"]
+    assert saved["items"][0]["selected_options"]["pizza-size"] == "medium"
+    assert saved["items"][0]["current_step"] == "pizza-crust"
+    assert saved["status"] == "customizing_item"
+
+
+def test_stale_customization_contract_ids_remain_rejected():
+    service, _, _ = build_services()
+    started = service.start_item_customization(
+        "user",
+        "session",
+        "priced-pizza",
+    )
+
+    stale_item = service.save_choice(
+        "user", "CARTITEM-stale", "pizza-size", "medium"
+    )
+    stale_field = service.save_choice(
+        "user", started.data["cart_item_id"], "pizza-size-stale", "medium"
+    )
+    stale_option = service.save_choice(
+        "user", started.data["cart_item_id"], "pizza-size", "medium-stale"
+    )
+
+    assert stale_item.error_code == "CART_NOT_FOUND"
+    assert stale_field.error_code == "INVALID_CUSTOMIZATION"
+    assert stale_option.error_code == "INVALID_OPTION"
+    active = service.get_active_cart("user", "session").data["cart"]
+    assert active["status"] == "customizing_item"
+    assert active["items"][0]["selected_options"] == {}
+
+
 def test_crust_choice_includes_authoritative_price_deltas():
     service, _, _ = build_services()
 
