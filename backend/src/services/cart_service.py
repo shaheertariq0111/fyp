@@ -276,6 +276,7 @@ class CartService:
                 ),
                 grounding=GroundingEvidence(
                     authoritative_domains=["cart", "menu"],
+                    transactional_effects=["upsell_offered"],
                     exact_customer_text=upsell_prompt,
                 ),
             )
@@ -454,6 +455,7 @@ class CartService:
         data = self._cart_data(cart)
         if cart.get("status") == "customizing_item" and cart.get("active_cart_item_id"):
             data.update(self._active_choice_data(cart))
+        pending_prompt = self._resume_active_cart(cart).user_message
         return ToolResponse.ok(
             data={"cart": data},
             user_message="Here is the current cart.",
@@ -462,6 +464,7 @@ class CartService:
                 cart,
                 "present_cart_status",
                 active_choice=data if cart.get("status") == "customizing_item" else None,
+                pending_prompt=pending_prompt,
                 instruction="Present the current cart from data.cart. If a question is present, ask that question next.",
             ),
             grounding=GroundingEvidence(
@@ -1182,6 +1185,7 @@ class CartService:
         upsell_items=None,
         upsell_prompt=None,
         required_input=None,
+        pending_prompt=None,
         instruction=None,
     ):
         payload = {
@@ -1219,6 +1223,8 @@ class CartService:
             payload["upsell_items"] = upsell_items
         if upsell_prompt is not None:
             payload["upsell_prompt"] = upsell_prompt
+        if pending_prompt:
+            payload["pending_prompt"] = pending_prompt
         if instruction:
             payload["instruction"] = instruction
         return payload
@@ -1233,26 +1239,48 @@ class CartService:
             return [
                 "handle_cart_upsell:get_options",
                 "handle_cart_upsell:skip",
+                "begin_checkout",
+                "create_pending_order_from_cart",
                 "discard_active_cart",
             ]
         if next_action == "choose_upsell":
             return [
                 "handle_cart_upsell:add_item",
                 "handle_cart_upsell:skip",
+                "begin_checkout",
+                "create_pending_order_from_cart",
                 "discard_active_cart",
             ]
         if next_action == "create_pending_order":
-            return ["create_pending_order_from_cart", "discard_active_cart"]
+            return [
+                "begin_checkout",
+                "create_pending_order_from_cart",
+                "discard_active_cart",
+            ]
         if next_action == "present_cart_status":
             status = cart.get("status")
             if status == "customizing_item":
                 return ["save_customization_choice", "discard_active_cart"]
-            if status in {"item_ready", "awaiting_upsell_decision"}:
+            if status == "item_ready":
                 return [
                     "handle_cart_upsell:get_options",
                     "handle_cart_upsell:skip",
+                    "begin_checkout",
+                    "create_pending_order_from_cart",
+                    "discard_active_cart",
+                ]
+            if status == "awaiting_upsell_decision":
+                return [
+                    "handle_cart_upsell:add_item",
+                    "handle_cart_upsell:skip",
+                    "begin_checkout",
+                    "create_pending_order_from_cart",
                     "discard_active_cart",
                 ]
             if status == "cart_ready":
-                return ["create_pending_order_from_cart", "discard_active_cart"]
+                return [
+                    "begin_checkout",
+                    "create_pending_order_from_cart",
+                    "discard_active_cart",
+                ]
         return []

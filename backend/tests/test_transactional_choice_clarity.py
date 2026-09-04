@@ -75,9 +75,8 @@ def test_cart_ready_continuation_is_not_a_dead_end():
     block = continuation_context_block(continuation)
 
     assert continuation.state == "cart_ready"
-    # A ready cart is not waiting on an effect, but it must still advertise
-    # where the conversation can go next.
-    assert continuation.is_outstanding is False
+    assert continuation.is_outstanding is True
+    assert "begin_checkout" in continuation.valid_next_actions
     assert "create_pending_order_from_cart" in continuation.valid_next_actions
     assert "discard_active_cart" in continuation.valid_next_actions
     assert "create_pending_order_from_cart" in block
@@ -87,12 +86,12 @@ def test_cart_ready_write_lets_the_model_phrase_the_next_step():
     """The terse backend line must not overwrite a complete natural reply."""
     services = build_services()
     cart_id, _ = reach_cart_ready(services)
-    skipped = services.carts.handle_upsell("user", cart_id, "skip")
     continuation = resolve_transactional_continuation(
         services,
         user_id="user",
         agent_session_id="session",
     )
+    skipped = services.carts.handle_upsell("user", cart_id, "skip")
     natural = "Your cart is ready. Want to check out, or change something first?"
 
     grounded = ground_agent_response(

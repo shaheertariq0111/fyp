@@ -33,13 +33,21 @@ ContinuationScope = Literal["cart", "order", "menu_offer"]
 # active at most; it is not waiting for customer input and must not be resumed.
 CART_REQUIRED_EFFECTS: dict[str, TransactionalEffect] = {
     "customizing_item": "customization_saved",
-    "awaiting_upsell_decision": "cart_progressed",
 }
-# Effects other than the primary one that also legitimately move a cart state
-# forward, so an alternative valid action is never treated as no progress.
-CART_ALTERNATIVE_EFFECTS: dict[str, frozenset[str]] = {
-    "customizing_item": frozenset({"cart_cancelled", "item_added"}),
-    "awaiting_upsell_decision": frozenset({"cart_cancelled", "item_added"}),
+# Every authoritative effect that legitimately advances each cart state. Some
+# states have several independent exits, so they intentionally have no single
+# primary required effect.
+CART_SATISFYING_EFFECTS: dict[str, frozenset[TransactionalEffect]] = {
+    "customizing_item": frozenset(
+        {"customization_saved", "cart_cancelled", "item_added"}
+    ),
+    "item_ready": frozenset(
+        {"upsell_offered", "cart_progressed", "checkout_started", "cart_cancelled"}
+    ),
+    "awaiting_upsell_decision": frozenset(
+        {"item_added", "cart_progressed", "checkout_started", "cart_cancelled"}
+    ),
+    "cart_ready": frozenset({"checkout_started", "cart_cancelled"}),
 }
 ORDER_PENDING_CUSTOMER_EFFECTS: dict[str, TransactionalEffect] = {
     "awaiting_fulfillment_method": "fulfillment_saved",
@@ -60,7 +68,7 @@ CONTEXT_INSTRUCTION = (
     "An ordinal or bare number picks which offered option was chosen and is "
     "never a quantity; quantity comes only from what the customer actually says. "
     "If no offered option matches their meaning, ask again rather than guessing. "
-    "State advances only when the required tool call returns success."
+    "State advances only when a valid tool call returns an accepted transactional effect."
 )
 
 
@@ -111,7 +119,7 @@ class TransactionalContinuation:
     related_order_state: str | None = None
     # Every effect that counts as progress out of ``state``. Defaults to the
     # primary required effect when a caller does not widen it.
-    satisfying_effects: frozenset[str] = frozenset()
+    satisfying_effects: frozenset[TransactionalEffect] = frozenset()
     # Explicit bindings for the one semantic agent. These values come only from
     # authoritative backend state; they never interpret customer language.
     selection_tools: tuple[str, ...] = ()
@@ -120,11 +128,11 @@ class TransactionalContinuation:
 
     @property
     def is_outstanding(self) -> bool:
-        """True when the backend requires a specific effect to advance."""
-        return self.required_effect is not None
+        """True when the backend requires an authoritative effect to advance."""
+        return bool(self.accepted_effects)
 
     @property
-    def accepted_effects(self) -> frozenset[str]:
+    def accepted_effects(self) -> frozenset[TransactionalEffect]:
         if self.satisfying_effects:
             return self.satisfying_effects
         return frozenset({self.required_effect} if self.required_effect else ())
@@ -227,6 +235,10 @@ def continuation_context_block(
         lines.append(f"required_input: {continuation.required_input}")
     if continuation.required_effect:
         lines.append(f"required_effect: {continuation.required_effect}")
+    if continuation.accepted_effects:
+        lines.append(
+            "accepted_effects: " + ", ".join(sorted(continuation.accepted_effects))
+        )
     if continuation.valid_next_actions:
         lines.append(
             "valid_next_actions: "
@@ -337,16 +349,12 @@ def _resolve_cart_continuation(
         ),
         offered_options=options,
         pending_prompt=_text(active_choice.get("choice_prompt"))
+        or _text(agent.get("pending_prompt"))
         or _text(getattr(response, "user_message", None)),
         field_name=field_name,
         related_order_id=related_order_id,
         related_order_state=related_order_state,
-        satisfying_effects=(
-            frozenset({required_effect})
-            | CART_ALTERNATIVE_EFFECTS.get(state, frozenset())
-            if required_effect
-            else frozenset()
-        ),
+        satisfying_effects=CART_SATISFYING_EFFECTS.get(state, frozenset()),
         selection_tools=(
             ("save_customization_choice",)
             if state == "customizing_item" and cart_item_id and field_name and options
