@@ -48,6 +48,7 @@ class CartStub:
         return ToolResponse.ok(
             data={"order": {"order_id": "ORD-CHECKOUT"}},
             user_message="checkout",
+            grounding={"transactional_effects": ["checkout_started"]},
         )
 
     def discard_active_cart(self, user_id, session_id):
@@ -262,6 +263,7 @@ def test_semantic_order_tools_call_validated_backend_actions(monkeypatch):
 
     with request_context(context):
         checkout = tools.begin_checkout("CART-1")
+        lower_level_checkout = tools.create_pending_order_from_cart("CART-2")
         delivery = tools.choose_delivery("ORD-1")
         takeaway = tools.choose_takeaway("ORD-2")
         address = tools.save_order_address("ORD-3", "House 1, Street 2")
@@ -269,12 +271,19 @@ def test_semantic_order_tools_call_validated_backend_actions(monkeypatch):
         cancelled = tools.cancel_order("ORD-5")
 
     assert checkout["data"]["order"]["order_id"] == "ORD-CHECKOUT"
+    assert checkout["grounding"]["transactional_effects"] == ["checkout_started"]
+    assert lower_level_checkout["grounding"]["transactional_effects"] == [
+        "checkout_started"
+    ]
     assert delivery["user_message"] == "set_delivery ok"
     assert takeaway["user_message"] == "set_takeaway ok"
     assert address["user_message"] == "save_address ok"
     assert confirmed["user_message"] == "confirm ok"
     assert cancelled["user_message"] == "cancel ok"
-    assert carts.checkout_calls == [("user-1", "CART-1")]
+    assert carts.checkout_calls == [
+        ("user-1", "CART-1"),
+        ("user-1", "CART-2"),
+    ]
     assert customers.address_calls == [
         (
             "customer-1",
