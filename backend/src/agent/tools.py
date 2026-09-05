@@ -21,10 +21,6 @@ REPEATED_READ_MESSAGE = (
     "changed. Answer the customer from the state you already have instead of "
     "reading it again."
 )
-REPEATED_READ_CUSTOMER_MESSAGE = (
-    "I couldn't refresh that information right now. Please continue from the "
-    "current step."
-)
 
 WRITE_TOOLS = {
     "start_cart_item_customization",
@@ -182,7 +178,7 @@ def _repeated_read_guard(
     )
     return ToolResponse.error(
         error_code=REPEATED_READ_ERROR_CODE,
-        user_message=REPEATED_READ_CUSTOMER_MESSAGE,
+        user_message=REPEATED_READ_MESSAGE,
         agent={"instruction": REPEATED_READ_MESSAGE},
     ).model_dump(exclude_none=True)
 
@@ -542,10 +538,7 @@ def cancel_order(order_id: str) -> dict:
 
 @tool
 def get_active_cart() -> dict:
-    """Read cart contents or status for the trusted user/session when genuinely
-    needed. Do not use this tool to rediscover a pending transactional choice
-    already provided by the current authoritative continuation.
-    """
+    """Read the current active chat cart for the trusted user/session."""
     context = get_request_context()
     return _result("get_active_cart", lambda: get_services().carts.get_active_cart(
         context.user_id, context.agent_session_id
