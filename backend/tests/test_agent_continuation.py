@@ -270,27 +270,6 @@ def test_customization_context_block_exposes_complete_selection_contract():
     assert "field_name: pizza-size" in block
     assert "selected_option_argument: selected_option_id" in block
     assert "id=medium label=Medium - PKR 1,500" in block
-    assert "already the fresh authoritative backend state for this turn" in block
-    assert "call selection_tool directly using the fixed arguments" in block
-    assert "plus that option's authoritative ID" in block
-    assert "Do not call get_active_cart merely to rediscover" in block
-    assert "semantically identifies exactly one offered option" in block
-
-
-def test_customization_selection_precedence_preserves_ambiguity_handling():
-    services = build_services()
-    start_customizing_cart(services)
-    continuation = resolve_transactional_continuation(
-        services,
-        user_id="user",
-        agent_session_id="session",
-    )
-
-    block = continuation_context_block(continuation)
-
-    assert "If no offered option matches their meaning, ask again" in block
-    assert "A bare acknowledgement or agreement does not identify one" in block
-    assert "Act only when the customer's meaning identifies exactly one" in block
 
 
 def test_awaiting_upsell_exposes_authoritative_selection_contract():

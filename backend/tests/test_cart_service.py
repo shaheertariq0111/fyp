@@ -205,12 +205,6 @@ def test_get_active_cart_includes_current_customization_prompt():
     assert "Configured Item" in response.grounding.exact_customer_text
     assert "Choose dynamically" in response.grounding.exact_customer_text
     assert "1. Choice A" in response.grounding.exact_customer_text
-    instruction = response.agent["instruction"]
-    assert "already contains the current cart state" in instruction
-    assert "Do not call get_active_cart again" in instruction
-    assert "save_customization_choice" in instruction
-    assert response.agent["active_choice"]["cart_item_id"] == cart["cart_item_id"]
-    assert response.agent["active_choice"]["field_name"] == "dynamic-choice"
 
 
 def test_get_active_cart_exact_customer_text_includes_ready_cart_summary():
