@@ -8,6 +8,9 @@ from pydantic import ValidationError
 from agent_runtime import handler
 from agent_runtime.schemas import RuntimeRequest
 from agent_runtime.server import app
+from src.agent import tools as agent_tools
+from src.agent.context import AgentRequestContext, request_context
+from src.models.tool_responses import ToolResponse
 from src.services.whatsapp_conversation_service import (
     UNGROUNDED_ORDER_SUBMISSION_FALLBACK,
     whatsapp_reply_from_response,
@@ -879,3 +882,45 @@ def test_whatsapp_no_tool_turn_cannot_claim_unsatisfied_continuation(monkeypatch
     assert messages == ["hello"]
     history = next(iter(FakeMemorySessionManager.history_by_session.values()))
     assert history[-1]["content"][0]["text"] == "Would you like delivery or takeaway?"
+
+
+def test_runtime_repeated_read_never_exposes_or_persists_control_instruction(
+    monkeypatch,
+):
+    successful_read = ToolResponse.ok(
+        data={"cart": {"status": "customizing_item"}},
+        user_message="Here is the current cart.",
+    ).model_dump(exclude_none=True)
+    context = AgentRequestContext("customer-1", "session-1")
+
+    with request_context(context):
+        guarded = None
+        for _ in range(agent_tools.REPEATED_READ_LIMIT + 1):
+            guarded = agent_tools._repeated_read_guard(
+                "get_active_cart",
+                successful_read,
+                None,
+            )
+
+    assert guarded is not None
+    install_fake_agent(
+        monkeypatch,
+        text=agent_tools.REPEATED_READ_MESSAGE,
+        tool_calls=[
+            {
+                "tool_name": "get_active_cart",
+                "success": False,
+                "is_write": False,
+                "result": guarded,
+                "error_code": agent_tools.REPEATED_READ_ERROR_CODE,
+            }
+        ],
+    )
+
+    response = handler.invoke(runtime_payload(channel="whatsapp"))
+
+    assert response["grounding_source"] == "failed_read"
+    assert response["grounding_rejection_reason"] == "authoritative_read_failed"
+    assert agent_tools.REPEATED_READ_MESSAGE not in response["text"]
+    history = next(iter(FakeMemorySessionManager.history_by_session.values()))
+    assert agent_tools.REPEATED_READ_MESSAGE not in str(history)
