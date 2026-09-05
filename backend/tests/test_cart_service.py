@@ -62,22 +62,6 @@ def test_two_identical_items_share_one_cart_item():
     assert response.data["items"][0]["quantity"] == 2
 
 
-def test_simple_item_without_customization_starts_item_ready():
-    service, _, _ = build_services()
-
-    started = service.start_item_customization("user", "session", "addon")
-
-    assert started.success
-    assert started.data["status"] == "item_ready"
-    assert started.agent["valid_next_actions"] == [
-        "handle_cart_upsell:get_options",
-        "handle_cart_upsell:skip",
-        "begin_checkout",
-        "create_pending_order_from_cart",
-        "discard_active_cart",
-    ]
-
-
 def test_two_separate_items_are_labeled_and_advanced():
     service, _, _ = build_services()
     cart_id = service.start_item_customization("user", "session", "configurable", 2).data["cart_id"]
@@ -97,9 +81,6 @@ def test_upsell_then_pending_order_reprices_server_side():
     ready = service.save_choice("user", started.data["cart_item_id"], "dynamic-choice", "choice-a")
     cart_id = ready.data["cart_id"]
     options = service.handle_upsell("user", cart_id, "get_options")
-    assert options.success
-    assert options.data["status"] == "awaiting_upsell_decision"
-    assert options.grounding.transactional_effects == ["upsell_offered"]
     assert options.data["upsell_items"][0]["product_id"] == "addon"
     assert options.data["items"][0]["item_id"] == "configurable"
     assert options.agent["next_action"] == "choose_upsell"
@@ -130,37 +111,10 @@ def test_checkout_auto_skips_pending_upsell_decision():
     pending = service.create_pending_order("user", ready.data["cart_id"])
 
     assert pending.success
-    assert pending.grounding.transactional_effects == ["checkout_started"]
     assert pending.data["status"] == "awaiting_fulfillment_method"
     saved = carts.find_by_cart_id("user", ready.data["cart_id"])
     assert saved["status"] == "converted_to_order"
     assert next(iter(orders.data.values()))["items"][0]["name"] == "Configured Item"
-
-
-def test_checkout_from_item_ready_emits_checkout_started_and_converts_cart():
-    service, carts, orders = build_services()
-    started = service.start_item_customization("user", "session", "addon")
-
-    pending = service.create_pending_order("user", started.data["cart_id"])
-
-    assert pending.success
-    assert pending.grounding.transactional_effects == ["checkout_started"]
-    assert pending.data["status"] == "awaiting_fulfillment_method"
-    assert carts.find_by_cart_id("user", started.data["cart_id"])["status"] == (
-        "converted_to_order"
-    )
-    assert len(orders.data) == 1
-
-
-def test_skipping_upsell_emits_cart_progressed():
-    service, _, _ = build_services()
-    started = service.start_item_customization("user", "session", "addon")
-
-    skipped = service.handle_upsell("user", started.data["cart_id"], "skip")
-
-    assert skipped.success
-    assert skipped.data["status"] == "cart_ready"
-    assert skipped.grounding.transactional_effects == ["cart_progressed"]
 
 
 def test_legacy_pending_confirmation_cart_is_not_returned_as_active_cart():

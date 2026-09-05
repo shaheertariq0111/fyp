@@ -22,7 +22,6 @@ TransactionalEffect = Literal[
     "item_added",
     "customization_saved",
     "quantity_changed",
-    "upsell_offered",
     "cart_progressed",
     "checkout_started",
     "fulfillment_saved",

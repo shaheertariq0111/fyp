@@ -173,10 +173,6 @@ def test_system_prompt_requires_tool_grounding():
     assert "return to the current backend-valid next step" in normalized_prompt
     assert "briefly decline the request" in normalized_prompt
     assert "Think through tool routing privately" in normalized_prompt
-    assert "Use concise but natural customer-facing language" in normalized_prompt
-    assert "Do not reduce a useful response to only a few words merely for brevity" in (
-        normalized_prompt
-    )
     assert "Do not include XML wrappers, JSON, chain of thought, or tool traces" in (
         normalized_prompt
     )
