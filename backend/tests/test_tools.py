@@ -8,6 +8,7 @@ import pytest
 from fakes import MemoryAgentSessionRepository, MemoryOrderRepository
 from src.agent import tools
 from src.agent.context import AgentRequestContext, request_context
+from src.agent.response_grounding import ground_agent_response
 from src.models.tool_responses import ToolResponse
 from src.services.agent_session_service import AgentSessionService
 from src.services.support_flow_service import SupportFlowService
@@ -131,6 +132,14 @@ def test_mvp_tools_include_active_cart_lookup():
     assert "cancel_support_request" in tools.WRITE_TOOLS
     assert "get_support_ticket_status" not in tools.WRITE_TOOLS
     assert "get_support_ticket" not in tools.WRITE_TOOLS
+
+
+def test_get_active_cart_description_preserves_status_reads_without_rediscovery():
+    description = tools.get_active_cart.tool_spec["description"]
+
+    assert "cart contents or status" in description
+    assert "current authoritative continuation" in description
+    assert "pending transactional choice" in description
 
 
 class TicketStub:
@@ -1406,11 +1415,45 @@ def test_repeated_identical_read_is_bounded_without_fabricating_progress(monkeyp
 
     assert len(successes) == tools.REPEATED_READ_LIMIT
     assert guarded, "identical repeated reads must eventually be stopped"
+    assert all(item["success"] is True for item in results[:tools.REPEATED_READ_LIMIT])
+    assert results[tools.REPEATED_READ_LIMIT]["success"] is False
+    assert (
+        results[tools.REPEATED_READ_LIMIT]["error_code"]
+        == tools.REPEATED_READ_ERROR_CODE
+    )
     # The guard reports lack of progress; it never invents a successful effect.
     for item in guarded:
         assert item["success"] is False
         assert item.get("data", {}) == {}
         assert not item.get("grounding", {}).get("transactional_effects")
+        assert tools.REPEATED_READ_MESSAGE not in item["user_message"]
+        assert item["agent"]["instruction"] == tools.REPEATED_READ_MESSAGE
+
+
+def test_repeated_read_control_instruction_cannot_become_customer_text(monkeypatch):
+    container = SimpleNamespace(carts=CartStub())
+    monkeypatch.setattr(tools, "get_services", lambda: container)
+    context = AgentRequestContext("trusted-user", "trusted-session")
+
+    with request_context(context):
+        for _ in range(tools.REPEATED_READ_LIMIT + 1):
+            tools.get_active_cart()
+
+    guarded_call = context.tool_calls[-1]
+    grounded = ground_agent_response(
+        text="Internal model draft.",
+        tool_calls=[guarded_call],
+    )
+
+    assert guarded_call["error_code"] == tools.REPEATED_READ_ERROR_CODE
+    assert tools.REPEATED_READ_MESSAGE not in guarded_call["result"]["user_message"]
+    assert (
+        guarded_call["result"]["agent"]["instruction"]
+        == tools.REPEATED_READ_MESSAGE
+    )
+    assert tools.REPEATED_READ_MESSAGE not in grounded.text
+    assert grounded.text == guarded_call["result"]["user_message"]
+    assert grounded.source == "failed_read"
 
 
 def test_repeated_read_guard_resets_when_authoritative_state_changes(monkeypatch):

@@ -467,8 +467,19 @@ class CartService:
         agent_arguments = {
             "active_choice": data if cart.get("status") == "customizing_item" else None,
             "instruction": (
-                "Present the current cart from data.cart. If a question is present, "
-                "ask that question next."
+                "This response already contains the current cart state. Do not call "
+                "get_active_cart again unless authoritative state changes or a new "
+                "cart contents/status read is genuinely needed. If the current "
+                "customer message semantically identifies exactly one option in "
+                "active_choice.options, call save_customization_choice using "
+                "active_choice.cart_item_id, active_choice.field_name, and that "
+                "option's option_id. If it does not identify exactly one option, "
+                "present active_choice.choice_prompt instead of guessing."
+                if cart.get("status") == "customizing_item"
+                else (
+                    "Present the current cart from data.cart. If a question is "
+                    "present, ask that question next."
+                )
             ),
         }
         if cart.get("status") == "awaiting_upsell_decision":

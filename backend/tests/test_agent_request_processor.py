@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
 from src.agent.response_grounding import UNGROUNDED_MENU_RECOMMENDATION_FALLBACK
+from src.agent import tools as agent_tools
+from src.agent.context import AgentRequestContext, request_context
+from src.models.tool_responses import ToolResponse
 from src.services.agent_request_processor import (
     AgentRequestProcessor,
     PreparedAgentRequest,
@@ -290,6 +293,42 @@ def test_backend_whatsapp_failed_write_uses_authoritative_failure():
 
     assert response.text == "That customization is unavailable."
     assert response.write_succeeded is False
+
+
+def test_backend_whatsapp_repeated_read_never_exposes_control_instruction():
+    successful_read = ToolResponse.ok(
+        data={"cart": {"status": "customizing_item"}},
+        user_message="Here is the current cart.",
+    ).model_dump(exclude_none=True)
+    context = AgentRequestContext("customer-1", "session-1")
+
+    with request_context(context):
+        guarded = None
+        for _ in range(agent_tools.REPEATED_READ_LIMIT + 1):
+            guarded = agent_tools._repeated_read_guard(
+                "get_active_cart",
+                successful_read,
+                None,
+            )
+
+    assert guarded is not None
+    response = build_response(
+        text=agent_tools.REPEATED_READ_MESSAGE,
+        tool_calls=[
+            {
+                "tool_name": "get_active_cart",
+                "success": False,
+                "is_write": False,
+                "error_code": agent_tools.REPEATED_READ_ERROR_CODE,
+                "result": guarded,
+            }
+        ],
+        grounding_source="failed_read",
+        grounding_rejection_reason="authoritative_read_failed",
+    )
+
+    assert agent_tools.REPEATED_READ_MESSAGE not in response.text
+    assert response.text == guarded["user_message"]
 
 
 def test_backend_whatsapp_successful_write_uses_exact_customer_artifact():
