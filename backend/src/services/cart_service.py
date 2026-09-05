@@ -17,7 +17,6 @@ TERMINAL_CART_STATUSES = {
     "cancelled",
     "expired",
 }
-ITEM_START_RESUMABLE_CART_STATUSES = frozenset({"cart_created", "customizing_item"})
 
 
 class CartService:
@@ -49,14 +48,6 @@ class CartService:
             TERMINAL_CART_STATUSES,
         )
         if active_cart:
-            if active_cart.get("status") not in ITEM_START_RESUMABLE_CART_STATUSES:
-                return ToolResponse.error(
-                    error_code="INVALID_CART_STATE",
-                    user_message=(
-                        "The active cart has already moved past item setup. "
-                        "Please continue from its current step."
-                    ),
-                )
             return self._resume_active_cart(active_cart)
         menu_item = self.menu.get_item(item_id)
         if not menu_item:
@@ -463,35 +454,15 @@ class CartService:
         data = self._cart_data(cart)
         if cart.get("status") == "customizing_item" and cart.get("active_cart_item_id"):
             data.update(self._active_choice_data(cart))
-        next_action = "present_cart_status"
-        agent_arguments = {
-            "active_choice": data if cart.get("status") == "customizing_item" else None,
-            "instruction": (
-                "Present the current cart from data.cart. If a question is present, "
-                "ask that question next."
-            ),
-        }
-        if cart.get("status") == "awaiting_upsell_decision":
-            upsell_items = list(self._upsell_items(cart).values())
-            upsell_prompt = self._upsell_prompt(upsell_items)
-            next_action = "choose_upsell"
-            agent_arguments = {
-                "required_input": "upsell_decision",
-                "upsell_items": upsell_items,
-                "upsell_prompt": upsell_prompt,
-                "instruction": (
-                    "Continue this existing cart from its authoritative upsell "
-                    "decision."
-                ),
-            }
         return ToolResponse.ok(
             data={"cart": data},
             user_message="Here is the current cart.",
-            next_action=next_action,
+            next_action="present_cart_status",
             agent=self._cart_agent(
                 cart,
-                next_action,
-                **agent_arguments,
+                "present_cart_status",
+                active_choice=data if cart.get("status") == "customizing_item" else None,
+                instruction="Present the current cart from data.cart. If a question is present, ask that question next.",
             ),
             grounding=GroundingEvidence(
                 authoritative_domains=["cart"],
@@ -1268,7 +1239,6 @@ class CartService:
             return [
                 "handle_cart_upsell:add_item",
                 "handle_cart_upsell:skip",
-                "begin_checkout",
                 "discard_active_cart",
             ]
         if next_action == "create_pending_order":

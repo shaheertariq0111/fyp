@@ -39,16 +39,6 @@ def build_services():
                 "starting_price": 750,
                 "base_prices": {"small": 750, "medium": 1500, "large": 2100},
                 "customization_group_ids": ["pizza-size", "pizza-crust"],
-                "upsell_group_ids": ["pizza-add-ons"],
-            },
-            {
-                "product_id": "drink-addon",
-                "name": "Cold Drink",
-                "category": "drink",
-                "currency": "PKR",
-                "available": True,
-                "starting_price": 250,
-                "customization_group_ids": [],
                 "upsell_group_ids": [],
             },
         ],
@@ -78,13 +68,7 @@ def build_services():
                 ],
             },
         ],
-        upsells=[
-            {
-                "upsell_group_id": "pizza-add-ons",
-                "question": "Would you like a drink?",
-                "items": ["drink-addon"],
-            }
-        ],
+        upsells=[],
     )
     carts, orders = MemoryCartRepository(), MemoryOrderRepository()
     order_service = OrderService(orders, menu)
@@ -111,37 +95,6 @@ def start_customizing_cart(
         1,
         channel=channel,
     )
-
-
-def reach_awaiting_upsell(
-    services,
-    *,
-    user_id="user",
-    session_id="session",
-):
-    started = start_customizing_cart(
-        services,
-        user_id=user_id,
-        session_id=session_id,
-    )
-    services.carts.save_choice(
-        user_id,
-        started.data["cart_item_id"],
-        "pizza-size",
-        "medium",
-    )
-    ready = services.carts.save_choice(
-        user_id,
-        started.data["cart_item_id"],
-        "pizza-crust",
-        "stuffed",
-    )
-    offered = services.carts.handle_upsell(
-        user_id,
-        ready.data["cart_id"],
-        "get_options",
-    )
-    return offered
 
 
 def reach_awaiting_fulfillment(
@@ -270,181 +223,6 @@ def test_customization_context_block_exposes_complete_selection_contract():
     assert "field_name: pizza-size" in block
     assert "selected_option_argument: selected_option_id" in block
     assert "id=medium label=Medium - PKR 1,500" in block
-
-
-def test_awaiting_upsell_exposes_authoritative_selection_contract():
-    services = build_services()
-    offered = reach_awaiting_upsell(services)
-
-    continuation = resolve_transactional_continuation(
-        services,
-        user_id="user",
-        agent_session_id="session",
-    )
-    block = continuation_context_block(continuation)
-
-    assert continuation.state == "awaiting_upsell_decision"
-    assert continuation.required_input == "upsell_decision"
-    assert [(option.id, option.label) for option in continuation.offered_options] == [
-        ("drink-addon", "Cold Drink - PKR 250"),
-    ]
-    assert continuation.selection_tools == ("handle_cart_upsell",)
-    assert continuation.fixed_arguments == (
-        ("cart_id", offered.data["cart_id"]),
-        ("action", "add_item"),
-    )
-    assert continuation.selected_option_argument == "item_id"
-    assert continuation.accepted_effects == frozenset(
-        {"item_added", "cart_progressed", "checkout_started", "cart_cancelled"}
-    )
-    assert "selection_tool: handle_cart_upsell" in block
-    assert f"cart_id: {offered.data['cart_id']}" in block
-    assert "action: add_item" in block
-    assert "selected_option_argument: item_id" in block
-    assert "handle_cart_upsell:skip" in continuation.valid_next_actions
-    assert "begin_checkout" in continuation.valid_next_actions
-
-
-@pytest.mark.parametrize(
-    ("operation", "tool_name"),
-    [
-        ("add", "handle_cart_upsell"),
-        ("skip", "handle_cart_upsell"),
-        ("checkout", "begin_checkout"),
-        ("cancel", "discard_active_cart"),
-    ],
-)
-def test_authoritative_cart_effect_satisfies_upsell_continuation(
-    operation,
-    tool_name,
-):
-    services = build_services()
-    offered = reach_awaiting_upsell(services)
-    continuation = resolve_transactional_continuation(
-        services,
-        user_id="user",
-        agent_session_id="session",
-    )
-
-    if operation == "add":
-        response = services.carts.handle_upsell(
-            "user",
-            offered.data["cart_id"],
-            "add_item",
-            "drink-addon",
-        )
-    elif operation == "skip":
-        response = services.carts.handle_upsell(
-            "user",
-            offered.data["cart_id"],
-            "skip",
-        )
-    elif operation == "checkout":
-        response = services.carts.create_pending_order(
-            "user",
-            offered.data["cart_id"],
-        )
-    else:
-        response = services.carts.discard_active_cart("user", "session")
-
-    assert response.success is True
-    assert continuation_satisfied_by(
-        continuation,
-        [write_call(response, tool_name)],
-    ) is True
-
-
-def test_unrelated_cart_effect_does_not_satisfy_upsell_continuation():
-    services = build_services()
-    reach_awaiting_upsell(services, session_id="session-a")
-    cart_b = reach_awaiting_upsell(services, session_id="session-b")
-    continuation = resolve_transactional_continuation(
-        services,
-        user_id="user",
-        agent_session_id="session-a",
-    )
-
-    added_to_b = services.carts.handle_upsell(
-        "user",
-        cart_b.data["cart_id"],
-        "add_item",
-        "drink-addon",
-    )
-
-    assert added_to_b.success is True
-    assert continuation_satisfied_by(
-        continuation,
-        [write_call(added_to_b, "handle_cart_upsell")],
-    ) is False
-
-
-def test_unrelated_cart_checkout_does_not_satisfy_upsell_continuation():
-    services = build_services()
-    reach_awaiting_upsell(services, session_id="session-a")
-    cart_b = reach_awaiting_upsell(services, session_id="session-b")
-    continuation = resolve_transactional_continuation(
-        services,
-        user_id="user",
-        agent_session_id="session-a",
-    )
-
-    checkout_b = services.carts.create_pending_order(
-        "user",
-        cart_b.data["cart_id"],
-    )
-
-    assert checkout_b.success is True
-    assert continuation_satisfied_by(
-        continuation,
-        [write_call(checkout_b, "begin_checkout")],
-    ) is False
-
-
-def test_replayed_unrelated_checkout_does_not_satisfy_upsell_continuation():
-    services = build_services()
-    cart_b = reach_awaiting_upsell(services, session_id="session-b")
-    services.carts.create_pending_order("user", cart_b.data["cart_id"])
-    reach_awaiting_upsell(services, session_id="session-a")
-    continuation = resolve_transactional_continuation(
-        services,
-        user_id="user",
-        agent_session_id="session-a",
-    )
-
-    replayed_checkout_b = services.carts.create_pending_order(
-        "user",
-        cart_b.data["cart_id"],
-    )
-
-    assert replayed_checkout_b.success is True
-    assert continuation_satisfied_by(
-        continuation,
-        [write_call(replayed_checkout_b, "begin_checkout")],
-    ) is False
-
-
-def test_failed_non_offered_upsell_does_not_satisfy_continuation():
-    services = build_services()
-    offered = reach_awaiting_upsell(services)
-    continuation = resolve_transactional_continuation(
-        services,
-        user_id="user",
-        agent_session_id="session",
-    )
-
-    rejected = services.carts.handle_upsell(
-        "user",
-        offered.data["cart_id"],
-        "add_item",
-        "not-offered",
-    )
-
-    assert rejected.success is False
-    assert rejected.error_code == "INVALID_UPSELL_ITEM"
-    assert continuation_satisfied_by(
-        continuation,
-        [write_call(rejected, "handle_cart_upsell")],
-    ) is False
 
 
 def test_continuation_advances_to_next_backend_step_after_successful_choice():

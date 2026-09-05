@@ -39,9 +39,7 @@ CART_REQUIRED_EFFECTS: dict[str, TransactionalEffect] = {
 # forward, so an alternative valid action is never treated as no progress.
 CART_ALTERNATIVE_EFFECTS: dict[str, frozenset[str]] = {
     "customizing_item": frozenset({"cart_cancelled", "item_added"}),
-    "awaiting_upsell_decision": frozenset(
-        {"cart_cancelled", "checkout_started", "item_added"}
-    ),
+    "awaiting_upsell_decision": frozenset({"cart_cancelled", "item_added"}),
 }
 ORDER_PENDING_CUSTOMER_EFFECTS: dict[str, TransactionalEffect] = {
     "awaiting_fulfillment_method": "fulfillment_saved",
@@ -207,39 +205,9 @@ def continuation_satisfied_by(
             continue
         grounding = _mapping(result.get("grounding"))
         effects = grounding.get("transactional_effects")
-        if (
-            isinstance(effects, list)
-            and accepted.intersection(effects)
-            and _result_matches_continuation_resource(continuation, result)
-        ):
+        if isinstance(effects, list) and accepted.intersection(effects):
             return True
     return False
-
-
-def _result_matches_continuation_resource(
-    continuation: TransactionalContinuation,
-    result: dict[str, Any],
-) -> bool:
-    """Require cart effects to identify the cart whose state they changed.
-
-    Cart mutation responses carry ``cart_id`` directly. Checkout responses
-    transition into an order response and preserve the originating cart as
-    ``source_cart_id``. Other continuation scopes retain their existing effect
-    contracts; they are outside this cart-specific correlation invariant.
-    """
-
-    if continuation.scope != "cart":
-        return True
-    data = _mapping(result.get("data"))
-    resource_ids = {
-        resource_id
-        for resource_id in (
-            _text(data.get("cart_id")),
-            _text(data.get("source_cart_id")),
-        )
-        if resource_id
-    }
-    return continuation.resource_id in resource_ids
 
 
 def continuation_context_block(
@@ -334,35 +302,19 @@ def _resolve_cart_continuation(
     active_choice = _mapping(agent.get("active_choice"))
     cart_item_id = _text(active_choice.get("cart_item_id"))
     field_name = _text(active_choice.get("field_name"))
-    cart_id = (
-        _text(agent.get("cart_id"))
-        or _text(data["cart"].get("cart_id"))
-        or ""
-    )
-    option_source = _sequence(active_choice.get("options"))
-    option_id_key = "option_id"
-    if state == "awaiting_upsell_decision":
-        option_source = _sequence(agent.get("upsell_items"))
-        option_id_key = "product_id"
     options = tuple(
-        ContinuationOption(id=option[option_id_key], label=label)
-        for option in option_source
+        ContinuationOption(id=option["option_id"], label=label)
+        for option in _sequence(active_choice.get("options"))
         if isinstance(option, dict)
-        and isinstance(option.get(option_id_key), str)
+        and isinstance(option.get("option_id"), str)
         for label in [
             str(
                 option.get("display_label")
                 or option.get("name")
                 or option.get("label")
-                or option[option_id_key]
+                or option["option_id"]
             )
         ]
-    )
-    customization_selection = bool(
-        state == "customizing_item" and cart_item_id and field_name and options
-    )
-    upsell_selection = bool(
-        state == "awaiting_upsell_decision" and cart_id and options
     )
     required_effect = CART_REQUIRED_EFFECTS.get(state)
     related_order_id, related_order_state = _related_open_order(
@@ -372,7 +324,7 @@ def _resolve_cart_continuation(
     )
     return TransactionalContinuation(
         scope="cart",
-        resource_id=cart_id,
+        resource_id=str(agent.get("cart_id") or data["cart"].get("cart_id") or ""),
         state=state,
         required_effect=required_effect,
         required_input=(
@@ -385,7 +337,6 @@ def _resolve_cart_continuation(
         ),
         offered_options=options,
         pending_prompt=_text(active_choice.get("choice_prompt"))
-        or _text(agent.get("upsell_prompt"))
         or _text(getattr(response, "user_message", None)),
         field_name=field_name,
         related_order_id=related_order_id,
@@ -398,20 +349,18 @@ def _resolve_cart_continuation(
         ),
         selection_tools=(
             ("save_customization_choice",)
-            if customization_selection
-            else ("handle_cart_upsell",) if upsell_selection else ()
+            if state == "customizing_item" and cart_item_id and field_name and options
+            else ()
         ),
         fixed_arguments=(
             (("cart_item_id", cart_item_id), ("field_name", field_name))
-            if customization_selection
-            else (("cart_id", cart_id), ("action", "add_item"))
-            if upsell_selection
+            if state == "customizing_item" and cart_item_id and field_name and options
             else ()
         ),
         selected_option_argument=(
             "selected_option_id"
-            if customization_selection
-            else "item_id" if upsell_selection else None
+            if state == "customizing_item" and cart_item_id and field_name and options
+            else None
         ),
     )
 
