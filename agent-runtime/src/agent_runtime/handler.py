@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import logging
 import os
@@ -70,15 +71,29 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     settings = get_agentcore_runtime_settings()
     configure_logging(settings.log_level)
     ensure_session_token_secret(settings)
-    memory_id = require_agentcore_memory_id(settings)
+    memory_enabled = (
+        request.channel != "whatsapp" or settings.whatsapp_agentcore_memory_enabled
+    )
     actor_id = agentcore_actor_id(customer_id=request.customer_id, user_id=request.user_id)
-    memory_session_id = agentcore_memory_session_id(request, settings)
-    memory_config_cls, session_manager_cls = load_agentcore_memory_integration()
-    memory_config = memory_config_cls(
-        memory_id=memory_id,
-        actor_id=actor_id,
-        session_id=memory_session_id,
-        batch_size=1,
+    memory_id = ""
+    memory_session_id = ""
+    if memory_enabled:
+        memory_id = require_agentcore_memory_id(settings)
+        memory_session_id = agentcore_memory_session_id(request, settings)
+        memory_config_cls, session_manager_cls = load_agentcore_memory_integration()
+        memory_config = memory_config_cls(
+            memory_id=memory_id,
+            actor_id=actor_id,
+            session_id=memory_session_id,
+            batch_size=1,
+        )
+    logger.info(
+        "AgentCore memory mode selected",
+        extra={
+            "event": "agentcore_memory_mode",
+            "channel": request.channel,
+            "memory_enabled": memory_enabled,
+        },
     )
     logger.info(
         "Invoking restaurant agent",
@@ -93,13 +108,17 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
     )
     started = time.perf_counter()
     try:
-        with session_manager_cls(
-            agentcore_memory_config=memory_config,
-            region_name=settings.aws_region,
+        with (
+            session_manager_cls(
+                agentcore_memory_config=memory_config,
+                region_name=settings.aws_region,
+            )
+            if memory_enabled
+            else nullcontext()
         ) as session_manager:
             memory_buffer = (
                 GroundedAssistantMemoryBuffer(session_manager)
-                if request.channel == "whatsapp"
+                if request.channel == "whatsapp" and memory_enabled
                 else None
             )
             try:
@@ -219,7 +238,7 @@ def invoke(event: dict[str, Any], context: Any | None = None) -> dict[str, Any]:
             "memory_id": memory_id,
             "actor_id": actor_id,
             "session_id": memory_session_id,
-        },
+        } if memory_enabled else {},
         grounding_source=grounding_source,
         grounding_rejection_reason=grounding_rejection_reason,
     )
