@@ -1,5 +1,6 @@
 import os
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -77,10 +78,12 @@ def settings(
     environment="production",
     whatsapp_memory_namespace="whatsapp-agent-v3",
     whatsapp_memory_ttl_hours=6,
+    whatsapp_memory_enabled=True,
 ):
     return SimpleNamespace(
         environment=environment,
         agentcore_memory_id=memory_id,
+        whatsapp_agentcore_memory_enabled=whatsapp_memory_enabled,
         whatsapp_agentcore_memory_namespace=whatsapp_memory_namespace,
         whatsapp_agentcore_memory_ttl_hours=whatsapp_memory_ttl_hours,
         log_level="INFO",
@@ -259,9 +262,14 @@ def test_whatsapp_menu_read_uses_authoritative_artifact_without_classifier(
     assert raw not in str(history)
 
 
+@pytest.mark.parametrize("memory_enabled", [True, False])
 def test_whatsapp_ungrounded_menu_recommendation_retries_silently(
-    monkeypatch,
+    monkeypatch, memory_enabled,
 ):
+    monkeypatch.setattr(
+        handler, "get_agentcore_runtime_settings",
+        lambda: settings(whatsapp_memory_enabled=memory_enabled),
+    )
     class RecordingLogger:
         def __init__(self):
             self.infos = []
@@ -282,22 +290,25 @@ def test_whatsapp_ungrounded_menu_recommendation_retries_silently(
         "1. *Pepperoni Passion* - A classic favorite."
     )
     messages = []
+    built_sessions = []
 
     class FakeAgent:
         def __init__(self, session_manager):
             self.session_manager = session_manager
 
     def build(*, session_manager):
+        built_sessions.append(session_manager)
         return FakeAgent(session_manager)
 
     def invoke_agent(message, **kwargs):
         messages.append(message)
         agent = kwargs["agent"]
         if len(messages) == 1:
-            agent.session_manager.append_message(
-                {"role": "assistant", "content": [{"text": hallucinated}]},
-                agent,
-            )
+            if agent.session_manager is not None:
+                agent.session_manager.append_message(
+                    {"role": "assistant", "content": [{"text": hallucinated}]},
+                    agent,
+                )
             return SimpleNamespace(
                 message={"content": [{"text": hallucinated}]},
                 tool_calls=[],
@@ -338,11 +349,21 @@ def test_whatsapp_ungrounded_menu_recommendation_retries_silently(
     assert len(messages) == 2
     assert messages[0] == "recommend something"
     assert "Internal retry instruction" in messages[1]
-    history = next(iter(FakeMemorySessionManager.history_by_session.values()))
-    assert history == [
-        {"role": "assistant", "content": [{"text": authoritative}]},
-    ]
-    assert hallucinated not in str(history)
+    assert len(built_sessions) == 2
+    assert built_sessions[1] is None
+    if memory_enabled:
+        assert isinstance(built_sessions[0], handler.GroundedAssistantMemoryBuffer)
+        history = next(iter(FakeMemorySessionManager.history_by_session.values()))
+        assert history == [
+            {"role": "assistant", "content": [{"text": authoritative}]},
+        ]
+        assert hallucinated not in str(history)
+    else:
+        assert built_sessions == [None, None]
+        assert FakeMemoryConfig.created == []
+        assert FakeMemorySessionManager.created == []
+        assert FakeMemorySessionManager.history_by_session == {}
+        assert response["memory"] == {}
     selected = next(
         extra
         for _message, extra in recording_logger.infos
@@ -636,7 +657,15 @@ def test_memory_commit_failure_never_persists_raw_assistant_draft(monkeypatch):
     assert "Raw undelivered" not in str(FakeMemorySessionManager.history_by_session)
 
 
-def test_handler_invokes_restaurant_agent_with_agentcore_memory(monkeypatch):
+@pytest.mark.parametrize("memory_enabled", [True, False])
+@pytest.mark.parametrize("channel", ["web", "voice"])
+def test_handler_invokes_restaurant_agent_with_agentcore_memory(
+    monkeypatch, memory_enabled, channel,
+):
+    monkeypatch.setattr(
+        handler, "get_agentcore_runtime_settings",
+        lambda: settings(whatsapp_memory_enabled=memory_enabled),
+    )
     captured = install_fake_agent(
         monkeypatch,
         text="Ready.",
@@ -650,7 +679,7 @@ def test_handler_invokes_restaurant_agent_with_agentcore_memory(monkeypatch):
         ],
     )
 
-    response = handler.invoke(runtime_payload())
+    response = handler.invoke(runtime_payload(channel=channel))
 
     assert response["text"] == "Ready."
     assert response["tool_calls"][0]["tool_name"] == "search_menu"
@@ -669,6 +698,7 @@ def test_handler_invokes_restaurant_agent_with_agentcore_memory(monkeypatch):
     ]
     assert captured["agent_session_id"] == "session-1"
     assert captured["request_id"] == "req-trusted"
+    assert captured["session_manager"] is FakeMemorySessionManager.created[0]
     assert FakeMemorySessionManager.closed == [FakeMemorySessionManager.created[0]]
 
 
@@ -689,7 +719,98 @@ def test_handler_uses_versioned_agentcore_memory_session_for_whatsapp(monkeypatc
     )
 
     assert captured["agent_session_id"] == "whatsapp-session-1"
+    assert isinstance(captured["session_manager"], handler.GroundedAssistantMemoryBuffer)
+    assert captured["session_manager"].session_manager is FakeMemorySessionManager.created[0]
     assert response["memory"]["session_id"] == "wa-clean-v3-whatsapp-session-1-b10"
+
+
+@pytest.mark.parametrize("tool_success", [True, False])
+def test_whatsapp_memory_disabled_preserves_continuation_invocation_and_grounding(
+    monkeypatch, tool_success,
+):
+    from src.agent import restaurant_agent
+    from src.agent.context import get_request_context
+    from src.agent.continuation import ContinuationOption, TransactionalContinuation
+
+    monkeypatch.setattr(
+        handler, "get_agentcore_runtime_settings",
+        lambda: settings(memory_id="", whatsapp_memory_enabled=False),
+    )
+    forbidden = Mock(side_effect=AssertionError("Memory must not be accessed"))
+    for name in (
+        "require_agentcore_memory_id", "agentcore_memory_session_id",
+        "load_agentcore_memory_integration", "GroundedAssistantMemoryBuffer",
+    ):
+        monkeypatch.setattr(handler, name, forbidden)
+    monkeypatch.setattr(restaurant_agent, "build_session_manager", forbidden)
+    existing_history = [{"role": "user", "content": [{"text": "earlier turn"}]}]
+    FakeMemorySessionManager.history_by_session["existing"] = list(existing_history)
+    continuation = TransactionalContinuation(
+        scope="cart", resource_id="CART-TEST", state="customizing_item",
+        required_effect="customization_saved", required_input="customization_choice",
+        valid_next_actions=("save_customization_choice",),
+        offered_options=(ContinuationOption(id="medium", label="Medium"),),
+        pending_prompt="Which pizza size would you like?", field_name="pizza-size",
+    )
+    resolve = Mock(return_value=continuation)
+    monkeypatch.setattr(restaurant_agent, "resolve_request_continuation", resolve)
+    messages = []
+
+    class FakeAgent:
+        def __call__(self, message, **kwargs):
+            messages.append(message)
+            if tool_success:
+                get_request_context().tool_calls.append({
+                    "tool_name": "save_customization_choice", "success": True,
+                    "is_write": True,
+                    "result": {
+                        "success": True,
+                        "grounding": {
+                            "transactional_effects": ["customization_saved"],
+                            "exact_customer_text": "Which crust would you like?",
+                        },
+                    },
+                })
+            return SimpleNamespace(message={"content": [{"text": "Raw model draft"}]})
+
+    build = Mock(return_value=FakeAgent())
+    monkeypatch.setattr(handler, "build_restaurant_agent", build)
+    grounding = Mock(wraps=handler.ground_agent_response)
+    monkeypatch.setattr(handler, "ground_agent_response", grounding)
+    logger = Mock()
+    monkeypatch.setattr(handler, "logger", logger)
+
+    response = handler.invoke(runtime_payload(channel="whatsapp", message="medium"))
+
+    forbidden.assert_not_called()
+    build.assert_called_once_with(session_manager=None)
+    resolve.assert_called_once_with(user_id="user-1", agent_session_id="session-1")
+    assert len(messages) == 1
+    assert "[AUTHORITATIVE BACKEND STATE" in messages[0]
+    assert messages[0].endswith("\n\nmedium")
+    assert grounding.call_count == 1
+    assert grounding.call_args.kwargs["continuation"] is continuation
+    assert response["memory"] == {}
+    if tool_success:
+        assert response["text"] == "Which crust would you like?"
+        assert response["grounding_source"] == "exact_artifact"
+        assert response["tool_calls"][0]["tool_name"] == "save_customization_choice"
+        assert response["tool_calls"][0]["success"] is True
+    else:
+        assert response["text"] == continuation.pending_prompt
+        assert response["grounding_source"] == "authoritative_continuation"
+        assert response["grounding_rejection_reason"] == "required_effect_not_satisfied"
+        assert response["tool_calls"] == []
+    assert FakeMemoryConfig.created == []
+    assert FakeMemorySessionManager.created == []
+    assert FakeMemorySessionManager.history_by_session == {"existing": existing_history}
+    mode = next(
+        call.kwargs["extra"] for call in logger.info.call_args_list
+        if call.kwargs["extra"]["event"] == "agentcore_memory_mode"
+    )
+    assert mode == {
+        "event": "agentcore_memory_mode", "channel": "whatsapp", "memory_enabled": False,
+    }
 
 
 def test_runtime_request_accepts_missing_request_id():
@@ -763,15 +884,20 @@ def test_same_session_id_restores_conversation_history(monkeypatch):
     assert FakeMemorySessionManager.history_by_session["same"] == ["first", "second"]
 
 
-def test_missing_agentcore_memory_id_fails_safely_in_production(monkeypatch):
+@pytest.mark.parametrize(
+    "channel,memory_enabled", [("web", True), ("web", False), ("whatsapp", True)],
+)
+def test_missing_agentcore_memory_id_fails_safely_in_production(
+    monkeypatch, channel, memory_enabled,
+):
     monkeypatch.setattr(
         handler,
         "get_agentcore_runtime_settings",
-        lambda: settings(memory_id=""),
+        lambda: settings(memory_id="", whatsapp_memory_enabled=memory_enabled),
     )
 
     with pytest.raises(RuntimeError, match="AGENTCORE_MEMORY_ID is required"):
-        handler.invoke(runtime_payload())
+        handler.invoke(runtime_payload(channel=channel))
 
     assert FakeMemoryConfig.created == []
 

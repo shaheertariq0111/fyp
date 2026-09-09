@@ -20,6 +20,7 @@ class JsonFormatter(logging.Formatter):
             "agent_session_id",
             "session_id",
             "channel",
+            "memory_enabled",
             "tool_name",
             "tool_success",
             "is_write",
